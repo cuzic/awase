@@ -39,9 +39,15 @@ pub struct PseudoMozc {
     pub compose_delay_ms: u64,
     /// `false` にすると Mozc サーバーが応答できない（キーは握りつぶされ、文書にも出ない）。
     pub server_ready: bool,
+    /// 2 打目以降を `key_seq` が数えるまでの遅れ（ms）。実測: 確認済み 21 回のうち 2 回で 2 打目が +30ms 遅れた
+    /// （ADR-284、2026-10-21）。
+    pub second_key_lag_ms: u64,
     // ── 状態 ──
     dropped: bool,
+    /// `key_seq` の基準値（送信の前）。TIP が見たキーが数えられるたびに [`PseudoMozc::key_seq_at`] で足される。
     pub key_seq: u32,
+    /// TIP が見たキーが `key_seq` に数えられる時刻。
+    seq_ready: Vec<u64>,
     /// TIP が受け取ったローマ字（入力中の文字の元）。
     composing: String,
     composing_since: Option<u64>,
@@ -65,8 +71,10 @@ impl PseudoMozc {
             drop_first_key,
             compose_delay_ms: 30,
             server_ready,
+            second_key_lag_ms: 0,
             dropped: false,
             key_seq: 330,
+            seq_ready: Vec::new(),
             composing: String::new(),
             composing_since: None,
             doc: String::new(),
@@ -85,7 +93,13 @@ impl PseudoMozc {
             self.doc.push(c);
             return;
         }
-        self.key_seq += 1;
+        // 最初に見たキーはすぐ数えられ、2 打目以降は `second_key_lag_ms` 遅れる。
+        let ready = if self.seq_ready.is_empty() {
+            now
+        } else {
+            now + self.second_key_lag_ms
+        };
+        self.seq_ready.push(ready);
         self.composing.push(c);
         self.composing_since.get_or_insert(now);
     }
@@ -104,6 +118,12 @@ impl PseudoMozc {
         }
     }
 
+    /// `now` の時点で数えられている `key_seq`。
+    pub fn key_seq_at(&self, now: u64) -> u32 {
+        let ready = self.seq_ready.iter().filter(|t| **t <= now).count();
+        self.key_seq + u32::try_from(ready).unwrap_or(u32::MAX)
+    }
+
     /// 共有メモリの読み。
     pub fn read(&self, now: u64) -> ComposeReading {
         ComposeReading::Block(ComposeBlock {
@@ -113,8 +133,8 @@ impl PseudoMozc {
             phase: self.phase(now),
             scope_forced_mode: 0,
             server_ready: self.server_ready,
-            key_seq: self.key_seq,
-            composition_key_seq: self.key_seq,
+            key_seq: self.key_seq_at(now),
+            composition_key_seq: self.key_seq_at(now),
         })
     }
 
