@@ -1,0 +1,74 @@
+[
+ {
+  "seq": 10,
+  "elapsed_ms": 1000,
+  "entry": {
+   "FocusTransition": {
+    "changed": {},
+    "from": null,
+    "to": {
+     "hwnd": 1, "pid": 2, "process_name": "wt.exe",
+     "class_name": "CASCADIA_HOSTING_WINDOW_CLASS", "app_kind": "TsfNative", "focus_kind": "Text"
+    },
+    "dwell_ms": 0,
+    "profile": "standard"
+   }
+  }
+ },
+ {
+  "seq": 11,
+  "elapsed_ms": 1400,
+  "entry": {
+   "LiteralDetect": {
+    "record": {
+     "cold_seq": 1,
+     "facts": {
+      "verdict": "SuspectedLiteral", "route": "ProbeEnd", "path": "Word", "target": "Tsf",
+      "vk": null, "idx": 1, "last_idx": 1,
+      "evidence": { "mozc_key_seq": { "before": 330, "after": 331 } }
+     },
+     "consecutive_before": 0, "gave_up": false, "backs": 1,
+     "escape_composition": true, "session_marked": false, "romaji": "ko"
+    },
+    "suppressed_confirms": 0,
+    "since_vk_sent_ms": 300
+   }
+  }
+ },
+ {
+  "seq": 20,
+  "elapsed_ms": 90000,
+  "entry": {
+   "FocusTransition": {
+    "changed": {},
+    "from": null,
+    "to": {
+     "hwnd": 3, "pid": 4, "process_name": "LINE.exe",
+     "class_name": "Qt663QWindowIcon", "app_kind": "Win32", "focus_kind": "Text"
+    },
+    "dwell_ms": 0,
+    "profile": "standard"
+   }
+  }
+ },
+ {
+  "seq": 21,
+  "elapsed_ms": 95000,
+  "entry": {
+   "LiteralDetect": {
+    "record": {
+     "cold_seq": 184,
+     "facts": {
+      "verdict": "SuspectedLiteral", "route": "ProbeEnd", "path": "Word", "target": "Tsf",
+      "vk": null, "idx": 0, "last_idx": 0,
+      "evidence": { "mozc_key_seq": { "before": 500, "after": 500 } }
+     },
+     "consecutive_before": 0, "gave_up": false, "backs": 1,
+     "escape_composition": false, "session_marked": false, "romaji": "ko"
+    },
+    "suppressed_confirms": 0,
+    "since_vk_sent_ms": 300
+   }
+  }
+ }
+]
