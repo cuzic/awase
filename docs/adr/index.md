@@ -292,6 +292,7 @@
 | [283](283-glyph-evidence-in-scope-belief.md) | タスクバーの入力インジケーターの字形を、採用した belief(候補 Z)の証拠に加える: いつ読み、いつまで信じるか | 実装(2026-10-30、§9・§10)。G1(核・オラクル)完了・G2は観測のみ(クローンでの試算、journal記録だけ、既定offのオプトイン)。トリガーはT1(前面窓の変化)に加え、T2〜T4共通のUIA push通知(§10.4)を実装。直接配線版はOpusレビューでBlocker3件が見つかり撤回。StateChange配線・G3は未着手 |
 | [284](284-mozc-partial-literal-recovery.md) | Mozc の cold 最初の送信で先頭だけ素通りした部分リテラルを検出して回収する(key_seq の進みの読み直し + Escape + Backspace + 再送) | 起草・実装済み(2026-10-28)、実機未確認 |
 | [285](285-mozc-first-key-per-vk-and-wider-check-windows.md) | Mozc の cold の最初の送信を最初の 1 キーと残りに分け(per-VK)、確認を Chrome 系と空以外のすべての窓に張る | 起草・実装(2026-10-28)、実機未確認 |
+| [286](286-debug-pipe-dump-state-tail-journal.md) | 実行中の awase の内部状態を、既存インスタンスへのメッセージ要求とファイル出力で読み取り専用に観測する(dump-state・tail-journal) | 起草(2026-10-31、pipe 案から書き直し)、所有者決定 4 件反映済み・未実装 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
