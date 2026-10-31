@@ -8,4 +8,5 @@ pub mod invariants;
 pub mod journal_scenario;
 pub mod pseudo_ime;
 pub mod pseudo_mozc;
+pub mod pseudo_zoom;
 pub mod sprime;
