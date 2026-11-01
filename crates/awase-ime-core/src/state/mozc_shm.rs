@@ -22,6 +22,9 @@ pub const V3_BLOCK_SIZE: usize = 80;
 /// version 5 以降のブロックの大きさ（キーボードフォーカスの時刻を含む。mozc-readable の診断用の追記）。
 pub const V5_BLOCK_SIZE: usize = 144;
 
+/// version 6 以降のブロックの大きさ（キー押下ごとの食べた/素通りの数を含む。mozc-readable の診断用の追記）。
+pub const V6_BLOCK_SIZE: usize = 152;
+
 /// `magic`（メモリ上のバイト列は `4D 44 52 5A`、ASCII の `MDRZ`）。
 pub const MAGIC: u32 = 0x5A52_444D;
 
@@ -220,6 +223,27 @@ impl FocusTicks {
             rel(self.thread_focus_tick_ms, sent_ms),
             rel(self.first_key_tick_ms, sent_ms),
         )
+    }
+}
+
+/// version 6 の追記分（オフセット 144〜151）。キーシンクが `key_seq` を増やした各キーダウンを、食べたか素通りさせたかの
+/// 通算の数（TIP が読み込まれてから、単調増加でラップする）。診断用で、判断には使わない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyResults {
+    /// キーシンクが食べた（`eaten = TRUE`）キーダウンの数
+    pub eaten: u32,
+    /// キーシンクが食べず、アプリへ素通りさせたキーダウンの数
+    pub passed: u32,
+}
+
+impl KeyResults {
+    /// 152 バイトの追記分（オフセット 144〜151）を解釈する（検証はしない）。
+    #[must_use]
+    pub fn parse(bytes: &[u8; V6_BLOCK_SIZE]) -> Self {
+        Self {
+            eaten: u32_at(bytes, 144),
+            passed: u32_at(bytes, 148),
+        }
     }
 }
 
@@ -1331,6 +1355,20 @@ mod tests {
         assert_eq!(compose_literal_backs("ke"), 2);
         assert_eq!(compose_literal_backs("ltu"), 3);
         assert_eq!(compose_literal_backs("a"), 1);
+    }
+
+    #[test]
+    fn key_results_parse_reads_the_version_6_fields_little_endian() {
+        let mut b = [0u8; V6_BLOCK_SIZE];
+        b[144..148].copy_from_slice(&7u32.to_le_bytes());
+        b[148..152].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(
+            KeyResults::parse(&b),
+            KeyResults {
+                eaten: 7,
+                passed: 3
+            }
+        );
     }
 
     #[test]

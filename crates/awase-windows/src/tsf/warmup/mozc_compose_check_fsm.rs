@@ -105,6 +105,18 @@ impl MozcComposeCheckFsm {
                 ticks.describe_relative_to(self.sent_ms)
             );
         }
+        // version 6: キーシンクが各キーダウンを食べたか素通りさせたかの通算の数。2 回の行の差から、
+        // 「どのキーが素通りしたか」を `key_seq` の進みと並べて読める。
+        if let Some(results) =
+            crate::tsf::read_mozc_key_results(self.target.thread_id, self.target.process_id)
+        {
+            tracing::info!(
+                "[mozc-keys] cold={} eaten={} passed={} (cumulative since the TIP loaded)",
+                self.target.cold_seq.value(),
+                results.eaten,
+                results.passed
+            );
+        }
     }
 
     /// この読みの `key_seq` を、送信の前の値と並べる（journal の診断用）。読めなければ `None`。
