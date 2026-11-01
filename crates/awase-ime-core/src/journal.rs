@@ -148,6 +148,16 @@ pub struct LangDetectRecord {
     /// `intent-store` / `force-guard` / `explicit-intent` / `key-effect` / `derive-high` / `derive-medium` / `indicator-glyph` /
     /// `most-recent-trusted` / `desired-fallback`）
     pub belief_basis: &'static str,
+    /// shadow（追加式ロジスティック回帰。`tools/lang-detect-model/`）の累積 log-odds（日本語が正）。**判定・動作には使わない**。
+    /// shadow が無い・打鍵が 1 つも数えられなかったら `None`（直列化しない）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lr_llr: Option<f32>,
+    /// shadow の打鍵ごとの増分（log-odds）。キー位置は含まない。空なら直列化しない
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lr_trace: Vec<f32>,
+    /// shadow が『日本語でない』と確定した打鍵の番号（1 始まり、累積が -4.0 以下になった最初の打鍵）。確定しなければ `None`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lr_not_japanese_at: Option<u32>,
 }
 
 /// 入力インジケーターの字形の取り込み 1 回の結果(ADR-261 段階 1。挙動を変えない観測。**belief には入れない**)。
@@ -1537,6 +1547,8 @@ impl JournalEntry {
                     prev_verdict = record.prev_verdict,
                     prev_elapsed_ms = record.prev_elapsed_ms,
                     belief_basis = record.belief_basis,
+                    lr_llr = record.lr_llr,
+                    lr_not_japanese_at = record.lr_not_japanese_at,
                     "[lang-detect]"
                 );
             }
@@ -3009,10 +3021,17 @@ mod tests {
                 prev_verdict: Some("not-japanese"),
                 prev_elapsed_ms: Some(1500),
                 belief_basis: "derive-high",
+                lr_llr: Some(-2.1),
+                lr_trace: vec![-0.3, 1.7, -3.5],
+                lr_not_japanese_at: None,
             },
         });
         let json = j.to_json().unwrap();
         assert!(json.contains("LangDetect"));
+        assert!(json.contains("lr_llr"));
+        assert!(json.contains("lr_trace"));
+        // None は直列化しない（既存の journal の形を変えない）
+        assert!(!json.contains("lr_not_japanese_at"));
         // 追加項目（ADR-280）。キー位置・文字は含めず、分類名と数値だけ。
         assert!(json.contains("prev_verdict"));
         assert!(json.contains("prev_elapsed_ms"));
