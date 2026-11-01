@@ -186,12 +186,16 @@ impl LangDetectShadow {
             return;
         };
         // 仮名側は 3 連の補間、背景はラテン文字の 2 連(ADR-280)。従来の `KanaModel::new` は使わない。
-        self.model = Some(KanaModel::with_models(
-            ngram,
-            normal,
-            PRODUCTION_KANA_SIDE,
-            Some(LatinBackground::embedded()),
-        ));
+        // shadow: 追加式ロジスティック回帰(`tools/lang-detect-model/`)の増分を journal に残す。判定には使わない。
+        self.model = Some(
+            KanaModel::with_models(
+                ngram,
+                normal,
+                PRODUCTION_KANA_SIDE,
+                Some(LatinBackground::embedded()),
+            )
+            .with_lr_shadow(awase::lang_detect::LrModel::embedded()),
+        );
         self.model_layout = layout_name.to_string();
     }
 
@@ -625,6 +629,12 @@ impl super::Runtime {
             prev_verdict: prev.map(|p| p.verdict),
             prev_elapsed_ms: prev.map(|p| started_at_ms.saturating_sub(p.closed_at_ms)),
             belief_basis: ctx.belief_basis,
+            // shadow（追加式ロジスティック回帰）。判定・動作には使わない。
+            #[allow(clippy::cast_possible_truncation)] // ログ用。f32 の精度で足りる
+            lr_llr: outcome.lr_llr.map(|v| v as f32),
+            lr_not_japanese_at: awase::lang_detect::first_not_japanese(&outcome.lr_trace)
+                .and_then(|i| u32::try_from(i + 1).ok()),
+            lr_trace: outcome.lr_trace,
         };
         self.platform_state
             .ime

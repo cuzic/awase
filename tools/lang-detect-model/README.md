@@ -15,6 +15,8 @@ uv run pytest                               # キー格子・NICOLA 未シフト
 uv sync --group model                       # torch(CPU)。モデルの学習・評価に必要(約 0.4GB)
 uv run --group model python -u run_ablation.py   # 基準 + LR の特徴の足し引き(約 25 分。混んだ環境で)
 uv run --group model python -u run_final.py      # 最終候補の学習・保存・領域をまたぐ評価(約 5 分)
+uv run --group model python -m ldm.export_lr     # 保存した重みを int8 にして data/lang_lr_v1.txt と tests/fixtures/lang_lr_vectors.tsv に書く(Rust の shadow が読む)
+uv run python -m ldm.shadow_report awase.log     # 実機のログから、今の判定器と shadow(LR)の食い違いを数える
 ```
 `AWASE_LDM_CACHE` で置き場所を変えられる。
 

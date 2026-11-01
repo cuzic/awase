@@ -26,8 +26,10 @@
 //! このモジュールは OS・時刻・生の VK を持たない。入力は分類済みの `PhysicalPos` だけ（ADR-019）。
 
 mod latin;
+mod lr;
 
 pub use latin::LatinBackground;
+pub use lr::{first_not_japanese, LrContext, LrModel, SHADOW_NOT_JAPANESE};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::engine::fsm_types::ThumbSide;
@@ -163,6 +165,8 @@ pub struct KanaModel {
     usable: bool,
     /// 3 連の仮名側・ラテン文字の背景（`with_models` で作ったときだけ。`None` は従来の 2 連 + 一様分布）
     extended: Option<Extended>,
+    /// shadow の追加式ロジスティック回帰（`with_lr_shadow` で付けたときだけ）。判定には使わず、増分を残すだけ
+    lr: Option<LrModel>,
 }
 
 /// 仮名側の確率の作り方。
@@ -281,6 +285,7 @@ impl KanaModel {
             total,
             usable,
             extended: None,
+            lr: None,
         }
     }
 
@@ -299,6 +304,20 @@ impl KanaModel {
         let tri = (side == KanaSide::TrigramInterp).then(|| TriTable::from_ngram(ngram));
         model.extended = Some(Extended { tri, latin });
         model
+    }
+
+    /// shadow の追加式ロジスティック回帰を付ける。判定（`verdict`）には影響せず、`EpisodeDetector` が打鍵ごとの増分を
+    /// `EpisodeOutcome` に残すだけ（実機のデータで今の判定器と並べるため）。
+    #[must_use]
+    pub fn with_lr_shadow(mut self, lr: LrModel) -> Self {
+        self.lr = Some(lr);
+        self
+    }
+
+    /// shadow の識別子（付けていなければ `None`）
+    #[must_use]
+    pub fn lr_shadow_id(&self) -> Option<&str> {
+        self.lr.as_ref().map(LrModel::id)
     }
 
     /// 使っているモデルの識別子（ログ用）。例: `tri-interp+latin-bigram-v1`、`bi+uniform`
@@ -461,6 +480,10 @@ pub struct EpisodeDetector {
     /// 打鍵ごとの対数尤度比の増分（ログ用。キー位置は含まない）
     trace: Vec<f32>,
     verdict: Verdict,
+    /// shadow（追加式ロジスティック回帰）の文脈・累積・増分の列。判定には使わない
+    lr_ctx: LrContext,
+    lr_llr: f64,
+    lr_trace: Vec<f32>,
 }
 
 impl EpisodeDetector {
@@ -480,6 +503,9 @@ impl EpisodeDetector {
             llr: 0.0,
             trace: Vec::new(),
             verdict: Verdict::Pending,
+            lr_ctx: LrContext::default(),
+            lr_llr: 0.0,
+            lr_trace: Vec::new(),
         }
     }
 
@@ -499,6 +525,18 @@ impl EpisodeDetector {
     #[must_use]
     pub fn llr_trace(&self) -> &[f32] {
         &self.trace
+    }
+
+    /// shadow の累積 log-odds（日本語が正。shadow が無ければ 0）
+    #[must_use]
+    pub const fn lr_llr(&self) -> f64 {
+        self.lr_llr
+    }
+
+    /// shadow の打鍵ごとの増分の列（shadow が無ければ空）
+    #[must_use]
+    pub fn lr_trace(&self) -> &[f32] {
+        &self.lr_trace
     }
 
     /// 数えた文字キーの Down の数（自動リピートは数えない）
@@ -542,6 +580,13 @@ impl EpisodeDetector {
             return;
         }
         self.presses += 1;
+        if let Some(lr) = &model.lr {
+            let (delta, ctx) = lr.step(self.lr_ctx, pos);
+            self.lr_llr += delta;
+            #[allow(clippy::cast_possible_truncation)] // ログ用の増分。f32 の精度で足りる
+            self.lr_trace.push(delta as f32);
+            self.lr_ctx = ctx;
+        }
         if model.usable {
             let (delta, ctx) = model.step(self.ctx, pos);
             self.llr += delta;
@@ -650,6 +695,9 @@ pub struct EpisodeOutcome {
     pub presses: usize,
     pub llr: f64,
     pub llr_trace: Vec<f32>,
+    /// shadow（追加式ロジスティック回帰）の累積 log-odds と、打鍵ごとの増分。shadow が無ければ `None`・空
+    pub lr_llr: Option<f64>,
+    pub lr_trace: Vec<f32>,
     /// エピソード開始時の無操作の長さ（窓切替の契機でも、直前の打鍵からの経過）
     pub idle_ms: u64,
     pub duration_ms: u64,
@@ -696,6 +744,8 @@ impl ActiveEpisode {
             presses: self.detector.presses(),
             llr: self.detector.llr(),
             llr_trace: self.detector.llr_trace().to_vec(),
+            lr_llr: (!self.detector.lr_trace().is_empty()).then(|| self.detector.lr_llr()),
+            lr_trace: self.detector.lr_trace().to_vec(),
             idle_ms: self.idle_ms,
             duration_ms: now.saturating_sub(self.started_ms),
         }
@@ -2276,6 +2326,42 @@ mod tests {
         assert!(model.delta(None, qwerty('w')).abs() > 0.1);
         assert!(model.delta(None, qwerty('q')).abs() < f64::EPSILON);
         assert!(model.delta(None, qwerty('1')).abs() < f64::EPSILON);
+    }
+
+    /// shadow を付けても、判定（verdict）・累積・打鍵数は変わらない。増分の列が打鍵数と同じ長さで残る。
+    #[test]
+    fn lr_shadow_does_not_change_the_verdict() {
+        let plain = real_model();
+        let shadowed = real_model().with_lr_shadow(LrModel::embedded());
+        assert_eq!(shadowed.lr_shadow_id(), Some("lr-bos-v1"));
+        for text in [
+            "ccndie",
+            "hello",
+            "windows",
+            "qwertyu",
+            "kakuninnwoonegai",
+            "rjuxu",
+            "",
+        ] {
+            let run_with = |model: &KanaModel| {
+                let mut d = EpisodeDetector::new(
+                    DetectParams::default(),
+                    ThumbOverlap::Enabled,
+                    [false; 2],
+                );
+                for c in text.chars() {
+                    d.observe(model, DetectEvent::CharDown(qwerty(c)));
+                    d.observe(model, DetectEvent::CharUp(qwerty(c)));
+                }
+                d
+            };
+            let (a, b) = (run_with(&plain), run_with(&shadowed));
+            assert_eq!(a.verdict(), b.verdict(), "{text}");
+            assert_eq!(a.presses(), b.presses(), "{text}");
+            assert!((a.llr() - b.llr()).abs() < f64::EPSILON, "{text}");
+            assert!(a.lr_trace().is_empty(), "shadow なしでは空: {text}");
+            assert_eq!(b.lr_trace().len(), b.presses(), "{text}");
+        }
     }
 
     #[test]
