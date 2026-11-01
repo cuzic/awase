@@ -11,6 +11,15 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest>=8"]
+model = ["torch>=2.4", "numpy>=1.26"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
 
 [tool.uv]
 package = false
