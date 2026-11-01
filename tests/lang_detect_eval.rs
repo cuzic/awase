@@ -500,3 +500,36 @@ fn extended_eisu_threshold_boundary_sequence_flips_between_13_and_15() {
         }
     }
 }
+
+/// 【一時のプローブ、マージしない】実機の誤発火(2026-11-01 05:33:00Z、presses=6、llr=-14.61)の各打鍵の増分を出す。
+/// 失敗(panic)の本文に値を載せて CI のログで読む。
+#[test]
+fn zz_probe_susumeteku_trace() {
+    let mut out = String::new();
+    for (name, model) in [
+        ("extended(実機と同じ)", extended_model()),
+        ("bigram(従来)", real_model()),
+    ] {
+        for keys in [
+            "ccndie", "ccndi", "ccnd", "ccn", "cc", "c", "windows", "hello",
+        ] {
+            let mut d =
+                EpisodeDetector::new(DetectParams::default(), ThumbOverlap::Enabled, [false; 2]);
+            for c in keys.chars() {
+                d.observe(&model, DetectEvent::CharDown(qwerty(c)));
+                d.observe(&model, DetectEvent::CharUp(qwerty(c)));
+                if d.verdict().is_decided() {
+                    break;
+                }
+            }
+            out.push_str(&format!(
+                "{name} {keys:8} verdict={:?} presses={} llr={:.2} trace={:?}\n",
+                d.verdict(),
+                d.presses(),
+                d.llr(),
+                d.llr_trace()
+            ));
+        }
+    }
+    panic!("PROBE\n{out}");
+}
