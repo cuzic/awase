@@ -1,0 +1,29 @@
+[project]
+name = "lang-detect-model"
+version = "0.1.0"
+description = "入力言語の判別モデル(日本語/非日本語)の学習データを作る道具(ADR-280 の後続)。リポジトリには学習データを置かない。"
+requires-python = ">=3.11"
+dependencies = [
+    "pyarrow>=17",
+    "sudachipy>=0.6.8",
+    "sudachidict-core>=20240109",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+model = ["torch>=2.4", "numpy>=1.26"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
