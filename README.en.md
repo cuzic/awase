@@ -322,3 +322,5 @@ Because mozc-readable tells awase the IME's open/closed state and input mode usi
 ## License
 
 You may choose either the [Apache License, Version 2.0](LICENSE-APACHE) or the [MIT License](LICENSE-MIT).
+
+Sources and attribution for the statistical data bundled with awase (derived from Wikipedia, Tatoeba, etc.) are in [docs/third-party-data.md](docs/third-party-data.md) (Japanese).
