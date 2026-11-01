@@ -323,3 +323,5 @@ mozc-readable は IME の開閉と入力モードを IME 自身が出す値で a
 ## ライセンス
 
 [Apache License, Version 2.0](LICENSE-APACHE) または [MIT License](LICENSE-MIT) のいずれかを選択できます。
+
+同梱する n-gram などの統計データの元（Wikipedia・Tatoeba など）の出典と帰属は [docs/third-party-data.md](docs/third-party-data.md) にあります。
