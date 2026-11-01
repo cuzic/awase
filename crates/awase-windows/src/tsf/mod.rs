@@ -83,6 +83,22 @@ pub(crate) fn read_mozc_compose(
     }
 }
 
+/// 対象のスレッドの共有メモリから、キー押下ごとの食べた/素通りの数（version 6）を読む。診断用。読めなければ `None`。
+#[cfg_attr(not(windows), allow(unused_variables))]
+pub(crate) fn read_mozc_key_results(
+    thread_id: u32,
+    process_id: u32,
+) -> Option<crate::state::mozc_shm::KeyResults> {
+    #[cfg(windows)]
+    {
+        crate::observer::mozc_shm::read_key_results(thread_id, process_id)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// 対象のスレッドの共有メモリから、キーボードフォーカスの時刻（version 5）を読む。診断用。読めなければ `None`。
 #[cfg_attr(not(windows), allow(unused_variables))]
 pub(crate) fn read_mozc_focus_ticks(
