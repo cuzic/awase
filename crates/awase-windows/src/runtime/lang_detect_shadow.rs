@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use awase::config::{AutoDetectConfig, AutoDetectMode, AutoDetectScope};
+use awase::config::{AutoDetectConfig, AutoDetectDecider, AutoDetectMode, AutoDetectScope};
 use awase::lang_detect::{
     eisu_write_skip_reason, hiragana_write_skip_reason, DetectParams, EpisodeOutcome, HoldCommand,
     HoldController, JapaneseEvidence, KanaModel, KeyRole, LatinBackground, ObservedKey, StopReason,
@@ -58,6 +58,8 @@ pub(super) struct LangDetectShadow {
     scope_now: u64,
     /// 窓ごとの直前のエピソードの記憶（直近 `PREV_EPISODE_CAP` 窓まで。ADR-280 C1 の観測。記録だけで判断には使わない）
     prev_episodes: Vec<PrevEpisode>,
+    /// `Some(閾値)` なら『日本語でない』の確定に追加式ロジスティック回帰を使う（`decider = "lr"`）。`None` は従来の尤度比
+    lr_decision: Option<f64>,
 }
 
 /// 窓ごとの直前のエピソード（判定の分類名と、閉じた時刻）
@@ -110,11 +112,19 @@ impl LangDetectShadow {
         } else {
             AutoDetectMode::Off
         };
+        // 『日本語でない』の確定に追加式ロジスティック回帰を使う閾値（`decider = "lr"`）。`ime_on_eisu` の入りは強い確信を要求する。
+        let lr_decision = (cfg.decider == AutoDetectDecider::Lr).then(|| {
+            if cfg.mode == AutoDetectMode::ImeOnEisu {
+                cfg.lr_eisu_threshold
+            } else {
+                cfg.lr_en_threshold
+            }
+        });
         // 設定が判定器の閾値まで届いたかを実機（CI）で確かめるための観測（ADR-280 C0。挙動は変えない）。
         if mode != AutoDetectMode::Off {
             tracing::info!(
                 "[lang-detect] config: mode={:?} scope={:?} en_threshold_effective={} eisu_threshold={} en_threshold={} \
-                 ja_threshold={} idle_ms={} max_ms={} max_keys={} hold_config_ok={} model={}",
+                 ja_threshold={} idle_ms={} max_ms={} max_keys={} hold_config_ok={} model={} decider={} lr_threshold={:?}",
                 mode,
                 cfg.scope,
                 tracker_cfg.params.en_threshold,
@@ -126,6 +136,8 @@ impl LangDetectShadow {
                 tracker_cfg.params.max_keys,
                 hold_config_ok,
                 awase::lang_detect::production_model_id(),
+                if lr_decision.is_some() { "lr" } else { "kana-ngram" },
+                lr_decision,
             );
         }
         Self {
@@ -142,6 +154,7 @@ impl LangDetectShadow {
             last_key_scope: None,
             scope_now: 0,
             prev_episodes: Vec::new(),
+            lr_decision,
         }
     }
 
@@ -186,16 +199,19 @@ impl LangDetectShadow {
             return;
         };
         // 仮名側は 3 連の補間、背景はラテン文字の 2 連(ADR-280)。従来の `KanaModel::new` は使わない。
-        // shadow: 追加式ロジスティック回帰(`tools/lang-detect-model/`)の増分を journal に残す。判定には使わない。
-        self.model = Some(
-            KanaModel::with_models(
-                ngram,
-                normal,
-                PRODUCTION_KANA_SIDE,
-                Some(LatinBackground::embedded()),
-            )
-            .with_lr_shadow(awase::lang_detect::LrModel::embedded()),
-        );
+        // 追加式ロジスティック回帰(`tools/lang-detect-model/`)の増分は、常に journal に残す。`decider = "lr"` のときは
+        // 『日本語でない』の確定にも使う(`lr_decision`)。日本語の確定は従来のまま。
+        let mut model = KanaModel::with_models(
+            ngram,
+            normal,
+            PRODUCTION_KANA_SIDE,
+            Some(LatinBackground::embedded()),
+        )
+        .with_lr_shadow(awase::lang_detect::LrModel::embedded());
+        if let Some(threshold) = self.lr_decision {
+            model = model.with_lr_decision(threshold);
+        }
+        self.model = Some(model);
         self.model_layout = layout_name.to_string();
     }
 
@@ -629,7 +645,12 @@ impl super::Runtime {
             prev_verdict: prev.map(|p| p.verdict),
             prev_elapsed_ms: prev.map(|p| started_at_ms.saturating_sub(p.closed_at_ms)),
             belief_basis: ctx.belief_basis,
-            // shadow（追加式ロジスティック回帰）。判定・動作には使わない。
+            decider: if self.lang_detect.lr_decision.is_some() {
+                "lr"
+            } else {
+                "kana-ngram"
+            },
+            // 追加式ロジスティック回帰の増分(常に残す。`decider = "lr"` のときは『日本語でない』の確定にも使う)。
             #[allow(clippy::cast_possible_truncation)] // ログ用。f32 の精度で足りる
             lr_llr: outcome.lr_llr.map(|v| v as f32),
             lr_not_japanese_at: awase::lang_detect::first_not_japanese(&outcome.lr_trace)
