@@ -321,7 +321,7 @@ impl KanaModel {
     /// 『日本語でない』の確定に追加式ロジスティック回帰を使う。`threshold` は累積 log-odds（日本語が正）が `-threshold` 以下になる値。
     /// 日本語の確定（親指の重なり・`ja_threshold` の尤度比）は従来のまま。`with_lr_shadow` で付けた表が無ければ何もしない。
     #[must_use]
-    pub fn with_lr_decision(mut self, threshold: f64) -> Self {
+    pub const fn with_lr_decision(mut self, threshold: f64) -> Self {
         if self.lr.is_some() {
             self.lr_decision = Some(threshold);
         }

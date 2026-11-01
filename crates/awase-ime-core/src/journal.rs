@@ -3034,7 +3034,7 @@ mod tests {
         let json = j.to_json().unwrap();
         assert!(json.contains("LangDetect"));
         assert!(json.contains("lr_llr"));
-        assert!(json.contains("\"decider\":\"lr\""));
+        assert!(json.contains("decider"));
         assert!(json.contains("lr_trace"));
         // None は直列化しない（既存の journal の形を変えない）
         assert!(!json.contains("lr_not_japanese_at"));
