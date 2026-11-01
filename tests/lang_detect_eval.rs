@@ -501,51 +501,90 @@ fn extended_eisu_threshold_boundary_sequence_flips_between_13_and_15() {
     }
 }
 
-/// 【一時のプローブ、マージしない】実機の誤発火(2026-11-01 05:33:00Z、presses=6、llr=-14.61)の各打鍵を、
-/// 日本語側と英語側に分けて出す。失敗(panic)の本文に値を載せて CI のログで読む。
+/// 【一時のプローブ、マージしない】「英語側の絶対的な尤もらしさ」ガード案の効果を、フィクスチャで測る。
+/// `NotJapanese` に確定した時点の、英語側（ラテン文字 2 連）の 1 文字あたりの ln P の平均 `bg_avg` が `tau` 未満なら、
+/// 「英語としても変な列」なので確定しない（決まらない扱い）とした場合の、ラベル別の確定数。
 #[test]
-fn zz_probe_susumeteku_trace() {
-    let mut out = String::new();
+fn zz_probe_bg_guard() {
     let latin = LatinBackground::embedded();
-    let ext = extended_model();
-    // 一様背景 + 3 連補間（日本語側は実機と同じ。背景だけ -ln N）
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let ngram = NgramModel::from_file(&root.join("data/ngram_hiragana.csv.gz"), 0, 0, 0).unwrap();
-    let yab = std::fs::read_to_string(root.join("layout/nicola.yab")).unwrap();
-    let layout = YabLayout::parse(&yab, KeyboardModel::Jis)
-        .unwrap()
-        .resolve_kana();
-    let uni = KanaModel::with_models(&ngram, &layout.normal, KanaSide::TrigramInterp, None);
-    for keys in ["ccndie", "hello", "windows"] {
-        // 閾値を外して全打鍵ぶんの増分を取る
-        let params = DetectParams {
-            ja_threshold: 1e9,
-            en_threshold: 1e9,
-            max_keys: 99,
+    let model = extended_model();
+    // 実機の eisu の入りの実効の閾値 13
+    let params = DetectParams {
+        en_threshold: 13.0,
+        ..DetectParams::default()
+    };
+    // (label, bg_avg) の NotJapanese 確定
+    let mut fired: Vec<(String, f64)> = Vec::new();
+    let mut totals = std::collections::BTreeMap::<String, usize>::new();
+    for line in FIXTURE.lines() {
+        let Some((label, keys)) = line.split_once('\t') else {
+            continue;
         };
-        let trace_of = |m: &KanaModel| {
-            let mut d = EpisodeDetector::new(params, ThumbOverlap::Enabled, [false; 2]);
-            for c in keys.chars() {
-                d.observe(m, DetectEvent::CharDown(qwerty(c)));
-                d.observe(m, DetectEvent::CharUp(qwerty(c)));
+        *totals.entry(label.to_string()).or_default() += 1;
+        let mut d = EpisodeDetector::new(params, ThumbOverlap::Enabled, [false; 2]);
+        let (mut prev, mut sum, mut n) = (None, 0.0_f64, 0_u32);
+        for c in keys.chars() {
+            let pos = qwerty(c);
+            let idx = latin.index_of(pos);
+            if let Some(k) = idx {
+                sum += latin.ln_p(prev, k);
+                n += 1;
             }
-            d.llr_trace().to_vec()
-        };
-        let (te, tu) = (trace_of(&ext), trace_of(&uni));
-        let mut prev = None;
-        let mut lines = String::new();
-        for (i, c) in keys.chars().enumerate() {
-            let idx = latin.index_of(qwerty(c));
-            let bg = idx.map_or(f64::NAN, |k| latin.ln_p(prev, k));
-            // uni の増分 = ln_ja - (-ln N)、ext の増分 = ln_ja - bg なので ln_ja = ext + bg
-            let ln_ja = f64::from(te[i]) + bg;
-            lines.push_str(&format!(
-                "  {i} key={c} delta={:+.2} ln_ja={ln_ja:+.2} ln_bg_latin={bg:+.2} (uniform delta {:+.2})\n",
-                te[i], tu[i]
-            ));
             prev = idx;
+            d.observe(&model, DetectEvent::CharDown(pos));
+            d.observe(&model, DetectEvent::CharUp(pos));
+            if d.verdict().is_decided() {
+                break;
+            }
         }
-        out.push_str(&format!("{keys}:\n{lines}"));
+        if d.verdict() == Verdict::NotJapanese && n > 0 {
+            fired.push((label.to_string(), sum / f64::from(n)));
+        }
+    }
+    let mut out = format!("totals={totals:?}\n");
+    out.push_str("tau   | ja(誤) en code rand  (NotJapanese 確定数)\n");
+    for tau in [-9.0, -3.6, -3.4, -3.3, -3.2, -3.1, -3.0, -2.9, -2.8] {
+        let count = |l: &str| fired.iter().filter(|(x, a)| x == l && *a >= tau).count();
+        out.push_str(&format!(
+            "{tau:5.1} | {:4} {:4} {:4} {:4}\n",
+            count("ja"),
+            count("en"),
+            count("code"),
+            count("rand")
+        ));
+    }
+    // ja の誤確定の bg_avg の分布
+    let mut ja: Vec<f64> = fired
+        .iter()
+        .filter(|(l, _)| l == "ja")
+        .map(|(_, a)| *a)
+        .collect();
+    ja.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    out.push_str(&format!(
+        "ja 誤確定の bg_avg: {:?}\n",
+        ja.iter()
+            .map(|x| (x * 100.0).round() / 100.0)
+            .collect::<Vec<_>>()
+    ));
+    for l in ["en", "code", "rand"] {
+        let mut v: Vec<f64> = fired
+            .iter()
+            .filter(|(x, _)| x == l)
+            .map(|(_, a)| *a)
+            .collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let q = |f: f64| {
+            v.get(((v.len() as f64 - 1.0) * f) as usize)
+                .copied()
+                .unwrap_or(f64::NAN)
+        };
+        out.push_str(&format!(
+            "{l}: n={} bg_avg p10={:.2} p50={:.2} p90={:.2}\n",
+            v.len(),
+            q(0.1),
+            q(0.5),
+            q(0.9)
+        ));
     }
     panic!("PROBE\n{out}");
 }
