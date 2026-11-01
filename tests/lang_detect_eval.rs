@@ -501,35 +501,51 @@ fn extended_eisu_threshold_boundary_sequence_flips_between_13_and_15() {
     }
 }
 
-/// 【一時のプローブ、マージしない】実機の誤発火(2026-11-01 05:33:00Z、presses=6、llr=-14.61)の各打鍵の増分を出す。
-/// 失敗(panic)の本文に値を載せて CI のログで読む。
+/// 【一時のプローブ、マージしない】実機の誤発火(2026-11-01 05:33:00Z、presses=6、llr=-14.61)の各打鍵を、
+/// 日本語側と英語側に分けて出す。失敗(panic)の本文に値を載せて CI のログで読む。
 #[test]
 fn zz_probe_susumeteku_trace() {
     let mut out = String::new();
-    for (name, model) in [
-        ("extended(実機と同じ)", extended_model()),
-        ("bigram(従来)", real_model()),
-    ] {
-        for keys in [
-            "ccndie", "ccndi", "ccnd", "ccn", "cc", "c", "windows", "hello",
-        ] {
-            let mut d =
-                EpisodeDetector::new(DetectParams::default(), ThumbOverlap::Enabled, [false; 2]);
+    let latin = LatinBackground::embedded();
+    let ext = extended_model();
+    // 一様背景 + 3 連補間（日本語側は実機と同じ。背景だけ -ln N）
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ngram = NgramModel::from_file(&root.join("data/ngram_hiragana.csv.gz"), 0, 0, 0).unwrap();
+    let yab = std::fs::read_to_string(root.join("layout/nicola.yab")).unwrap();
+    let layout = YabLayout::parse(&yab, KeyboardModel::Jis)
+        .unwrap()
+        .resolve_kana();
+    let uni = KanaModel::with_models(&ngram, &layout.normal, KanaSide::TrigramInterp, None);
+    for keys in ["ccndie", "hello", "windows"] {
+        // 閾値を外して全打鍵ぶんの増分を取る
+        let params = DetectParams {
+            ja_threshold: 1e9,
+            en_threshold: 1e9,
+            max_keys: 99,
+        };
+        let trace_of = |m: &KanaModel| {
+            let mut d = EpisodeDetector::new(params, ThumbOverlap::Enabled, [false; 2]);
             for c in keys.chars() {
-                d.observe(&model, DetectEvent::CharDown(qwerty(c)));
-                d.observe(&model, DetectEvent::CharUp(qwerty(c)));
-                if d.verdict().is_decided() {
-                    break;
-                }
+                d.observe(m, DetectEvent::CharDown(qwerty(c)));
+                d.observe(m, DetectEvent::CharUp(qwerty(c)));
             }
-            out.push_str(&format!(
-                "{name} {keys:8} verdict={:?} presses={} llr={:.2} trace={:?}\n",
-                d.verdict(),
-                d.presses(),
-                d.llr(),
-                d.llr_trace()
+            d.llr_trace().to_vec()
+        };
+        let (te, tu) = (trace_of(&ext), trace_of(&uni));
+        let mut prev = None;
+        let mut lines = String::new();
+        for (i, c) in keys.chars().enumerate() {
+            let idx = latin.index_of(qwerty(c));
+            let bg = idx.map_or(f64::NAN, |k| latin.ln_p(prev, k));
+            // uni の増分 = ln_ja - (-ln N)、ext の増分 = ln_ja - bg なので ln_ja = ext + bg
+            let ln_ja = f64::from(te[i]) + bg;
+            lines.push_str(&format!(
+                "  {i} key={c} delta={:+.2} ln_ja={ln_ja:+.2} ln_bg_latin={bg:+.2} (uniform delta {:+.2})\n",
+                te[i], tu[i]
             ));
+            prev = idx;
         }
+        out.push_str(&format!("{keys}:\n{lines}"));
     }
     panic!("PROBE\n{out}");
 }
