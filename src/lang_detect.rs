@@ -165,8 +165,11 @@ pub struct KanaModel {
     usable: bool,
     /// 3 連の仮名側・ラテン文字の背景（`with_models` で作ったときだけ。`None` は従来の 2 連 + 一様分布）
     extended: Option<Extended>,
-    /// shadow の追加式ロジスティック回帰（`with_lr_shadow` で付けたときだけ）。判定には使わず、増分を残すだけ
+    /// 追加式ロジスティック回帰（`with_lr_shadow` で付けたときだけ）。増分を残す。判定に使うかは `lr_decision`
     lr: Option<LrModel>,
+    /// `Some(閾値)` なら、『日本語でない』の確定を `lr` の累積 log-odds が `-閾値` 以下になったときにする
+    /// （`with_lr_decision`）。`None` は従来どおり、仮名 n-gram の対数尤度比が `-en_threshold` 以下になったとき
+    lr_decision: Option<f64>,
 }
 
 /// 仮名側の確率の作り方。
@@ -286,6 +289,7 @@ impl KanaModel {
             usable,
             extended: None,
             lr: None,
+            lr_decision: None,
         }
     }
 
@@ -312,6 +316,22 @@ impl KanaModel {
     pub fn with_lr_shadow(mut self, lr: LrModel) -> Self {
         self.lr = Some(lr);
         self
+    }
+
+    /// 『日本語でない』の確定に追加式ロジスティック回帰を使う。`threshold` は累積 log-odds（日本語が正）が `-threshold` 以下になる値。
+    /// 日本語の確定（親指の重なり・`ja_threshold` の尤度比）は従来のまま。`with_lr_shadow` で付けた表が無ければ何もしない。
+    #[must_use]
+    pub fn with_lr_decision(mut self, threshold: f64) -> Self {
+        if self.lr.is_some() {
+            self.lr_decision = Some(threshold);
+        }
+        self
+    }
+
+    /// 『日本語でない』の確定に追加式ロジスティック回帰を使っているか
+    #[must_use]
+    pub const fn decides_by_lr(&self) -> bool {
+        self.lr_decision.is_some()
     }
 
     /// shadow の識別子（付けていなければ `None`）
@@ -595,15 +615,19 @@ impl EpisodeDetector {
             self.ctx = ctx;
         }
 
-        let by_likelihood = if self.llr >= self.params.ja_threshold {
+        // 『日本語でない』は、追加式ロジスティック回帰を使う設定（`with_lr_decision`）ならその累積で、そうでなければ従来の尤度比で決める。
+        let not_japanese = match model.lr_decision {
+            Some(threshold) => self.lr_llr <= -threshold,
+            None => model.usable && self.llr <= -self.params.en_threshold,
+        };
+        // 表が使えないときは尤度比を積んでいないので、閾値が 0 以下でも尤度では日本語と決めない
+        let by_likelihood = if model.usable && self.llr >= self.params.ja_threshold {
             Some(Verdict::Japanese(JapaneseEvidence::Likelihood))
-        } else if self.llr <= -self.params.en_threshold {
+        } else if not_japanese {
             Some(Verdict::NotJapanese)
         } else {
             None
-        }
-        // 表が使えないときは尤度比を積んでいないので、閾値が 0 以下でも尤度では決めない
-        .filter(|_| model.usable);
+        };
         self.verdict = by_likelihood.unwrap_or(if self.presses >= self.params.max_keys {
             Verdict::Undecided
         } else {
@@ -2362,6 +2386,36 @@ mod tests {
             assert!(a.lr_trace().is_empty(), "shadow なしでは空: {text}");
             assert_eq!(b.lr_trace().len(), b.presses(), "{text}");
         }
+    }
+
+    /// 『日本語でない』の確定を LR にすると、実機の誤発火（ccndie = すすめてくた）は確定せず、英単語は確定する。
+    #[test]
+    fn lr_decision_avoids_the_misfire_and_still_catches_english() {
+        let old = real_model();
+        let lr = real_model()
+            .with_lr_shadow(LrModel::embedded())
+            .with_lr_decision(4.0);
+        assert!(lr.decides_by_lr() && !old.decides_by_lr());
+        let judge = |model: &KanaModel, text: &str| {
+            let params = DetectParams {
+                en_threshold: 13.0,
+                ..DetectParams::default()
+            };
+            let mut d = EpisodeDetector::new(params, ThumbOverlap::Enabled, [false; 2]);
+            for c in text.chars() {
+                d.observe(model, DetectEvent::CharDown(qwerty(c)));
+                d.observe(model, DetectEvent::CharUp(qwerty(c)));
+            }
+            d.verdict()
+        };
+        // 従来は英数と確定する（実機の事故）。LR は確定しない。
+        assert_eq!(judge(&old, "ccndie"), Verdict::NotJapanese);
+        assert_ne!(judge(&lr, "ccndie"), Verdict::NotJapanese);
+        for word in ["windows", "hello", "git"] {
+            assert_eq!(judge(&lr, word), Verdict::NotJapanese, "{word}");
+        }
+        // 表が無いモデルに with_lr_decision を付けても何も変わらない（shadow の表が前提）。
+        assert!(!real_model().with_lr_decision(4.0).decides_by_lr());
     }
 
     #[test]

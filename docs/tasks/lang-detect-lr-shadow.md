@@ -1,7 +1,19 @@
-# 入力言語判別の LR を shadow で入れる(ADR-280 の後続)
+# 入力言語判別の LR(ADR-280 の後続): shadow、そして `decider = "lr"` が既定
 
-2026-11-01。**判定・動作は変えない**。追加式ロジスティック回帰(`tools/lang-detect-model/`、`src/lang_detect/lr.rs`)の増分を
-打鍵ごとに数え、journal の `LangDetect` に残すだけ。実機のデータで今の判定器と並べてから、既定を切り替えるか決める。
+2026-11-01。追加式ロジスティック回帰(`tools/lang-detect-model/`、`src/lang_detect/lr.rs`)の増分を打鍵ごとに数え、journal の `LangDetect` に残す(#924、判定は変えない shadow)。
+続けて(所有者の判断で shadow の検証を待たずに)、**『日本語でない』の確定に使う**設定 `auto_detect.decider`(既定 `lr`、`kana_ngram` で従来)を入れた。
+`mode` の既定は `observe`(動作を変えない)で、`ime_on`・`ime_on_eisu` は利用者が選ぶ機能なので、影響するのはそれを選んだ人だけ。
+日本語の確定(親指の重なり・仮名 n-gram の尤度比 `ja_threshold`)は従来のまま。
+
+## decider = "lr"
+- 閾値(累積 log-odds が `-値` 以下で英数): `lr_en_threshold = 1.5`(`ime_on`)・`lr_eisu_threshold = 4.0`(`ime_on_eisu` の半角英数の入り)。
+- 測定(`tools/lang-detect-model/` の test 分割 135,302 エピソード): 日本語を英数と誤確定する率は 1.5 で 6.4%(従来の `en_threshold = 8` は 6.8%)、
+  4.0 で 0.47%(従来の `eisu_threshold = 13` は 0.71%)。同じ FPR で、英語の検出は 63% → 86%、コードは 70% → 97%。
+- 設定(`config.toml` の `[auto_detect]`。サンプルの `config.toml` には書かない=実機の作業ツリーで追跡ファイルの衝突を避けるため):
+  `decider = "lr"`(既定)/ `"kana_ngram"`(従来に戻す。`en_threshold`・`eisu_threshold` を使う)、`lr_en_threshold = 1.5`、`lr_eisu_threshold = 4.0`。
+- 記録: journal の `LangDetect` に `decider`(`lr`/`kana-ngram`)と `lr_llr`・`lr_trace`。起動ログ `[lang-detect] config:` に `decider=` と `lr_threshold=`。
+  従来の判定器の累積 `llr`・`llr_trace` も残るので、`decider = "lr"` でも従来なら確定したかを後から計算できる(エピソードは確定した時点で閉じるので、
+  確定より後の打鍵は両方とも数えない)。
 
 ## 動機
 2026-11-01 14:33 JST、「すすめてくだ」(C,C,N,D,I,E = すすめてくた)が llr=-14.6 で英数と判定され、半角英数トグルに入って Engine が OFF になった。

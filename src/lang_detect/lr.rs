@@ -5,8 +5,9 @@
 //! （日本語 Wikipedia・Tatoeba・英語・他言語・コード）で、日本語か否かを直接学習したもの（`tools/lang-detect-model/`）。
 //! 同じ誤確定率（FPR）での非日本語の検出率が、今の判定器より 20〜35 ポイント高い（`tools/lang-detect-model/README.md`）。
 //!
-//! **shadow**: 判定には使わない。`EpisodeDetector` が数えた打鍵ごとの増分を `EpisodeOutcome` に残し、journal の
-//! `LangDetect` に `lr_llr`・`lr_trace`・`lr_would` として書くだけ。実機のデータで今の判定器と並べてから、既定を切り替えるか決める。
+//! **使い方**: `EpisodeDetector` が数えた打鍵ごとの増分を `EpisodeOutcome` に残し、journal の `LangDetect` に `lr_llr`・`lr_trace`・
+//! `lr_not_japanese_at` として書く(常に)。`KanaModel::with_lr_decision` を付けると、『日本語でない』の確定にも使う
+//! (設定 `auto_detect.decider = "lr"`、既定)。日本語の確定(親指の重なり・仮名 n-gram の尤度比)は従来のまま。
 //!
 //! # 表の形式（`data/lang_lr_v1.txt`、`export_lr.py` が生成）
 //! - `id=` 識別子、`scale=` 重みに掛ける値、`uni=` 47・`bi=` 2303・`tri=` 112847 個の int8 を 16 進 2 桁ずつ（2 の補数）。

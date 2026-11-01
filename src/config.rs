@@ -464,6 +464,18 @@ impl Default for DiagnosticsConfig {
     }
 }
 
+/// 『日本語でない』（英数入力）の判定に使うモデル（ADR-280 の後続）。日本語の確定（親指の重なり・仮名 n-gram の尤度比）は変わらない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoDetectDecider {
+    /// 追加式ロジスティック回帰（`tools/lang-detect-model/`）。独立した実文で、同じ誤確定率での非日本語の検出率が
+    /// 仮名 n-gram より 20〜35 ポイント高い。閾値は `lr_en_threshold`（`ime_on`）・`lr_eisu_threshold`（`ime_on_eisu`）
+    #[default]
+    Lr,
+    /// 仮名 n-gram と英語のラテン文字 2 連の対数尤度比（ADR-280 まで）。閾値は `en_threshold`・`eisu_threshold`
+    KanaNgram,
+}
+
 /// 窓切替直後・長い無操作のあとの最初の打鍵から日本語/英数を判定する機能の動作（ADR-263）。
 ///
 /// 設定画面では、`mode` と `scope` の意味のある組み合わせを 5 択にまとめて出す（`awase-settings` の上級者向け設定）。
@@ -524,6 +536,12 @@ pub struct AutoDetectConfig {
     /// `ime_on_eisu` で半角英数に入るために必要な「日本語でない」確信度（nats。`en_threshold` 以上にする）。
     /// 大きいほど誤って半角英数に入る率が下がるが、英数の判定が遅くなる（保持が長くなる）。
     pub eisu_threshold: f64,
+    /// 『日本語でない』の判定に使うモデル（既定 `lr`）。`kana_ngram` で従来に戻せる
+    pub decider: AutoDetectDecider,
+    /// `decider = "lr"` の `ime_on` 側の閾値（累積 log-odds が `-値` 以下で英数）。既定 1.5
+    pub lr_en_threshold: f64,
+    /// `decider = "lr"` の `ime_on_eisu` の入りの閾値。既定 4.0
+    pub lr_eisu_threshold: f64,
 }
 
 impl Default for AutoDetectConfig {
@@ -535,6 +553,11 @@ impl Default for AutoDetectConfig {
     /// 旧 18 → 16.0（0.22%）、旧 20 → 16.5（0.15%）。`config.toml` に旧尺度の値を書いている場合は、この表で読み替える。
     /// `ja_threshold` は旧 4 → 新 14（非日本語を日本語と誤確定する率を従来以下にするため。旧尺度の 4 のままだとコードの 5.8% を誤確定する）。
     /// `idle_ms` は影の観測で再校正するため、短め（3 秒）にして多めに記録する。
+    ///
+    /// **LR の閾値（`decider = "lr"`）**: `tools/lang-detect-model/` の test 分割（135,302 エピソード、独立した実文）で、日本語を英数と
+    /// 誤確定する率（FPR）が `lr_en_threshold = 1.5` で 6.4%（従来の `en_threshold = 8` は 6.8%）、`lr_eisu_threshold = 4.0` で 0.47%
+    /// （従来の `eisu_threshold = 13` は 0.71%）。同じ FPR で英語の検出は 63% → 86%（`ime_on_eisu` 側）。非日本語は書き言葉で、
+    /// 実機の分布は未測定（`docs/tasks/lang-detect-lr-shadow.md`）。
     fn default() -> Self {
         Self {
             mode: AutoDetectMode::default(),
@@ -547,6 +570,9 @@ impl Default for AutoDetectConfig {
             ja_threshold: 14.0,
             en_threshold: 8.0,
             eisu_threshold: 13.0,
+            decider: AutoDetectDecider::default(),
+            lr_en_threshold: 1.5,
+            lr_eisu_threshold: 4.0,
         }
     }
 }
@@ -3252,6 +3278,9 @@ steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
         // [auto_detect] が無くても既定で影の判定（observe。挙動を変えない）が有効。ADR-263 PR 2a。
         let config: AppConfig = toml::from_str("[general]\n").unwrap();
         assert_eq!(config.auto_detect.mode, AutoDetectMode::Observe);
+        assert_eq!(config.auto_detect.decider, AutoDetectDecider::Lr);
+        assert!((config.auto_detect.lr_en_threshold - 1.5).abs() < f64::EPSILON);
+        assert!((config.auto_detect.lr_eisu_threshold - 4.0).abs() < f64::EPSILON);
         assert_eq!(config.auto_detect.scope, AutoDetectScope::Unobserved);
         assert_eq!(config.auto_detect.max_keys, 7);
         assert_eq!(config.auto_detect.max_ms, 2500);

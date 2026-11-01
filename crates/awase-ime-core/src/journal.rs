@@ -148,14 +148,17 @@ pub struct LangDetectRecord {
     /// `intent-store` / `force-guard` / `explicit-intent` / `key-effect` / `derive-high` / `derive-medium` / `indicator-glyph` /
     /// `most-recent-trusted` / `desired-fallback`）
     pub belief_basis: &'static str,
-    /// shadow（追加式ロジスティック回帰。`tools/lang-detect-model/`）の累積 log-odds（日本語が正）。**判定・動作には使わない**。
-    /// shadow が無い・打鍵が 1 つも数えられなかったら `None`（直列化しない）
+    /// 『日本語でない』の確定に使ったモデル（`lr` = 追加式ロジスティック回帰 / `kana-ngram` = 仮名 n-gram の尤度比）
+    pub decider: &'static str,
+    /// 追加式ロジスティック回帰（`tools/lang-detect-model/`）の累積 log-odds（日本語が正）。常に記録する（`decider` が `lr` なら
+    /// 『日本語でない』の確定にも使う）。表が無い・打鍵が 1 つも数えられなかったら `None`（直列化しない）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lr_llr: Option<f32>,
-    /// shadow の打鍵ごとの増分（log-odds）。キー位置は含まない。空なら直列化しない
+    /// 追加式ロジスティック回帰の打鍵ごとの増分（log-odds）。キー位置は含まない。空なら直列化しない
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub lr_trace: Vec<f32>,
-    /// shadow が『日本語でない』と確定した打鍵の番号（1 始まり、累積が -4.0 以下になった最初の打鍵）。確定しなければ `None`
+    /// 追加式ロジスティック回帰の累積が -4.0（`ime_on_eisu` の既定の閾値）以下になった最初の打鍵の番号（1 始まり）。無ければ `None`。
+    /// 実際の確定は `decider` と設定の閾値で決まる（この列は閾値を固定した比較用）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lr_not_japanese_at: Option<u32>,
 }
@@ -1547,6 +1550,7 @@ impl JournalEntry {
                     prev_verdict = record.prev_verdict,
                     prev_elapsed_ms = record.prev_elapsed_ms,
                     belief_basis = record.belief_basis,
+                    decider = record.decider,
                     lr_llr = record.lr_llr,
                     lr_not_japanese_at = record.lr_not_japanese_at,
                     "[lang-detect]"
@@ -3021,6 +3025,7 @@ mod tests {
                 prev_verdict: Some("not-japanese"),
                 prev_elapsed_ms: Some(1500),
                 belief_basis: "derive-high",
+                decider: "lr",
                 lr_llr: Some(-2.1),
                 lr_trace: vec![-0.3, 1.7, -3.5],
                 lr_not_japanese_at: None,
@@ -3029,6 +3034,7 @@ mod tests {
         let json = j.to_json().unwrap();
         assert!(json.contains("LangDetect"));
         assert!(json.contains("lr_llr"));
+        assert!(json.contains("\"decider\":\"lr\""));
         assert!(json.contains("lr_trace"));
         // None は直列化しない（既存の journal の形を変えない）
         assert!(!json.contains("lr_not_japanese_at"));
