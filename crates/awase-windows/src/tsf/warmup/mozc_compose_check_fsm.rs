@@ -117,6 +117,22 @@ impl MozcComposeCheckFsm {
                 results.passed
             );
         }
+        // version 7(ADR-287): Mozc 自身の入力方式(ローマ字/JISかな直接入力)。段階1は観測専用
+        // ——belief・actuation には使わず、ここで journal/ログにだけ残す。同じ行に OS のかな入力
+        // ロックビット(ADR-118、`observer::kana_lock`)も並べて、実機で両者がどれだけ一致/食い違うか
+        // を後から比較できるようにする(ADR-287 決定3)。
+        if let Some(style) =
+            crate::tsf::read_mozc_input_style(self.target.thread_id, self.target.process_id)
+        {
+            let os_kana_lock = crate::tsf::read_os_kana_lock();
+            tracing::info!(
+                "[mozc-input-style] cold={} prefer_kana_input={} toggle_enabled={} os_kana_lock={:?}",
+                self.target.cold_seq.value(),
+                style.prefer_kana_input,
+                style.toggle_enabled,
+                os_kana_lock
+            );
+        }
     }
 
     /// この読みの `key_seq` を、送信の前の値と並べる（journal の診断用）。読めなければ `None`。

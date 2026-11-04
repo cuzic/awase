@@ -21,8 +21,11 @@ summary: |-
   トグルで、他プロセスの打鍵でも変わりうる」と明記している（`use_keyboard_to_change_preedit_method`が有効な
   とき）。ADR-118のOSロックビットとこの軸は別物であり、一致するとは限らない（BUG-106追補8）。
 status: |-
-  起草（2026-11-04）。mozc-readable フォーク側(version 7)は実装・push済み（未ビルド・未マージ、`exp/key-input-style`）。
-  awase側（`mozc_shm.rs`の parse 追加）は未着手。段階2（belief/actuation への配線）は未決定。
+  起草（2026-11-04）。mozc-readable フォーク側(version 7)は実装済み、readable ブランチへマージ済み(PR #13〜#15、
+  version 5〜7を含む)、ビルドCI実行中(cuzic/mozc-readable の readable-build、run 41774491820、未完了)。
+  awase側は段階1(Observe専用)まで実装済み(`mozc_shm.rs`の parse・`observer`/`tsf`の配線・
+  `[mozc-input-style]`ログ、OSのかな入力ロックビットと並べて記録)。実機ログでの一致/食い違いの収集は
+  mozc-readableのビルド完了後。段階2（belief/actuation への配線）は未決定。
 related_adr:
   - "ADR-118"
   - "ADR-265"
@@ -111,11 +114,19 @@ JISかな直接入力になっていたと綴りレベルで完全に一致す�
 2. **awase側（本ADRの実装範囲）**: `crates/awase-ime-core/src/state/mozc_shm.rs`に`V7_BLOCK_SIZE`定数と対応する
    `parse`関数を追加し、`RawBlock`/`ShmState`とは別の追記構造体（`CompositionFields`・`FocusTicks`と同じ並び）
    として持つ。既存の受け入れ条件（`classify`）・`ShmUse`の判断には**混ぜない**——version 7が読めない環境
-   （mozc-readable未更新・GJI公式版・MS-IME）では単に`None`のまま扱う。
+   （mozc-readable未更新・GJI公式版・MS-IME）では単に`None`のまま扱う。**実装済み**（2026-11-04）: `InputStyle`
+   構造体（`prefer_kana_input`・`toggle_enabled`）と単体テストを追加、`observer/mozc_shm.rs::read_input_style`
+   （既存の`read_key_results`と同じ手順、`version >= 7`のときだけ160バイトまで読み直す）、
+   `tsf/mod.rs::read_mozc_input_style`（Windows専用副作用への入口の既存パターン）を配線。
 3. **段階1はObserve専用**（ADR-265 D3・ADR-268と同じ慎重さ）: 新フィールドの値は journal にだけ記録し、
    belief・actuation の判断には一切使わない。同時に、既存の`observer/kana_lock.rs`（`GetKeyState(VK_KANA)`）の
    読みも並行して記録し、両者が実機でどれだけ一致/食い違うか（タイミングのずれ、ドライバ由来のエコーで
-   OSロックビットだけ動く場面の有無等）を集める。
+   OSロックビットだけ動く場面の有無等）を集める。**実装済み**（2026-11-04）: `tsf/warmup/mozc_compose_check_fsm.rs`
+   の既存の診断ログ（`[mozc-focus]`・`[mozc-keys]`、ADR-270の確認FSMが打鍵の直後に張る）に`[mozc-input-style]`を
+   追加し、同じ1行に`prefer_kana_input`・`toggle_enabled`と、その場で読んだ`observer::kana_lock::read_kana_lock()`
+   （`tsf::read_os_kana_lock()`経由）の値を並べて出す。`cargo check --target x86_64-pc-windows-msvc`・
+   `cargo test --lib`（1135件）・`architecture_guard`（175件）・`layer_boundary_guard`（17件）は確認済み。
+   **mozc-readableが未ビルドのため実機ログでの一致/食い違いの収集はまだ無い**（mozc-readable側のCI完了後）。
 4. **段階2（本ADRでは決定しない、観測結果を見て別ADRを起票する）**: 段階1のデータで「mozc-readableの新フィールドが
    OSロックビットより速く・正確に反転を捉えられる」と確認できたら、検知後のアクション
    （即時警告への切り替え、打鍵の一時保留、ADR-270の確認機構との統合等）を検討する。自動復旧（入力方式を

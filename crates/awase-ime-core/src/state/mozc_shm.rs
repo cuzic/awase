@@ -25,6 +25,9 @@ pub const V5_BLOCK_SIZE: usize = 144;
 /// version 6 以降のブロックの大きさ（キー押下ごとの食べた/素通りの数を含む。mozc-readable の診断用の追記）。
 pub const V6_BLOCK_SIZE: usize = 152;
 
+/// version 7 以降のブロックの大きさ（Mozc 自身の入力方式〈ローマ字/JISかな直接入力〉を含む。ADR-287）。
+pub const V7_BLOCK_SIZE: usize = 160;
+
 /// `magic`（メモリ上のバイト列は `4D 44 52 5A`、ASCII の `MDRZ`）。
 pub const MAGIC: u32 = 0x5A52_444D;
 
@@ -243,6 +246,32 @@ impl KeyResults {
         Self {
             eaten: u32_at(bytes, 144),
             passed: u32_at(bytes, 148),
+        }
+    }
+}
+
+/// version 7 の追記分（オフセット 152〜159、ADR-287）。Mozc 自身が持つ「ローマ字入力/JISかな直接入力」という
+/// **入力方式そのもの**（`CompositionMode` という文字種の軸とは別）。OS のキーボードロックビット（`VK_KANA`、
+/// `observer::kana_lock`）とも別物——フォーカスのある edit context の `InputBehavior::prefer_kana_input` の生値。
+///
+/// **段階1は観測専用**（journal にだけ記録し、belief・actuation の判断には使わない。ADR-287 決定3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputStyle {
+    /// 0=ローマ字入力、1=JISかな直接入力（フォーカスのある edit context の生値）
+    pub prefer_kana_input: bool,
+    /// `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` の押下で `prefer_kana_input` が反転しうるか（Mozc の設定
+    /// `use_keyboard_to_change_preedit_method`。1 のとき、どのスレッド・プロセスの打鍵でも反転する、
+    /// システム/セッション全体のトグル）
+    pub toggle_enabled: bool,
+}
+
+impl InputStyle {
+    /// 160 バイトの追記分（オフセット 152〜159）を解釈する（検証はしない）。
+    #[must_use]
+    pub fn parse(bytes: &[u8; V7_BLOCK_SIZE]) -> Self {
+        Self {
+            prefer_kana_input: u32_at(bytes, 152) != 0,
+            toggle_enabled: u32_at(bytes, 156) != 0,
         }
     }
 }
@@ -1367,6 +1396,30 @@ mod tests {
             KeyResults {
                 eaten: 7,
                 passed: 3
+            }
+        );
+    }
+
+    #[test]
+    fn input_style_parse_reads_the_version_7_fields_little_endian() {
+        let mut b = [0u8; V7_BLOCK_SIZE];
+        b[152..156].copy_from_slice(&1u32.to_le_bytes());
+        b[156..160].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(
+            InputStyle::parse(&b),
+            InputStyle {
+                prefer_kana_input: true,
+                toggle_enabled: false,
+            }
+        );
+        let mut b = [0u8; V7_BLOCK_SIZE];
+        b[152..156].copy_from_slice(&0u32.to_le_bytes());
+        b[156..160].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(
+            InputStyle::parse(&b),
+            InputStyle {
+                prefer_kana_input: false,
+                toggle_enabled: true,
             }
         );
     }

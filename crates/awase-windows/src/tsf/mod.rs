@@ -115,6 +115,40 @@ pub(crate) fn read_mozc_focus_ticks(
     }
 }
 
+/// 対象のスレッドの共有メモリから、Mozc 自身の入力方式（ローマ字/JISかな直接入力、version 7、ADR-287）を読む。
+/// 観測専用（belief・actuation には使わない）。読めなければ `None`。
+#[cfg_attr(not(windows), allow(unused_variables))]
+pub(crate) fn read_mozc_input_style(
+    thread_id: u32,
+    process_id: u32,
+) -> Option<crate::state::mozc_shm::InputStyle> {
+    #[cfg(windows)]
+    {
+        crate::observer::mozc_shm::read_input_style(thread_id, process_id)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// OS のかな入力ロックビット（`GetKeyState(VK_KANA)`、ADR-118）を読む。ADR-287 決定3: version 7 の
+/// `prefer_kana_input` と並べて journal/ログに残し、実機で両者がどれだけ一致/食い違うかを比較するためだけに使う
+/// （belief・actuation には使わない）。非 Windows では `Unknown`。
+// Win32 FFI を直接呼ぶモジュール単位で allow する既存の作法（lib.rs 冒頭コメント）に合わせる。
+#[allow(unsafe_code)]
+pub(crate) fn read_os_kana_lock() -> awase::engine::kana_input_warn::KanaLockReading {
+    #[cfg(windows)]
+    {
+        // SAFETY: 呼び出し元(`MozcComposeCheckFsm::tick`)はメッセージループスレッドで駆動される。
+        unsafe { crate::observer::kana_lock::read_kana_lock() }
+    }
+    #[cfg(not(windows))]
+    {
+        awase::engine::kana_input_warn::KanaLockReading::Unknown
+    }
+}
+
 /// 窓のスレッドが `timeout_ms` 以内に応答するか。非 Windows では常に応答する。
 #[cfg_attr(not(windows), allow(unused_variables))]
 pub(crate) fn window_thread_responds(hwnd_addr: usize, timeout_ms: u32) -> bool {
