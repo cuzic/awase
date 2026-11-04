@@ -1,0 +1,65 @@
+name: f2-latency
+
+# ADR-286(BUG-227): Mozc Readable で、ひらがなキー(F2)を押してから共有メモリが tsf_open=1 になるまでの遅れを測る。
+# 送信前に開くのを待つ上限(MOZC_OPEN_CONFIRM_MS)の根拠にする。窓から戻って idle・戻ってからの待ちを変えて、
+# 開かなかった(timeout)回数も数える。awase は起動しない(Mozc 自身の遅れだけを測る。F2 は awase が素通しする)。
+# 1 回限りの検証: 結果を ADR-286 / BUG-227 に書いたら、この workflow と ci/f2-latency ブランチは同じ PR で撤去する
+# (.claude/rules/one-off-verification-workflows.md)。
+
+on:
+  push:
+    branches: [ci/f2-latency]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: f2-latency-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/mozc_shm_ci/shmci.py selftest
+
+  measure:
+    needs: [unit]
+    runs-on: windows-2025
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - name: mozc-readable の CI の部品
+        uses: actions/checkout@v4
+        with:
+          repository: cuzic/mozc-readable
+          ref: readable
+          path: mozc-readable
+      - name: mozc-readable の MSI(最新の成功した readable-build)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $run = gh run list -R cuzic/mozc-readable --workflow readable-build.yaml --branch readable --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          Write-Host "mozc-readable readable-build run: $run"
+          gh run download $run -R cuzic/mozc-readable -n Mozc64_x64.msi -D msi
+          Get-ChildItem msi | Out-Host
+      - name: F2 の遅れを測る
+        shell: pwsh
+        run: ./tools/mozc_shm_ci/run_scenario.ps1 -Scenario f2latency -NoAwase -Rounds 75 -Msi "${{ github.workspace }}\msi\Mozc64.msi" -OutDir out
+      - name: 結果を残す
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: f2-latency-${{ matrix.run }}
+          path: out
+          if-no-files-found: ignore
+          retention-days: 7

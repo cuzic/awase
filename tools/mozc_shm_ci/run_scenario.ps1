@@ -3,7 +3,7 @@
 # 窓にキーを送るので、コンソール窓を作るプロセスを並行して起動しない(窓が前面を奪って、キーが別の窓に行く)。
 # python のヘルパーは shmci.py の中で CREATE_NO_WINDOW で起動する。ここでは Start-Process -Wait を使わない
 # (TIP を読み込んだプロセスが起動する mozc_server が子孫として残り、-Wait が戻らない)。
-param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'stale', 'flip', 'tidreuse')][string]$Scenario,
+param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'stale', 'flip', 'f2latency', 'tidreuse')][string]$Scenario,
       [Parameter(Mandatory)][string]$Msi,
       [string]$Dist = 'dist',
       [string]$MozcCiDir = 'mozc-readable\readable\ci',
@@ -56,10 +56,17 @@ $events = Join-Path $OutDir 'events.jsonl'
 $log = Join-Path $Dist 'awase.log'
 
 Write-Host "== drive: $Scenario"
-python "$here\shmci.py" drive $Scenario --events $events --rounds $Rounds --dwell-min $DwellMin --dwell-max $DwellMax --load $Load --mozc-ci-dir $MozcCiDir
+$f2sum = Join-Path $OutDir 'f2-summary.json'
+python "$here\shmci.py" drive $Scenario --events $events --f2-summary $f2sum --rounds $Rounds --dwell-min $DwellMin --dwell-max $DwellMax --load $Load --mozc-ci-dir $MozcCiDir
 $driveExit = $LASTEXITCODE
 Write-Host "drive exit code: $driveExit"
 Start-Sleep -Seconds 2
+if ($Scenario -eq 'f2latency') {
+  # ADR-286: F2 → 共有メモリ tsf_open=1 までの遅れの分布を測るだけ(突き合わせの判定はしない)。drive が分布を出す。
+  Write-Host "f2latency result: drive exit code $driveExit (summary: $f2sum)"
+  if ($aw) { Stop-Process -Id $aw.Id -Force -ErrorAction SilentlyContinue }
+  exit $driveExit
+}
 if ($NoAwase) {
   # 対照は、設定(窓を ON にできたか)だけを見る。drive は設定に失敗しても窓を残してループへ進まず、exit 2 か 0 を返す。
   Write-Host "control result: drive exit code $driveExit (0 = the window could be set to IME on without awase)"

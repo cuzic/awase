@@ -333,6 +333,15 @@ def cmd_selftest(_args):
     recs = parse_records([line, "noise", ""])
     assert len(recs) == 1 and recs[0][1]["thread_id"] == 7, recs
     assert abs(recs[0][0] - 1792305031.25) < 1e-6, recs[0][0]
+    # f2_summary(ADR-286): 分布・timeout の数え方
+    evs = [{"ev": "f2lat", "idle": 1.0, "delay": 0.2, "latency_ms": ms} for ms in (40, 43, 50, 60)]
+    evs.append({"ev": "f2lat", "idle": 8.0, "delay": 1.6, "latency_ms": None})
+    evs.append({"ev": "noise"})
+    fs = f2_summary(evs)
+    assert fs["total"] == 5 and fs["opened"] == 4 and fs["timeout"] == 1, fs
+    assert fs["overall"]["max"] == 60 and fs["by_idle"]["8.0"]["timeout"] == 1, fs
+    assert fs["by_idle"]["1.0"]["p50"] in (43, 50), fs
+    assert f2_summary([])["overall"]["p50"] is None
     print("selftest OK")
     return 0
 
@@ -729,6 +738,99 @@ def switch_to(w, events, hwnd, tid, name):
     return ok
 
 
+F2_IDLES = (0.3, 1.0, 3.0, 8.0, 30.0)          # 別の窓にいた時間(秒)
+F2_DELAYS = (0.05, 0.2, 0.5, 1.0, 1.6)         # 窓に戻ってから F2 を押すまでの時間(秒)
+F2_WAIT_S = 3.0                                # F2 のあと、共有メモリが開くのを待つ上限(秒)
+
+
+def f2_summary(events):
+    """f2lat イベントから、F2 → 共有メモリ tsf_open=1 までの遅れ(ms)の分布を作る(純粋関数)。
+
+    ADR-286: 送信前に開くのを待つ上限(MOZC_OPEN_CONFIRM_MS)の根拠。開かなかった(timeout)回数も数える。
+    戻り値: {"total", "opened", "timeout", "overall": {...}, "by_idle": {idle: {...}}, "by_delay": {delay: {...}}}。
+    """
+    rows = [e for e in events if e.get("ev") == "f2lat"]
+
+    def pct(vals, q):
+        if not vals:
+            return None
+        v = sorted(vals)
+        return v[min(len(v) - 1, int(round(q * (len(v) - 1))))]
+
+    def stat(rs):
+        lat = [r["latency_ms"] for r in rs if r.get("latency_ms") is not None]
+        return {"n": len(rs), "opened": len(lat), "timeout": len(rs) - len(lat),
+                "p50": pct(lat, 0.5), "p90": pct(lat, 0.9), "p99": pct(lat, 0.99), "max": max(lat) if lat else None}
+
+    out = {"overall": stat(rows), "by_idle": {}, "by_delay": {}}
+    for key, name in (("idle", "by_idle"), ("delay", "by_delay")):
+        for k in sorted({r.get(key) for r in rows}):
+            out[name][str(k)] = stat([r for r in rows if r.get(key) == k])
+    out["total"] = out["overall"]["n"]
+    out["opened"] = out["overall"]["opened"]
+    out["timeout"] = out["overall"]["timeout"]
+    return out
+
+
+def f2_latency_loop(w, truths, rounds, rng, events):
+    """F2(ひらがなキー)を押してから、その窓の共有メモリが tsf_open=1 になるまでの遅れを測る(ADR-286)。
+
+    各回: 窓 X を OFF にしておく → 別の窓 Y へ移して idle 秒おく → X へ戻って delay 秒おく → X のスレッド自身に F2 を送らせる
+    (WM_APP+1。flip_loop と同じ経路)→ 2ms ごとに共有メモリを読み、tsf_open=1 になるまでの遅れを記録する。
+    遅れの起点は PostMessage の時刻で、ホストのメッセージ処理(最大約 10ms)を含む(上限を決める値としては安全側)。
+    F2_WAIT_S 秒たっても開かなければ timeout(latency_ms = None)。実機では、窓に戻った約 1.6 秒後の F2 が効かなかった(BUG-227)。
+    """
+    info = {t["tid"]: t for t in truths if t.get("hwnd")}
+    tids = list(info)
+
+    def st(tid):
+        a = w.read_block(tid)
+        return None if a is None or a[9] != 1 else int(a[5])
+
+    def wait_state(tid, want, limit):
+        t0 = time.time()
+        while time.time() - t0 < limit:
+            if st(tid) == want:
+                return time.time() - t0
+            time.sleep(0.002)
+        return None
+
+    ok_n = ng_n = 0
+    for i in range(rounds):
+        idle = F2_IDLES[i % len(F2_IDLES)]
+        delay = F2_DELAYS[(i // len(F2_IDLES)) % len(F2_DELAYS)]
+        x = tids[i % len(tids)]
+        y = next(t for t in tids if t != x)
+        # X を OFF にする(前面にして、X 自身に OFF を送らせる)
+        if not switch_to(w, events, info[x]["hwnd"], x, info[x]["name"]):
+            ng_n += 1
+            continue
+        time.sleep(0.4)
+        if st(x) == 1:
+            w.u32.PostMessageW(info[x]["hwnd"], 0x8001, 0, 0)
+            if wait_state(x, 0, 3.0) is None:
+                ng_n += 1
+                continue
+        # 別の窓にいる
+        if not switch_to(w, events, info[y]["hwnd"], y, info[y]["name"]):
+            ng_n += 1
+            continue
+        time.sleep(idle)
+        # X に戻って delay 秒おいてから F2
+        if not switch_to(w, events, info[x]["hwnd"], x, info[x]["name"]):
+            ng_n += 1
+            continue
+        time.sleep(delay)
+        t0 = time.time()
+        w.u32.PostMessageW(info[x]["hwnd"], 0x8001, 1, 0)
+        lat = wait_state(x, 1, F2_WAIT_S)
+        events.append({"ev": "f2lat", "t": t0, "tid": x, "idle": idle, "delay": delay,
+                       "latency_ms": None if lat is None else round(lat * 1000, 1)})
+        print(f"f2lat {i}: idle={idle} delay={delay} latency_ms={None if lat is None else round(lat * 1000, 1)}", flush=True)
+        ok_n += 1
+    return ok_n, ng_n
+
+
 FLIP_DELAYS = (0.05, 0.1, 0.15, 0.2, 0.3)
 
 
@@ -886,10 +988,12 @@ def cmd_drive(args):
     sinks = []
     scenario = args.scenario
     lifetime = args.rounds * max(1.6, args.dwell_max + 0.3) + 90
+    if scenario == "f2latency":
+        lifetime = args.rounds * 14 + 120
     exit_code = 0
 
     try:
-        if scenario in ("focus", "flip"):
+        if scenario in ("focus", "flip", "f2latency"):
             specs = [("A", "1"), ("B", "0"), ("C", "1"), ("D", "0")]       # 別プロセス 4 つ。ON/OFF を交互に
             for name, opens in specs:
                 p = spawn_host(here, name, opens, lifetime)
@@ -945,6 +1049,16 @@ def cmd_drive(args):
             w.force_foreground(s["hwnd"])
             events.append({"ev": "focus", "t": time.time(), "tid": s["tid"], "name": s["name"]})
             time.sleep(args.switch_after + 12)
+        elif scenario == "f2latency":
+            ok_n, ng_n = f2_latency_loop(w, truths, args.rounds, rng, events)
+            summ = f2_summary(events)
+            print("f2 summary: " + json.dumps(summ, ensure_ascii=False), flush=True)
+            if args.f2_summary:
+                with open(args.f2_summary, "w", encoding="utf-8") as f:
+                    json.dump(summ, f, ensure_ascii=False, indent=1)
+            print(f"f2latency rounds: {ok_n} measured, {ng_n} skipped", flush=True)
+            if ok_n < max(10, args.rounds // 2):
+                exit_code = 3
         elif scenario == "flip":
             ok_n, ng_n, lost = flip_loop(w, truths, args.rounds, rng, events)
             print(f"flip rounds: {ok_n} flipped and moved the focus, {ng_n} focus moves did not take effect, "
@@ -1023,7 +1137,8 @@ def main(argv=None):
     h.add_argument("--switch-after", type=float, default=0, help="この秒数後に、先頭のスレッドを TIP の無いレイアウトへ切り替える")
 
     d = sub.add_parser("drive")
-    d.add_argument("scenario", choices=["focus", "threads", "appcontainer", "stale", "flip"])
+    d.add_argument("scenario", choices=["focus", "threads", "appcontainer", "stale", "flip", "f2latency"])
+    d.add_argument("--f2-summary", help="f2latency: 遅れの分布の JSON の出力先")
     d.add_argument("--events", required=True)
     d.add_argument("--rounds", type=int, default=100)
     d.add_argument("--dwell-min", type=float, default=0.35, help="次の切り替えまでの最短の滞在(秒)")
