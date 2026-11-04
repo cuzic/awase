@@ -14,9 +14,15 @@ summary: |-
   （別リポジトリ、本ADRの実装範囲外）に入力方式フィールドを追加してもらい、awase側はversion 7として既存の
   バージョンゲート方式（ADR-267/268と同じ、先頭バイトは互換）で読み取る。段階1はObserve専用（journalのみ、belief
   には入れない）で、OSロックビットとの食い違い・遅延を実機で集めてから、段階2（警告の即時化、または保留/送信停止）
-  を別ADRで検討する。
+  を別ADRで検討する。**2026-11-04 追記:** mozc-readable フォーク側の実装（[cuzic/mozc-readable](https://github.com/cuzic/mozc-readable)
+  `exp/key-input-style`、`6afb89f29`、push済み・未ビルド・未マージ）で、反転のトリガーをソースから直接特定した
+  ——Mozc自身の`prefer_kana_input`を反転させているのはADR-118が読む`VK_KANA`ではなく**別のVK**(`VK_DBE_ROMAN`/
+  `VK_DBE_NOROMAN`)で、Mozcのソース自身のコメントが「スレッド/プロセス単位ではなくシステム/セッション全体の
+  トグルで、他プロセスの打鍵でも変わりうる」と明記している（`use_keyboard_to_change_preedit_method`が有効な
+  とき）。ADR-118のOSロックビットとこの軸は別物であり、一致するとは限らない（BUG-106追補8）。
 status: |-
-  起草（2026-11-04）。未実装。mozc-readable 側のフィールド追加が前提で、awase 単体では着手できない。
+  起草（2026-11-04）。mozc-readable フォーク側(version 7)は実装・push済み（未ビルド・未マージ、`exp/key-input-style`）。
+  awase側（`mozc_shm.rs`の parse 追加）は未着手。段階2（belief/actuation への配線）は未決定。
 related_adr:
   - "ADR-118"
   - "ADR-265"
@@ -54,8 +60,13 @@ Oキー=「ら」であり、半角表記すればちょうど「ｶﾗ」にな
 JISかな直接入力になっていたと綴りレベルで完全に一致する。
 
 同じログの中で`[kana-lock]`警告は3時間強のセッション中に何度も（00:41, 02:19, 02:22, 02:25, 02:52 UTC...）
-`fg_class=CASCADIA_HOSTING_WINDOW_CLASS`で発火しており、単発ではなく繰り返し発生している。何が`VK_KANA`トグルを
-反転させているかは本ADRの時点でも未特定（BUG-008/BUG-061と同じ「原因未確定、awase側に復旧手段なし」の系統）。
+`fg_class=CASCADIA_HOSTING_WINDOW_CLASS`で発火しており、単発ではなく繰り返し発生している。本ADR起票当初は
+「何が`VK_KANA`トグルを反転させているかは未特定」としていたが、**mozc-readable側の実装時にソースを読んで
+訂正した**（下記「現状の〜」節、BUG-106追補8）: `VK_KANA`自体はMozcの入力方式の反転とは無関係で、Mozc自身は
+別のVK（`VK_DBE_ROMAN`/`VK_DBE_NOROMAN`）で反転する。したがって「`[kana-lock]`警告(`VK_KANA`)が今回の実際の
+反転原因だった」という前提自体を本ADRは証明していない——両者が同時に起きたことの確認でしかない。何が
+`VK_KANA`トグル・`VK_DBE_ROMAN`/`VK_DBE_NOROMAN`のどちらを実際に押し下げたか（ドライバ・他プロセス等）は
+依然未特定（BUG-008/BUG-061と同じ「原因未確定、awase側に復旧手段なし」の系統）。
 
 ## 現状の mozc-readable 共有メモリでは検知できない理由
 
@@ -70,11 +81,20 @@ JISかな直接入力になっていたと綴りレベルで完全に一致す�
 - version 5: フォーカス遷移の tick（診断用）
 - version 6: `key_eaten_count`/`key_passed_count`（キー単位の食べた/素通りの数、診断用）
 
-いずれも「ローマ字入力かJISかな直接入力か」という**入力方式**そのものは持たない。Mozcの設定上はこれは
-`CompositionMode`とは独立した軸（Mozcの設定でいう`preedit_method`、値はROMAN/KANA—**正確なフィールド名・読み出し
-経路はmozc-readable側のソースで要確認、本ADRでは未検証**）であり、今回のBUG-106再現はこの軸が反転したことが
-直接原因と推定される。したがって、現状の共有メモリをどれだけ読んでも「かな直接入力に切り替わった」事実そのものは
-拾えず、ADR-118のOSロックビット頼みから抜け出せていない。
+いずれも「ローマ字入力かJISかな直接入力か」という**入力方式**そのものは持たない。**2026-11-04、mozc-readable
+フォーク側のソースを実際に読んで確認した**（`src/win32/base/input_state.h::InputBehavior::prefer_kana_input`、
+`src/win32/base/config_snapshot.cc::ConfigSnapshot::Get`）: Mozcの設定の`config.proto::preedit_method`
+（値`ROMAN`/`KANA`、デフォルト`ROMAN`）を起点に、`TipPrivateContext::EnsureInitialized()`が
+`behavior->prefer_kana_input = (config->preedit_method() == Config::KANA)`として一度読み込み、以降は
+**`src/win32/base/keyevent_handler.cc::UpdateBehaviorInImeProcessKey`が唯一の反転箇所**で、
+`use_keyboard_to_change_preedit_method`（設定、デフォルトオフ）が有効なとき、`VK_DBE_ROMAN`/`VK_DBE_NOROMAN`の
+押下のたびに`behavior->prefer_kana_input = !behavior->prefer_kana_input`と反転する。ソース自身のコメントが
+「この2つのVKの状態はスレッド単位・プロセス単位ではなくシステム/セッション全体で、別スレッド・別プロセスの
+打鍵がいつでもこのグローバルなトグルを変えうる」と明記している——**OSのロックビット(`VK_KANA`)とは完全に
+別のメカニズム**であり、`CompositionMode`とは独立した軸である。今回のBUG-106再現はこの軸（または、まだ別に
+存在するかもしれないOS側の`VK_KANA`トグル）が反転したことが直接原因と推定されるが、本ADR時点ではどちらの
+トグルが実際に動いたかは未確認（上記「背景」節）。したがって、現状の共有メモリをどれだけ読んでも「かな直接
+入力に切り替わった」事実そのものは拾えず、ADR-118のOSロックビット頼みから抜け出せていない。
 
 ## 決定
 
@@ -82,7 +102,12 @@ JISかな直接入力になっていたと綴りレベルで完全に一致す�
    の作業）**: `TipSharedState`に入力方式のフィールドを追加する。既存のバージョンゲート方式
    （version 2→3→5→6で先頭48バイトの意味を変えずに末尾へ追記してきたのと同じパターン）に従い、**version 7**として
    8バイト境界で追記する。値はMozcの設定が持つ生の値をそのまま書く（awase側で意味づけをしない—ADR-265 D3の既存
-   方針どおり）。
+   方針どおり）。**実装済み・push済み**（`exp/key-input-style`、`6afb89f29`、2026-11-04。未ビルド・未マージ）:
+   `prefer_kana_input`・`use_romaji_key_to_toggle_input_style`の2フィールド（各u32、160バイト）を追記。
+   公開元は`TipPrivateContext::EnsureInitialized()`（config読み込み時の種まき）と
+   `tip_keyevent_handler.cc::OnKey()`の`UpdateBehaviorInImeProcessKey`直後（唯一の反転箇所）の2箇所。
+   `effective_mode`等と同様に状態として扱い、変化したら通知イベントをpulseする（version 4〜6の診断用カウンタは
+   pulseしない点と異なる、`readable/docs/shared-memory.md` 6-6節）。
 2. **awase側（本ADRの実装範囲）**: `crates/awase-ime-core/src/state/mozc_shm.rs`に`V7_BLOCK_SIZE`定数と対応する
    `parse`関数を追加し、`RawBlock`/`ShmState`とは別の追記構造体（`CompositionFields`・`FocusTicks`と同じ並び）
    として持つ。既存の受け入れ条件（`classify`）・`ShmUse`の判断には**混ぜない**——version 7が読めない環境
@@ -102,14 +127,17 @@ JISかな直接入力になっていたと綴りレベルで完全に一致す�
   この入力方式を読む経路が無く、BUG-106/BUG-061の本来の主戦場だったMS-IME（Windows Terminal + MS-IME）には
   効果がない。今回の実機ログは `ime=GJI` だったが、Mozc Readable運用中だったため本ADRの対象に入る——通常のGJI
   （mozc-readable非適用）だった場合はこの経路は使えない。
-- 入力方式の反転そのものの原因（何が`VK_KANA`トグルを動かしているか）は本ADRでも未解決。本ADRは「反転を確実に
-  知る」ところまでで、「反転を起こさせない」は依然スコープ外。
+- 入力方式の反転そのものの原因（何が`VK_DBE_ROMAN`/`VK_DBE_NOROMAN`、あるいはOS側の`VK_KANA`トグルを
+  実際に押し下げているか）は本ADRでも未解決。本ADRは「反転を確実に知る」ところまでで、「反転を起こさせない」は
+  依然スコープ外。
 - 段階1がObserve専用である間は、ユーザーに見える挙動の変化は無い（`.claude/rules/fix-requires-evidence.md`の
   回帰テスト義務は段階2で実際に判断・actuationに使うときに効いてくる）。
 
 ## 関連
 
-[BUG-106](../known-bugs/BUG-106.md)（追補7、本ADRの引用元となった実機ログ）・[ADR-118](118-teams-kana-lock-detection.md)
-（現行のOSロックビット検知、本ADRが補完する対象）・[ADR-265](265-mozc-readable-integration.md)〜
-[ADR-270](270-mozc-first-send-composition-check.md)（既存の共有メモリ連携、本ADRが踏襲するバージョンゲート方式と
-Observe専用の段階分け）。
+[BUG-106](../known-bugs/BUG-106.md)（追補7＝本ADRの引用元となった実機ログ、追補8＝mozc-readable実装時に
+特定した反転トリガーの訂正）・[ADR-118](118-teams-kana-lock-detection.md)（現行のOSロックビット検知、本ADRが
+補完する対象）・[ADR-265](265-mozc-readable-integration.md)〜[ADR-270](270-mozc-first-send-composition-check.md)
+（既存の共有メモリ連携、本ADRが踏襲するバージョンゲート方式とObserve専用の段階分け）・
+[cuzic/mozc-readable `exp/key-input-style`](https://github.com/cuzic/mozc-readable/tree/exp/key-input-style)
+（本ADR決定1の実装、`6afb89f29`）。
