@@ -181,9 +181,11 @@ impl CompositionFields {
     }
 }
 
-/// version 5 の追記分のうち状態（オフセット 112〜119、ADR-287）。Mozc 自身が持つ「ローマ字入力/JISかな直接入力」
-/// という**入力方式そのもの**（`CompositionMode` という文字種の軸とは別）。OS のキーボードロックビット（`VK_KANA`、
-/// `observer::kana_lock`）とも別物——フォーカスのある edit context の `InputBehavior::prefer_kana_input` の生値。
+/// version 5 の追記分のうち状態（オフセット 112〜119、ADR-287）。
+///
+/// Mozc 自身が持つ「ローマ字入力/JISかな直接入力」という**入力方式そのもの**（`CompositionMode` という
+/// 文字種の軸とは別）。OS のキーボードロックビット（`VK_KANA`、`observer::kana_lock`）とも別物——フォーカスの
+/// ある edit context の `InputBehavior::prefer_kana_input` の生値。
 ///
 /// `effective_mode` などと同様に状態として扱われ、変化したら通知イベントが pulse される（version 5 の他の項目
 /// ——フォーカス時刻・キー数——は診断専用で pulse しない。`readable/docs/shared-memory.md` 2章）。
