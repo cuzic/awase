@@ -83,7 +83,7 @@ pub(crate) fn read_mozc_compose(
     }
 }
 
-/// 対象のスレッドの共有メモリから、キー押下ごとの食べた/素通りの数（version 6）を読む。診断用。読めなければ `None`。
+/// 対象のスレッドの共有メモリから、キー押下ごとの食べた/素通りの数（version 5）を読む。診断用。読めなければ `None`。
 #[cfg_attr(not(windows), allow(unused_variables))]
 pub(crate) fn read_mozc_key_results(
     thread_id: u32,
@@ -115,7 +115,7 @@ pub(crate) fn read_mozc_focus_ticks(
     }
 }
 
-/// 対象のスレッドの共有メモリから、Mozc 自身の入力方式（ローマ字/JISかな直接入力、version 7、ADR-287）を読む。
+/// 対象のスレッドの共有メモリから、Mozc 自身の入力方式（ローマ字/JISかな直接入力、version 5、ADR-287）を読む。
 /// 観測専用（belief・actuation には使わない）。読めなければ `None`。
 #[cfg_attr(not(windows), allow(unused_variables))]
 pub(crate) fn read_mozc_input_style(
@@ -132,7 +132,7 @@ pub(crate) fn read_mozc_input_style(
     }
 }
 
-/// OS のかな入力ロックビット（`GetKeyState(VK_KANA)`、ADR-118）を読む。ADR-287 決定3: version 7 の
+/// OS のかな入力ロックビット（`GetKeyState(VK_KANA)`、ADR-118）を読む。ADR-287 決定3: version 5 の
 /// `prefer_kana_input` と並べて journal/ログに残し、実機で両者がどれだけ一致/食い違うかを比較するためだけに使う
 /// （belief・actuation には使わない）。非 Windows では `Unknown`。
 // Win32 FFI を直接呼ぶモジュール単位で allow する既存の作法（lib.rs 冒頭コメント）に合わせる。

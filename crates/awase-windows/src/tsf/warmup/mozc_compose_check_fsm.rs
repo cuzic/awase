@@ -105,7 +105,7 @@ impl MozcComposeCheckFsm {
                 ticks.describe_relative_to(self.sent_ms)
             );
         }
-        // version 6: キーシンクが各キーダウンを食べたか素通りさせたかの通算の数。2 回の行の差から、
+        // version 5(診断専用の項目): キーシンクが各キーダウンを食べたか素通りさせたかの通算の数。2 回の行の差から、
         // 「どのキーが素通りしたか」を `key_seq` の進みと並べて読める。
         if let Some(results) =
             crate::tsf::read_mozc_key_results(self.target.thread_id, self.target.process_id)
@@ -117,7 +117,7 @@ impl MozcComposeCheckFsm {
                 results.passed
             );
         }
-        // version 7(ADR-287): Mozc 自身の入力方式(ローマ字/JISかな直接入力)。段階1は観測専用
+        // version 5(状態として扱う項目、ADR-287): Mozc 自身の入力方式(ローマ字/JISかな直接入力)。段階1は観測専用
         // ——belief・actuation には使わず、ここで journal/ログにだけ残す。同じ行に OS のかな入力
         // ロックビット(ADR-118、`observer::kana_lock`)も並べて、実機で両者がどれだけ一致/食い違うか
         // を後から比較できるようにする(ADR-287 決定3)。

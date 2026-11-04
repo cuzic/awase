@@ -10,22 +10,27 @@ summary: |-
   Terminal×Google日本語入力（Mozc Readable想定）が稼働中、awaseの送信romaji "to"を打った瞬間に`[kana-lock]`警告が
   発火し、直後の出力が「ｶﾗ」（JISかな配列でT→か、O→らに一致）に化けた実例を確認した（BUG-106追補7）。mozc-readable
   は既にIMEの開閉・CompositionMode（文字種）を共有メモリ経由で確実に読めている（ADR-265〜270）が、入力方式
-  （ローマ字/かな）の軸は現在の共有メモリ（version 6、152バイト）には含まれていない。決定: mozc-readable フォーク
-  （別リポジトリ、本ADRの実装範囲外）に入力方式フィールドを追加してもらい、awase側はversion 7として既存の
-  バージョンゲート方式（ADR-267/268と同じ、先頭バイトは互換）で読み取る。段階1はObserve専用（journalのみ、belief
-  には入れない）で、OSロックビットとの食い違い・遅延を実機で集めてから、段階2（警告の即時化、または保留/送信停止）
-  を別ADRで検討する。**2026-11-04 追記:** mozc-readable フォーク側の実装（[cuzic/mozc-readable](https://github.com/cuzic/mozc-readable)
+  （ローマ字/かな）の軸は現在の共有メモリ（version 4、112バイト、実際にリリースされた最後の版）には含まれていない。
+  決定: mozc-readable フォーク（別リポジトリ、本ADRの実装範囲外）に入力方式フィールドを追加してもらい、awase側は
+  既存のバージョンゲート方式（ADR-267/268と同じ、先頭バイトは互換）で読み取る。段階1はObserve専用（journalのみ、
+  beliefには入れない）で、OSロックビットとの食い違い・遅延を実機で集めてから、段階2（警告の即時化、または保留/
+  送信停止）を別ADRで検討する。**2026-11-04 追記:** mozc-readable フォーク側の実装（[cuzic/mozc-readable](https://github.com/cuzic/mozc-readable)
   `exp/key-input-style`、`6afb89f29`、push済み・未ビルド・未マージ）で、反転のトリガーをソースから直接特定した
   ——Mozc自身の`prefer_kana_input`を反転させているのはADR-118が読む`VK_KANA`ではなく**別のVK**(`VK_DBE_ROMAN`/
   `VK_DBE_NOROMAN`)で、Mozcのソース自身のコメントが「スレッド/プロセス単位ではなくシステム/セッション全体の
   トグルで、他プロセスの打鍵でも変わりうる」と明記している（`use_keyboard_to_change_preedit_method`が有効な
-  とき）。ADR-118のOSロックビットとこの軸は別物であり、一致するとは限らない（BUG-106追補8）。
+  とき）。ADR-118のOSロックビットとこの軸は別物であり、一致するとは限らない（BUG-106追補8）。**2026-11-04 追記2:**
+  mozc-readable側はversion 4が実際にリリースされた最後の版（どのGitHub Releaseにも5/6/7は出ていなかった）だと
+  分かったため、最初のリリース前にversion 5/6/7を1つの**version 5**（160バイト）へ統合し、状態（pulseする
+  `prefer_kana_input`等）を先・診断専用（pulseしないフォーカス時刻・キー数）を後に並べ直した（PR #16、
+  `73e59c32d`）。以降、本ADRで「version 7」と書いていた箇所は「version 5」を指す。
 status: |-
-  起草（2026-11-04）。mozc-readable フォーク側(version 7)は実装済み、readable ブランチへマージ済み(PR #13〜#15、
-  version 5〜7を含む)、ビルドCI実行中(cuzic/mozc-readable の readable-build、run 41774491820、未完了)。
-  awase側は段階1(Observe専用)まで実装済み(`mozc_shm.rs`の parse・`observer`/`tsf`の配線・
-  `[mozc-input-style]`ログ、OSのかな入力ロックビットと並べて記録)。実機ログでの一致/食い違いの収集は
-  mozc-readableのビルド完了後。段階2（belief/actuation への配線）は未決定。
+  起草（2026-11-04）。mozc-readable フォーク側は実装済み、readable ブランチへマージ済み(PR #13〜#16、version
+  5/6/7の起案から最初のリリース前の単一version 5への統合まで)、ビルドCI実行中(cuzic/mozc-readable の
+  readable-build、未完了)。awase側は段階1(Observe専用)まで実装済み(`mozc_shm.rs`の parse・`observer`/`tsf`の
+  配線・`[mozc-input-style]`ログ、OSのかな入力ロックビットと並べて記録。オフセット・version番号は統合後の
+  version 5に追随済み)。実機ログでの一致/食い違いの収集はmozc-readableのビルド完了後。段階2（belief/actuation
+  への配線）は未決定。
 related_adr:
   - "ADR-118"
   - "ADR-265"
@@ -74,15 +79,14 @@ JISかな直接入力になっていたと綴りレベルで完全に一致す�
 ## 現状の mozc-readable 共有メモリでは検知できない理由
 
 [ADR-265](265-mozc-readable-integration.md)〜[ADR-270](270-mozc-first-send-composition-check.md)で整備した
-`TipSharedState`（`crates/awase-ime-core/src/state/mozc_shm.rs`、version 6で152バイト）が持つのは:
+`TipSharedState`（`crates/awase-ime-core/src/state/mozc_shm.rs`。ADR起票時点の実際にリリースされた最後の版は
+version 4、112バイト）が持つのは:
 
 - `effective_open`/`tsf_open`: IMEの開閉
 - `effective_mode`/`tsf_mode`: `CompositionMode`（ひらがな/全角カタカナ/半角カタカナ/半角英数/全角英数/直接入力—
   **文字種**の軸）
 - version 3以降: `phase`・`candidate_category`・`preedit_*`・`key_seq`・`scope_forced_mode`・`server_ready`等
   （組成・確認用）
-- version 5: フォーカス遷移の tick（診断用）
-- version 6: `key_eaten_count`/`key_passed_count`（キー単位の食べた/素通りの数、診断用）
 
 いずれも「ローマ字入力かJISかな直接入力か」という**入力方式**そのものは持たない。**2026-11-04、mozc-readable
 フォーク側のソースを実際に読んで確認した**（`src/win32/base/input_state.h::InputBehavior::prefer_kana_input`、
@@ -103,21 +107,24 @@ JISかな直接入力になっていたと綴りレベルで完全に一致す�
 
 1. **mozc-readable フォーク側の変更（本ADRの実装範囲外、別リポジトリ [cuzic/mozc-readable](https://github.com/cuzic/mozc-readable)
    の作業）**: `TipSharedState`に入力方式のフィールドを追加する。既存のバージョンゲート方式
-   （version 2→3→5→6で先頭48バイトの意味を変えずに末尾へ追記してきたのと同じパターン）に従い、**version 7**として
-   8バイト境界で追記する。値はMozcの設定が持つ生の値をそのまま書く（awase側で意味づけをしない—ADR-265 D3の既存
-   方針どおり）。**実装済み・push済み**（`exp/key-input-style`、`6afb89f29`、2026-11-04。未ビルド・未マージ）:
-   `prefer_kana_input`・`use_romaji_key_to_toggle_input_style`の2フィールド（各u32、160バイト）を追記。
-   公開元は`TipPrivateContext::EnsureInitialized()`（config読み込み時の種まき）と
-   `tip_keyevent_handler.cc::OnKey()`の`UpdateBehaviorInImeProcessKey`直後（唯一の反転箇所）の2箇所。
-   `effective_mode`等と同様に状態として扱い、変化したら通知イベントをpulseする（version 4〜6の診断用カウンタは
-   pulseしない点と異なる、`readable/docs/shared-memory.md` 6-6節）。
-2. **awase側（本ADRの実装範囲）**: `crates/awase-ime-core/src/state/mozc_shm.rs`に`V7_BLOCK_SIZE`定数と対応する
+   （version 2→3→4で先頭48バイトの意味を変えずに末尾へ追記してきたのと同じパターン）に従い、追記する。値はMozcの
+   設定が持つ生の値をそのまま書く（awase側で意味づけをしない—ADR-265 D3の既存方針どおり）。**実装済み・マージ済み**
+   （`exp/key-input-style`、`6afb89f29`、2026-11-04。未ビルド・未リリース）: `prefer_kana_input`・
+   `use_romaji_key_to_toggle_input_style`の2フィールド（各u32）を追記。公開元は
+   `TipPrivateContext::EnsureInitialized()`（config読み込み時の種まき）と`tip_keyevent_handler.cc::OnKey()`の
+   `UpdateBehaviorInImeProcessKey`直後（唯一の反転箇所）の2箇所。`effective_mode`等と同様に状態として扱い、
+   変化したら通知イベントをpulseする（他の診断用カウンタはpulseしない点と異なる）。**同日追記**: version 4が
+   実際にリリースされた最後の版だと分かったため、最初のリリース前に本フィールドをフォーカス時刻・キー数
+   （いずれも本ADR以前から`readable`に未リリースのまま存在）と合わせて**version 5**（160バイト）へ統合し、
+   状態を先・診断専用を後に並べ直した（PR #16、`73e59c32d`、`readable/docs/shared-memory.md` 6-4節）。
+2. **awase側（本ADRの実装範囲）**: `crates/awase-ime-core/src/state/mozc_shm.rs`に`V5_BLOCK_SIZE`(160)定数と対応する
    `parse`関数を追加し、`RawBlock`/`ShmState`とは別の追記構造体（`CompositionFields`・`FocusTicks`と同じ並び）
-   として持つ。既存の受け入れ条件（`classify`）・`ShmUse`の判断には**混ぜない**——version 7が読めない環境
+   として持つ。既存の受け入れ条件（`classify`）・`ShmUse`の判断には**混ぜない**——version 5が読めない環境
    （mozc-readable未更新・GJI公式版・MS-IME）では単に`None`のまま扱う。**実装済み**（2026-11-04）: `InputStyle`
-   構造体（`prefer_kana_input`・`toggle_enabled`）と単体テストを追加、`observer/mozc_shm.rs::read_input_style`
-   （既存の`read_key_results`と同じ手順、`version >= 7`のときだけ160バイトまで読み直す）、
-   `tsf/mod.rs::read_mozc_input_style`（Windows専用副作用への入口の既存パターン）を配線。
+   構造体（`prefer_kana_input`・`toggle_enabled`、オフセット112〜119）と単体テストを追加、
+   `observer/mozc_shm.rs::read_input_style`（既存の`read_key_results`と同じ手順、`version >= 5`のときだけ160
+   バイトまで読み直す）、`tsf/mod.rs::read_mozc_input_style`（Windows専用副作用への入口の既存パターン）を配線。
+   mozc-readable側の統合（決定1の同日追記）に追随し、オフセット・version番号は統合後の値。
 3. **段階1はObserve専用**（ADR-265 D3・ADR-268と同じ慎重さ）: 新フィールドの値は journal にだけ記録し、
    belief・actuation の判断には一切使わない。同時に、既存の`observer/kana_lock.rs`（`GetKeyState(VK_KANA)`）の
    読みも並行して記録し、両者が実機でどれだけ一致/食い違うか（タイミングのずれ、ドライバ由来のエコーで

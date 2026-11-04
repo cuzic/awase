@@ -19,14 +19,13 @@ pub const BLOCK_SIZE: usize = 48;
 /// 48 バイトだけを読む（ADR-265 D3）。**入力中の文字の確認（ADR-270）だけが** 80 バイトを読む。
 pub const V3_BLOCK_SIZE: usize = 80;
 
-/// version 5 以降のブロックの大きさ（キーボードフォーカスの時刻を含む。mozc-readable の診断用の追記）。
-pub const V5_BLOCK_SIZE: usize = 144;
-
-/// version 6 以降のブロックの大きさ（キー押下ごとの食べた/素通りの数を含む。mozc-readable の診断用の追記）。
-pub const V6_BLOCK_SIZE: usize = 152;
-
-/// version 7 以降のブロックの大きさ（Mozc 自身の入力方式〈ローマ字/JISかな直接入力〉を含む。ADR-287）。
-pub const V7_BLOCK_SIZE: usize = 160;
+/// version 5 以降のブロックの大きさ（入力方式・キーボードフォーカスの時刻・キー押下ごとの食べた/素通りの数を含む）。
+///
+/// mozc-readable 側で 2026-11-04 に統合された版（詳細は `readable/docs/shared-memory.md` 6-4 節）。
+/// 一度もリリースされていない version 5/6/7（offsets 112-159 に別々に追記）は、最初のリリース前にこの
+/// version 5 へ一本化され、状態（`InputStyle`、pulse する）を先、診断専用（`FocusTicks`・`KeyResults`、
+/// pulse しない）を後に並べ直された。境界は旧version間の個別の区切りではなく、この統合後のオフセットのみ。
+pub const V5_BLOCK_SIZE: usize = 160;
 
 /// `magic`（メモリ上のバイト列は `4D 44 52 5A`、ASCII の `MDRZ`）。
 pub const MAGIC: u32 = 0x5A52_444D;
@@ -182,8 +181,37 @@ impl CompositionFields {
     }
 }
 
-/// version 5 の追記分（オフセット 112〜143）。TIP がキーを受け取る側になった時刻と、その後の最初のキーの時刻
-/// （いずれも `GetTickCount64()`、0=まだ無い）。診断用で、判断には使わない。
+/// version 5 の追記分のうち状態（オフセット 112〜119、ADR-287）。Mozc 自身が持つ「ローマ字入力/JISかな直接入力」
+/// という**入力方式そのもの**（`CompositionMode` という文字種の軸とは別）。OS のキーボードロックビット（`VK_KANA`、
+/// `observer::kana_lock`）とも別物——フォーカスのある edit context の `InputBehavior::prefer_kana_input` の生値。
+///
+/// `effective_mode` などと同様に状態として扱われ、変化したら通知イベントが pulse される（version 5 の他の項目
+/// ——フォーカス時刻・キー数——は診断専用で pulse しない。`readable/docs/shared-memory.md` 2章）。
+///
+/// **段階1は観測専用**（journal にだけ記録し、belief・actuation の判断には使わない。ADR-287 決定3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputStyle {
+    /// 0=ローマ字入力、1=JISかな直接入力（フォーカスのある edit context の生値）
+    pub prefer_kana_input: bool,
+    /// `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` の押下で `prefer_kana_input` が反転しうるか（Mozc の設定
+    /// `use_keyboard_to_change_preedit_method`。1 のとき、どのスレッド・プロセスの打鍵でも反転する、
+    /// システム/セッション全体のトグル）
+    pub toggle_enabled: bool,
+}
+
+impl InputStyle {
+    /// 160 バイトの追記分のうちオフセット 112〜119 を解釈する（検証はしない）。
+    #[must_use]
+    pub fn parse(bytes: &[u8; V5_BLOCK_SIZE]) -> Self {
+        Self {
+            prefer_kana_input: u32_at(bytes, 112) != 0,
+            toggle_enabled: u32_at(bytes, 116) != 0,
+        }
+    }
+}
+
+/// version 5 の追記分のうち診断専用（オフセット 120〜151）。TIP がキーを受け取る側になった時刻と、その後の
+/// 最初のキーの時刻（いずれも `GetTickCount64()`、0=まだ無い）。判断には使わない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FocusTicks {
     /// `ITfKeyEventSink::OnSetFocus(TRUE)`
@@ -197,14 +225,14 @@ pub struct FocusTicks {
 }
 
 impl FocusTicks {
-    /// 144 バイトの追記分（オフセット 112〜143）を解釈する（検証はしない）。
+    /// 160 バイトの追記分のうちオフセット 120〜151 を解釈する（検証はしない）。
     #[must_use]
     pub fn parse(bytes: &[u8; V5_BLOCK_SIZE]) -> Self {
         Self {
-            key_sink_focus_tick_ms: u64_at(bytes, 112),
-            key_sink_blur_tick_ms: u64_at(bytes, 120),
-            thread_focus_tick_ms: u64_at(bytes, 128),
-            first_key_tick_ms: u64_at(bytes, 136),
+            key_sink_focus_tick_ms: u64_at(bytes, 120),
+            key_sink_blur_tick_ms: u64_at(bytes, 128),
+            thread_focus_tick_ms: u64_at(bytes, 136),
+            first_key_tick_ms: u64_at(bytes, 144),
         }
     }
 
@@ -229,8 +257,8 @@ impl FocusTicks {
     }
 }
 
-/// version 6 の追記分（オフセット 144〜151）。キーシンクが `key_seq` を増やした各キーダウンを、食べたか素通りさせたかの
-/// 通算の数（TIP が読み込まれてから、単調増加でラップする）。診断用で、判断には使わない。
+/// version 5 の追記分のうち診断専用（オフセット 152〜159）。キーシンクが `key_seq` を増やした各キーダウンを、
+/// 食べたか素通りさせたかの通算の数（TIP が読み込まれてから、単調増加でラップする）。判断には使わない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyResults {
     /// キーシンクが食べた（`eaten = TRUE`）キーダウンの数
@@ -240,38 +268,12 @@ pub struct KeyResults {
 }
 
 impl KeyResults {
-    /// 152 バイトの追記分（オフセット 144〜151）を解釈する（検証はしない）。
+    /// 160 バイトの追記分のうちオフセット 152〜159 を解釈する（検証はしない）。
     #[must_use]
-    pub fn parse(bytes: &[u8; V6_BLOCK_SIZE]) -> Self {
+    pub fn parse(bytes: &[u8; V5_BLOCK_SIZE]) -> Self {
         Self {
-            eaten: u32_at(bytes, 144),
-            passed: u32_at(bytes, 148),
-        }
-    }
-}
-
-/// version 7 の追記分（オフセット 152〜159、ADR-287）。Mozc 自身が持つ「ローマ字入力/JISかな直接入力」という
-/// **入力方式そのもの**（`CompositionMode` という文字種の軸とは別）。OS のキーボードロックビット（`VK_KANA`、
-/// `observer::kana_lock`）とも別物——フォーカスのある edit context の `InputBehavior::prefer_kana_input` の生値。
-///
-/// **段階1は観測専用**（journal にだけ記録し、belief・actuation の判断には使わない。ADR-287 決定3）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InputStyle {
-    /// 0=ローマ字入力、1=JISかな直接入力（フォーカスのある edit context の生値）
-    pub prefer_kana_input: bool,
-    /// `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` の押下で `prefer_kana_input` が反転しうるか（Mozc の設定
-    /// `use_keyboard_to_change_preedit_method`。1 のとき、どのスレッド・プロセスの打鍵でも反転する、
-    /// システム/セッション全体のトグル）
-    pub toggle_enabled: bool,
-}
-
-impl InputStyle {
-    /// 160 バイトの追記分（オフセット 152〜159）を解釈する（検証はしない）。
-    #[must_use]
-    pub fn parse(bytes: &[u8; V7_BLOCK_SIZE]) -> Self {
-        Self {
-            prefer_kana_input: u32_at(bytes, 152) != 0,
-            toggle_enabled: u32_at(bytes, 156) != 0,
+            eaten: u32_at(bytes, 152),
+            passed: u32_at(bytes, 156),
         }
     }
 }
@@ -1387,10 +1389,10 @@ mod tests {
     }
 
     #[test]
-    fn key_results_parse_reads_the_version_6_fields_little_endian() {
-        let mut b = [0u8; V6_BLOCK_SIZE];
-        b[144..148].copy_from_slice(&7u32.to_le_bytes());
-        b[148..152].copy_from_slice(&3u32.to_le_bytes());
+    fn key_results_parse_reads_the_version_5_fields_little_endian() {
+        let mut b = [0u8; V5_BLOCK_SIZE];
+        b[152..156].copy_from_slice(&7u32.to_le_bytes());
+        b[156..160].copy_from_slice(&3u32.to_le_bytes());
         assert_eq!(
             KeyResults::parse(&b),
             KeyResults {
@@ -1401,10 +1403,10 @@ mod tests {
     }
 
     #[test]
-    fn input_style_parse_reads_the_version_7_fields_little_endian() {
-        let mut b = [0u8; V7_BLOCK_SIZE];
-        b[152..156].copy_from_slice(&1u32.to_le_bytes());
-        b[156..160].copy_from_slice(&0u32.to_le_bytes());
+    fn input_style_parse_reads_the_version_5_fields_little_endian() {
+        let mut b = [0u8; V5_BLOCK_SIZE];
+        b[112..116].copy_from_slice(&1u32.to_le_bytes());
+        b[116..120].copy_from_slice(&0u32.to_le_bytes());
         assert_eq!(
             InputStyle::parse(&b),
             InputStyle {
@@ -1412,9 +1414,9 @@ mod tests {
                 toggle_enabled: false,
             }
         );
-        let mut b = [0u8; V7_BLOCK_SIZE];
-        b[152..156].copy_from_slice(&0u32.to_le_bytes());
-        b[156..160].copy_from_slice(&1u32.to_le_bytes());
+        let mut b = [0u8; V5_BLOCK_SIZE];
+        b[112..116].copy_from_slice(&0u32.to_le_bytes());
+        b[116..120].copy_from_slice(&1u32.to_le_bytes());
         assert_eq!(
             InputStyle::parse(&b),
             InputStyle {
@@ -1427,10 +1429,10 @@ mod tests {
     #[test]
     fn focus_ticks_parse_reads_the_version_5_fields_little_endian() {
         let mut b = [0u8; V5_BLOCK_SIZE];
-        b[112..120].copy_from_slice(&1_000u64.to_le_bytes());
-        b[120..128].copy_from_slice(&2_000u64.to_le_bytes());
-        b[128..136].copy_from_slice(&3_000u64.to_le_bytes());
-        b[136..144].copy_from_slice(&4_000u64.to_le_bytes());
+        b[120..128].copy_from_slice(&1_000u64.to_le_bytes());
+        b[128..136].copy_from_slice(&2_000u64.to_le_bytes());
+        b[136..144].copy_from_slice(&3_000u64.to_le_bytes());
+        b[144..152].copy_from_slice(&4_000u64.to_le_bytes());
         let t = FocusTicks::parse(&b);
         assert_eq!(t.key_sink_focus_tick_ms, 1_000);
         assert_eq!(t.key_sink_blur_tick_ms, 2_000);
