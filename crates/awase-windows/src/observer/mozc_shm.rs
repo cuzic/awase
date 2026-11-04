@@ -33,8 +33,8 @@ use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
 use crate::state::mozc_shm::{
     app_container_section_path, classify, format_sid, local_mapping_name, ComposeBlock,
-    ComposeReading, CompositionFields, FocusTicks, KeyResults, RawBlock, ReadFailure, Reading,
-    Route, BLOCK_SIZE, V3_BLOCK_SIZE, V5_BLOCK_SIZE, V6_BLOCK_SIZE,
+    ComposeReading, CompositionFields, FocusTicks, InputStyle, KeyResults, RawBlock, ReadFailure,
+    Reading, Route, BLOCK_SIZE, V3_BLOCK_SIZE, V5_BLOCK_SIZE,
 };
 
 /// seqlock の再試行の上限（書き込みは数命令なので、実際には 1〜2 回で終わる）。
@@ -204,7 +204,7 @@ fn read_compose_inner(handle: HANDLE, process_id: u32) -> ComposeReading {
 
 /// 対象のスレッドの共有メモリから、キーボードフォーカスの時刻（version 5、診断用）を読む。
 ///
-/// 先頭 48 バイトで受け入れ条件（`classify`）を確かめ、`version >= 5` のときだけ 144 バイトまで読み直す。version 4 以下・
+/// 先頭 48 バイトで受け入れ条件（`classify`）を確かめ、`version >= 5` のときだけ 160 バイトまで読み直す。version 4 以下・
 /// 読めない・受け入れられないときは `None`。belief にも IME にも何も書かない。
 #[must_use]
 pub fn read_focus_ticks(thread_id: u32, process_id: u32) -> Option<FocusTicks> {
@@ -230,9 +230,9 @@ fn read_focus_ticks_inner(handle: HANDLE, process_id: u32) -> Option<FocusTicks>
     Some(FocusTicks::parse(&full))
 }
 
-/// 対象のスレッドの共有メモリから、キー押下ごとの食べた/素通りの数（version 6、診断用）を読む。
+/// 対象のスレッドの共有メモリから、キー押下ごとの食べた/素通りの数（version 5、診断用）を読む。
 ///
-/// [`read_focus_ticks`] と同じ手順で、`version >= 6` のときだけ 152 バイトまで読み直す。version 5 以下・読めない・
+/// [`read_focus_ticks`] と同じ手順（`version >= 5` のときだけ 160 バイトまで読み直す）。version 4 以下・読めない・
 /// 受け入れられないときは `None`。belief にも IME にも何も書かない。
 #[must_use]
 pub fn read_key_results(thread_id: u32, process_id: u32) -> Option<KeyResults> {
@@ -247,14 +247,42 @@ pub fn read_key_results(thread_id: u32, process_id: u32) -> Option<KeyResults> {
 fn read_key_results_inner(handle: HANDLE, process_id: u32) -> Option<KeyResults> {
     let head = read_bytes::<BLOCK_SIZE>(handle).ok()?;
     let state = classify(&RawBlock::parse(&head), process_id).ok()?;
-    if state.version < 6 {
+    if state.version < 5 {
         return None;
     }
-    let full = read_bytes::<V6_BLOCK_SIZE>(handle).ok()?;
+    let full = read_bytes::<V5_BLOCK_SIZE>(handle).ok()?;
     let mut first = [0u8; BLOCK_SIZE];
     first.copy_from_slice(&full[..BLOCK_SIZE]);
     classify(&RawBlock::parse(&first), process_id).ok()?;
     Some(KeyResults::parse(&full))
+}
+
+/// 対象のスレッドの共有メモリから、Mozc 自身の入力方式（ローマ字/JISかな直接入力、version 5、ADR-287）を読む。
+///
+/// [`read_key_results`] と同じ手順（`version >= 5` のときだけ 160 バイトまで読み直す）。version 4 以下・読めない・
+/// 受け入れられないとき、または mozc-readable が未対応（version 5 未満）のときは `None`。belief にも IME にも
+/// 何も書かない——**段階1は観測専用**（ADR-287 決定3）。
+#[must_use]
+pub fn read_input_style(thread_id: u32, process_id: u32) -> Option<InputStyle> {
+    let (_route, opened) = open_handle(thread_id, process_id);
+    let handle = opened.ok()?;
+    let style = read_input_style_inner(handle, process_id);
+    // SAFETY: `handle` は `open_handle` が返した有効なハンドルで、ここで 1 回だけ閉じる。
+    let _ = unsafe { CloseHandle(handle) };
+    style
+}
+
+fn read_input_style_inner(handle: HANDLE, process_id: u32) -> Option<InputStyle> {
+    let head = read_bytes::<BLOCK_SIZE>(handle).ok()?;
+    let state = classify(&RawBlock::parse(&head), process_id).ok()?;
+    if state.version < 5 {
+        return None;
+    }
+    let full = read_bytes::<V5_BLOCK_SIZE>(handle).ok()?;
+    let mut first = [0u8; BLOCK_SIZE];
+    first.copy_from_slice(&full[..BLOCK_SIZE]);
+    classify(&RawBlock::parse(&first), process_id).ok()?;
+    Some(InputStyle::parse(&full))
 }
 
 /// マップしたビューから seqlock の手順で 48 バイトを読み、ビューとハンドルを閉じる。
