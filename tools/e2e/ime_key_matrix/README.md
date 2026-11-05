@@ -162,7 +162,7 @@ B4(MS-IME 本体の値2。設定アプリの「キーの割り当て」が出ず
 
 ## 未確定文字(preedit)の読み取り(`typing_stress --mode=preedit`、`check_preedit.py`)
 
-最終テキストとは別に「今、未確定文字があるか」を読む部品。`sc-preedit-*`(observe、既定・`sc-*` からは除外)を回す(旧 `preedit-verify.yml` は撤去。`gh workflow run e2e-ime.yml --ref <ブランチ> -f only='sc-preedit-*'`、旧 workflow は `git show e2784f20^:.github/workflows/preedit-verify.yml`)。
+最終テキストとは別に「今、未確定文字があるか」を読む部品。結論が出たため `sc-preedit-*`(observe、`e2e-ime.yml`)と可否表の report 生成は撤去済み(撤去コミット: TBD、`git show <撤去コミット>^:.github/workflows/e2e-ime.yml` で戻せる。旧 `preedit-verify.yml` は先に撤去済み、`git show e2784f20^:.github/workflows/preedit-verify.yml`)。
 読み取り可否(run 37276470334、各 6 試行、GJI/MS-IME、終端=Enter。真値は「打鍵前 なし/かな打鍵中 あり/Enter 後 なし」):
 
 | 入力先 | uia(`GetActiveComposition`) | imm(`ImmGetCompositionString`) |
@@ -175,3 +175,22 @@ B4(MS-IME 本体の値2。設定アプリの「キーの割り当て」が出ず
 実 Chrome は未確定が無いとき空や U+FFFC でなく本文と無関係な文字列(`st` 等)を返すので、範囲が本文に含まれないときだけ composing とする。
 使いどころ: 「未確定が消えた」判定(BUG-184/171/168)は、本来あるはずの未確定に対して読み値が none かつ本文も空、で見る(Chrome の確定直後の誤 composing とは別の状況)。
 MS-IME は ESC 1 回で未確定を取り消さなかった(自前 edit/tsf・実 Chrome とも)ので、esc の後は真値を決めず観測のみ。TSF の `ITfContext` 直接読みは `ITfThreadMgr` がスレッド単位のため未実装。
+
+## 打鍵の揺らぎ比較(`tsj-*`、`examples/typing_stress/jitter.rs`、#486)
+
+固定間隔(base)と、間隔・親指ずれ・文字先押しに分布を持たせた版(jit、分布は `docs/adr/182` の実機実測に合わせた仮置き)を
+同じ入力先・IME・seed で比較し、揺らぎで loss/reorder/literal が増えるかを見る部品。結論が出たため `tsj-*`(observe、`e2e-ime.yml`)は
+撤去済み(撤去コミット: TBD、`git show <撤去コミット>^:.github/workflows/e2e-ime.yml` で戻せる)。
+
+結果(run 37275609943、tsj-* 8 構成 × 4 run、GJI・tsf/edit × 10/20ms、各 64 試行): **差は検出できなかった**(全構成 0/64 FAIL、Wilson 95%
+上限 約6%)。jit は親指ずれの分だけ枠を伸ばすので総時間が約3倍になり(base 397〜793ms → jit 1189〜1590ms)、base より「遅い」打鍵になる。
+速度を揃えた比較は未実施。詳細は PR #486 のコメント参照。
+
+## 時間窓のずらし(`tsx-susp-*`、`examples/typing_stress/suspend.rs`、BUG-171)
+
+GJI の変換サーバ(GoogleIMEJaConverter)・候補窓の描画(GoogleIMEJaRenderer)を打鍵の途中で一時停止して応答を遅らせ、BUG-171(途中の語の
+StaleConfirm→ESC)を実機で当てにいく調査。結論が出たため `tsx-susp-*`(observe、`e2e-ime.yml`)は撤去済み(撤去コミット: TBD、
+`git show <撤去コミット>^:.github/workflows/e2e-ime.yml` で戻せる)。
+
+変換サーバ・描画サーバのどちらを止めても、per-VK confirm の StaleConfirm 発火条件・文字の消失/リテラル化に差は出なかった(全試行 0件)。
+途中の語の StaleConfirm→ESC は最終的に再現できないまま。詳細な経緯・各ラウンドの数値は [docs/known-bugs/BUG-171.md](../../../docs/known-bugs/BUG-171.md) 参照。
