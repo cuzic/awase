@@ -69,23 +69,23 @@ pub fn is_windows_terminal_window(class_name: &str) -> bool {
 /// ADR-270 の確認(Mozc の最初の送信の後に、入力中の文字ができたか。できていなければ Backspace で消して送り直す)を
 /// 張ってよい前景窓のクラスか。
 ///
-/// **Chrome 系(`Chrome_WidgetWin_1`・`Chrome_RenderWidgetHostHWND`)と空のクラスだけを除き、それ以外はすべて張る**
-/// (ADR-285、BUG-226)。以前は Windows Terminal・WezTerm の許可リストだったが、測っていない窓を既定で外す形だったため、
-/// LINE(`Qt663QWindowIcon`)で cold の最初の `ko` の `k` が素通りして `kおちら` になっても、確認も ADR-284 の回収も
-/// 張られなかった(2026-10-28 16:41 JST、dragonflyg4)。外す根拠は実測のあるものだけにする。
+/// **空のクラスだけを除き、それ以外はすべて張る**(ADR-285、BUG-226、ADR-288)。以前は Windows Terminal・
+/// WezTerm の許可リストだったが、測っていない窓を既定で外す形だったため、LINE(`Qt663QWindowIcon`)で cold の
+/// 最初の `ko` の `k` が素通りして `kおちら` になっても、確認も ADR-284 の回収も張られなかった(2026-10-28
+/// 16:41 JST、dragonflyg4)。外す根拠は実測のあるものだけにする。
 ///
-/// Chrome を除く理由: TSF composition context の再初期化に ~326ms かかる実測(`79134f5`)があり、確認の期限
-/// (`MOZC_COMPOSE_CHECK_MS`、300ms)を越えて遅れてできた入力中の文字を、誤判定の Backspace が消しうる
-/// (PR #809 レビュー M3)。ADR-285 の per-VK 化で消す文字は最初の 1 キーだけになったが、Chrome では誤判定自体が
-/// 起きうるので、`confirmed after Nms` の分布を取るまで外したままにする。
+/// 以前は Chrome 系(`Chrome_WidgetWin_1`・`Chrome_RenderWidgetHostHWND`)も除いていた(ADR-285 時点の根拠:
+/// TSF composition context の再初期化に ~326ms かかる実測(`79134f5`)があり、確認の期限(`MOZC_COMPOSE_CHECK_MS`、
+/// 300ms)を越えて遅れてできた入力中の文字を、誤判定の Backspace が消しうる〈PR #809 レビュー M3〉)。
+/// **ADR-288 でこの前提を反証した**: `79134f5` は実は Mozc 固有の計測ではなく GJI 側の別バグの類推適用だった。
+/// 実機の TIP + 実際の Mozc サーバーに対し、CI で確認の期限超過(320ms 凍結)を人為的に作って Backspace×1+再送の
+/// 回収を確認した結果(CI run `42195405660`)、`passed`(素通り)カウンタは常に 0 のままだった——`Session::Backspace`
+/// (入力中の文字がある状態)が常にサーバー側で消費するため、確定済み文字(直前の `PRE`)も壊れなかった。
+/// Chrome 固有の除外理由は無くなったため、2026-11-06 に撤去した。
 /// 他の窓で除く必要が見つかったら、実測の根拠と一緒にここへ足す。
 #[must_use]
 pub fn is_mozc_compose_check_window(foreground_class: &str) -> bool {
     !foreground_class.is_empty()
-        && !matches!(
-            foreground_class,
-            "Chrome_WidgetWin_1" | "Chrome_RenderWidgetHostHWND"
-        )
 }
 
 /// ADR-270 の確認を張るか(Mozc 系 × Chrome 系と空以外の窓)。
@@ -375,9 +375,9 @@ mod tests {
 
     use super::*;
 
-    /// ADR-270 の確認は Chrome 系と空のクラス以外のすべての窓に張る(ADR-285、BUG-226)。
+    /// ADR-270 の確認は空のクラス以外のすべての窓に張る(ADR-285、BUG-226、ADR-288で Chrome 除外も撤去)。
     #[test]
-    fn mozc_compose_check_window_excludes_only_chrome_and_empty() {
+    fn mozc_compose_check_window_excludes_only_empty() {
         for applies in [
             "CASCADIA_HOSTING_WINDOW_CLASS",
             "org.wezfurlong.wezterm",
@@ -385,15 +385,15 @@ mod tests {
             "OpusApp",
             "Notepad",
             "Windows.UI.Input.InputSite.WindowClass",
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND",
         ] {
             assert!(is_mozc_compose_check_window(applies), "{applies}");
         }
-        for other in ["Chrome_WidgetWin_1", "Chrome_RenderWidgetHostHWND", ""] {
-            assert!(!is_mozc_compose_check_window(other), "{other}");
-        }
+        assert!(!is_mozc_compose_check_window(""));
     }
 
-    /// Mozc × Chrome 系と空以外の窓だけ真。GJI(証拠あり)や他の窓は偽(PR #809 再レビュー N1・N2)。
+    /// Mozc × 空以外の窓だけ真。GJI(証拠あり)や他の窓は偽(PR #809 再レビュー N1・N2、ADR-288で Chrome 除外も撤去)。
     #[test]
     fn mozc_compose_check_applies_table() {
         assert!(mozc_compose_check_applies(
@@ -403,7 +403,7 @@ mod tests {
         assert!(mozc_compose_check_applies(true, "org.wezfurlong.wezterm"));
         assert!(mozc_compose_check_applies(true, "Qt663QWindowIcon"));
         assert!(!mozc_compose_check_applies(false, "Qt663QWindowIcon"));
-        assert!(!mozc_compose_check_applies(true, "Chrome_WidgetWin_1"));
+        assert!(mozc_compose_check_applies(true, "Chrome_WidgetWin_1"));
         assert!(mozc_compose_check_applies(true, "OpusApp"));
         assert!(!mozc_compose_check_applies(true, ""));
         assert!(!mozc_compose_check_applies(

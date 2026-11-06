@@ -72,12 +72,13 @@ fn per_vk_alone_fixes_the_first_key_literal() {
     assert_eq!(pm.backspaces_issued, 1);
 }
 
-/// Chrome 系は確認を張らない（誤判定の Backspace が正しい文字を消すおそれがあるため、実測まで外す）。
+/// ADR-288: Chrome 除外を撤去した後は、Chrome 系も他の窓と同じく確認を張り、素通りを回収する。
+/// 以前はここで `kお`（確認なし、backspaces_issued=0）を期待していた（ADR-285 時点の前提）。
 #[test]
-fn chrome_is_left_alone_so_the_leak_is_not_recovered() {
+fn chrome_is_now_recovered_like_any_other_window_after_adr288() {
     let mut pm = PseudoMozc::cold_dropping_first_key();
-    assert_eq!(run(Awase::CURRENT, CHROME, &mut pm, "ko").text, "kお");
-    assert_eq!(pm.backspaces_issued, 0);
+    assert_eq!(run(Awase::CURRENT, CHROME, &mut pm, "ko").text, "こ");
+    assert_eq!(pm.backspaces_issued, 1);
 }
 
 /// 安全側: Mozc サーバーが応答できないときはキーが握りつぶされている可能性があるので、何も消さない。

@@ -15,10 +15,10 @@
 //! Backspace+再送のあとに最終的に正しい文字列になることを固定する。(b) の場合（本当に素通り）は
 //! `PseudoMozc::cold_dropping_first_key()` を使う既存の `pseudo_mozc_repro.rs` が固定済み。
 //!
-//! まだ実機未確認（推奨(c)、所有者への報告のとおり）。`is_mozc_compose_check_window` を実際に変える前に、
-//! 実機の Chrome×Mozc で `key_eaten_count`/`key_passed_count`/`edit_session_fail_count` と bit0 を集め、
-//! ここで書いた予測（期限超過の例は「スレッド無応答(キュー)」か「`key_seq` 不進(本物の素通り)」のどちらかだけ）
-//! を確かめること。
+//! ADR-288 で `is_mozc_compose_check_window` から Chrome 除外を外す本番コード変更を実施済み（2026-11-06）。
+//! まだ実機未確認（ADR-288「残っている懸念」参照）。実機の Chrome×Mozc で `key_eaten_count`/`key_passed_count`/
+//! `edit_session_fail_count` と bit0 を集め、ここで書いた予測（期限超過の例は「スレッド無応答(キュー)」か
+//! 「`key_seq` 不進(本物の素通り)」のどちらかだけ）を確かめること。
 
 mod support;
 

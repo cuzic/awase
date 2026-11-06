@@ -9568,7 +9568,7 @@ fn probe_actuation_fence_bump_precedes_send_input() {
 /// PR #809 レビュー M2(BUG-209 の再発防止): 物理 F2(ひらがな)の cold 判断は `physical_f2_marks_cold` を通し、
 /// Mozc 系の判定(`gji_evidence_absent`)を渡す。warm の Mozc でも cold にしないと、ADR-270 の確認が張られず
 /// 「をもと」→「wo もと」が戻る(判断表は `tsf/cold_reason.rs` の単体テストが固定する)。
-/// ADR-270 の確認を張る窓は `is_mozc_compose_check_window` で旧来の範囲(Windows Terminal・WezTerm)に限る(M3)。
+/// ADR-270 の確認を張る窓は `is_mozc_compose_check_window`(ADR-285・ADR-288、空のクラスのみ除く)で決める(M3)。
 #[test]
 fn physical_f2_cold_and_mozc_check_window_are_wired() {
     let platform = read_crate_file("src/platform.rs");

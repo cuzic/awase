@@ -11,10 +11,12 @@ summary: |-
   作り出し、本物の TIP + 本物の Mozc サーバーに対して Backspace(1 回、ESCAPE なし)+ 全体再送の回収が正しく
   終わるかを確かめた。結果: 期限超過後も Backspace+再送は常に正しい文字列に終わった(素通りは一度も起きず
   〈`passed` カウンタが 0 のまま〉、直前の文字も消えなかった)。除外の前提は成立しないと判断する。
-  **決定はまだ実装していない**(`is_mozc_compose_check_window` の Chrome 除外は本 ADR の時点でまだ残っている)。
+  **決定は実装済み**(`is_mozc_compose_check_window` から Chrome 除外を外す本番コード変更、2026-11-06)。
+  実機 Chrome 自体での確認はまだ未着手(下記「残っている懸念」参照)。
 status: |-
   提案・検証済み(実機 TIP + 実際の Mozc サーバーでの CI 確認、2026-11-06)。本番コード(`is_mozc_compose_check_window`
-  の Chrome 除外を外す変更)は未実装。実機 Chrome 自体での確認も未着手(下記「残っている懸念」参照)。
+  の Chrome 除外を外す変更)も実装済み(2026-11-06、同ブランチ)。実機 Chrome 自体での確認は未着手
+  (下記「残っている懸念」参照)。
 related_adr:
   - "ADR-270"
   - "ADR-284"
@@ -86,17 +88,21 @@ Chrome 自体の cold-start タイミングを CI で再現するのは信頼で
 結論: **PR #809 レビュー M3 の懸念(期限超過後の Backspace が確定済み文字を壊す)は、実機の TIP + 実際の
 Mozc サーバーに対しても再現しなかった。** Chrome を除外する前提は成立しない。
 
-## 決定(提案、未実装)
+## 決定(実装済み、2026-11-06)
 
-1. `is_mozc_compose_check_window`(`crates/awase-windows-base/src/focus/class_names.rs:83-89`)から Chrome 系
-   (`Chrome_WidgetWin_1`・`Chrome_RenderWidgetHostHWND`)の除外を外し、空のクラスだけを除く形にする。
-2. これに伴い、`chrome_is_left_alone_so_the_leak_is_not_recovered`(`crates/awase-windows/tests/pseudo_mozc_repro.rs`)
-   のような「Chrome は確認を張らない」ことを固定しているテストは、「Chrome も確認を張り、正しく回収する」
-   方向に反転する(fix-requires-evidence.md の「キー選択」再発ファミリー対象。回帰テストを同じ PR で足す)。
-3. タイミング定数(`MOZC_COMPOSE_CHECK_MS`)は変えない。この ADR の主張は「待つ時間を伸ばす」ではなく
+1. `is_mozc_compose_check_window`(`crates/awase-windows-base/src/focus/class_names.rs:83-85`)から Chrome 系
+   (`Chrome_WidgetWin_1`・`Chrome_RenderWidgetHostHWND`)の除外を外し、空のクラスだけを除く形にした。
+2. これに伴い、旧 `chrome_is_left_alone_so_the_leak_is_not_recovered`(`crates/awase-windows/tests/pseudo_mozc_repro.rs`)
+   のような「Chrome は確認を張らない」ことを固定していたテストは、`chrome_is_now_recovered_like_any_other_window_after_adr288`
+   として「Chrome も確認を張り、正しく回収する」方向に反転した(fix-requires-evidence.md の「キー選択」再発ファミリー
+   対象。`class_names.rs` の単体テスト2件も同様に反転)。
+3. タイミング定数(`MOZC_COMPOSE_CHECK_MS`)は変えていない。この ADR の主張は「待つ時間を伸ばす」ではなく
    「待った後の回収そのものは安全」という点にあるため。
 
-実装そのものは本 ADR では行わない(実機 Chrome 自体での確認が先——下記)。
+全テスト(`cargo test -p awase-windows-base --lib`・`cargo test -p awase-windows --test pseudo_mozc_repro
+--test pseudo_mozc_chrome_queue --test pseudo_mozc_sweep --test architecture_guard`)・
+`cargo check --target x86_64-pc-windows-msvc`・`cargo fmt -- --check` はいずれも green(2026-11-06)。
+実機 Chrome 自体での確認はまだ行っていない(下記「残っている懸念」参照、マージ前に確認を推奨)。
 
 ## 残っている懸念(Chrome 自体では確認していない)
 
