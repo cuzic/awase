@@ -1674,10 +1674,10 @@ fn main() {
             // ひらがなキー(F2)。cold_reason::physical_f2_marks_cold が Mozc 系では常に cold にする。
             p.press(0xF2, false, 60);
             sleep(100);
-            // BUG-225/226 と同じ間隔で素早く `ko` を打つ。
-            p.press(0x4B, false, 30);
-            sleep(30);
-            p.press(0x4F, false, 30);
+            // BUG-225/226 と同じキー: 無シフトの R(NICOLA配列、layout/nicola.yab の「ローマ字シフト無し」で
+            // こ=ko)。NICOLA Engine がこれを romaji "ko" に訳して vk-send する(k,o を直接打つと Engine 自身の
+            // 単独キー割付け〈き・お〉に化けてしまい、Mozc のローマ字変換を経由しない)。
+            p.press(0x52, false, 30);
             // MOZC_COMPOSE_CHECK_MS(300ms)+マージンだけ待ってから読む。
             sleep(400);
             let snap = p.command("snap", "snap");
