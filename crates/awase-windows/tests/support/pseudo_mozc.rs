@@ -35,6 +35,12 @@ pub struct PseudoMozc {
     // ── 宣言（挙動の型） ──
     /// cold の最初の 1 キーを TIP が見ず、文書へそのまま届く（BUG-225/226 の実測）。一度だけ起きる。
     pub drop_first_key: bool,
+    /// A1(Chrome のキューイングの模型): 最初の 1 キーが TIP（`OnTestKeyDown`）に実際に届くまでの遅れ（ms）。
+    /// 0 なら即座に届く（既定）。`drop_first_key` とは排他で使う（両方 true の組み合わせは未定義。届くことが
+    /// 前提の遅延と、届かないことが前提の脱落は同時に起きない）。`key_seq`・`phase` のどちらも、届くまでは
+    /// 送信前の基準値のまま進まない（研究報告の A1: 「キューに積まれる」。TIP が見ていない点は A2〈脱落〉と
+    /// 観測上区別できないが、届いたあとは通常の `compose_delay_ms` に従って正しく組成される）。
+    pub first_key_delay_ms: u64,
     /// TIP が最初のキーを見てから入力中の文字（phase 1）ができるまで（ms）。実測 ~60ms 以内（ADR-270）。
     pub compose_delay_ms: u64,
     /// `false` にすると Mozc サーバーが応答できない（キーは握りつぶされ、文書にも出ない）。
@@ -43,7 +49,16 @@ pub struct PseudoMozc {
     /// （ADR-284、2026-10-21）。
     pub second_key_lag_ms: u64,
     // ── 状態 ──
+    /// 最初の 1 キーの特別処理（`drop_first_key` の脱落、または `first_key_delay_ms` の遅延）を、
+    /// 一度だけ消費したか。両方 0/false なら使われない。
     dropped: bool,
+    /// A1 の模型（同じスレッドの入力キューがまだ汲まれていない）。`Some(arrival)` の間、`send_key`・
+    /// `backspace`・`escape` はいずれも即座には効かず、[`QueuedOp`] として `queue` の末尾に積まれる
+    /// （実際に Windows の入力キューに積まれるのと同じ順序を保つため）。`now >= arrival` になった時点で
+    /// `resolve_pending` が `arrival` 時点として `queue` を先頭から順に適用し、ゲートを開ける。
+    queue_gate_until: Option<u64>,
+    /// `queue_gate_until` が閉じている間に送られた操作（順序どおり）。
+    queue: Vec<QueuedOp>,
     /// `key_seq` の基準値（送信の前）。TIP が見たキーが数えられるたびに [`PseudoMozc::key_seq_at`] で足される。
     pub key_seq: u32,
     /// TIP が見たキーが `key_seq` に数えられる時刻。
@@ -55,6 +70,14 @@ pub struct PseudoMozc {
     pub doc: String,
     /// 発行された Backspace の数（握りつぶされたキーの後に Backspace が飛んでいないことの検証用）。
     pub backspaces_issued: usize,
+}
+
+/// `queue_gate_until` が閉じている間に送られ、まだ適用されていない操作。
+#[derive(Debug, Clone)]
+enum QueuedOp {
+    Key(char),
+    Backspace(usize),
+    Escape,
 }
 
 impl PseudoMozc {
@@ -69,10 +92,13 @@ impl PseudoMozc {
     pub fn new(drop_first_key: bool, server_ready: bool) -> Self {
         Self {
             drop_first_key,
+            first_key_delay_ms: 0,
             compose_delay_ms: 30,
             server_ready,
             second_key_lag_ms: 0,
             dropped: false,
+            queue_gate_until: None,
+            queue: Vec::new(),
             key_seq: 330,
             seq_ready: Vec::new(),
             composing: String::new(),
@@ -82,8 +108,21 @@ impl PseudoMozc {
         }
     }
 
+    /// A1 の模型: cold でキューに積まれるが、いずれ届く最初の 1 キー（`drop_first_key` の「届かない」版）。
+    pub fn cold_queuing_first_key(delay_ms: u64) -> Self {
+        let mut pm = Self::new(false, true);
+        pm.first_key_delay_ms = delay_ms;
+        pm
+    }
+
     /// VK でローマ字 1 文字を送る。
     pub fn send_key(&mut self, c: char, now: u64) {
+        self.resolve_pending(now);
+        if self.queue_gate_until.is_some() {
+            // キューが閉じている間に送った分（例: 全体の再送）は、最初のキーより後ろに積む。
+            self.queue.push(QueuedOp::Key(c));
+            return;
+        }
         if !self.server_ready {
             // サーバー無応答: キーは TIP に取り込まれず、文書にも出ない（握りつぶし）。
             return;
@@ -93,6 +132,26 @@ impl PseudoMozc {
             self.doc.push(c);
             return;
         }
+        if self.first_key_delay_ms > 0
+            && !self.dropped
+            && self.composing.is_empty()
+            && self.composing_since.is_none()
+        {
+            // A1: この 1 回だけ、実際に届くまでキューを閉じる（`now + first_key_delay_ms`）。この最初の
+            // キー自身もキューへ積む（`drop_first_key` と同じ「一度だけ」を `dropped` で表す）。この間に
+            // 送った Backspace/再送は、すべて `send_key`/`backspace`/`escape` の冒頭の分岐でここへ積まれ、
+            // ゲートが開いたときに最初のキーの**後ろ**から順に適用される（awase から見た送信順を保つ——
+            // 同じスレッドの入力キューでの処理順の模型）。
+            self.dropped = true;
+            self.queue_gate_until = Some(now + self.first_key_delay_ms);
+            self.queue.push(QueuedOp::Key(c));
+            return;
+        }
+        self.apply_key(c, now);
+    }
+
+    /// 遅延なしで実際に届いたキーの効果（`key_seq`/`composing` を進める）。
+    fn apply_key(&mut self, c: char, now: u64) {
         // 最初に見たキーはすぐ数えられ、2 打目以降は `second_key_lag_ms` 遅れる。
         let ready = if self.seq_ready.is_empty() {
             now
@@ -102,6 +161,26 @@ impl PseudoMozc {
         self.seq_ready.push(ready);
         self.composing.push(c);
         self.composing_since.get_or_insert(now);
+    }
+
+    /// キューが届く時刻（`queue_gate_until`）に達していれば、積んだ分（`queue`）を先頭から順に適用して
+    /// ゲートを開ける。読み・書きのどちらの操作も、まずこれを呼んでから自分の仕事をする（同じスレッドの
+    /// 入力キューでの順序——先に送った分が先に処理される——を保つ）。
+    fn resolve_pending(&mut self, now: u64) {
+        let Some(arrival) = self.queue_gate_until else {
+            return;
+        };
+        if now < arrival {
+            return;
+        }
+        self.queue_gate_until = None;
+        for op in std::mem::take(&mut self.queue) {
+            match op {
+                QueuedOp::Key(c) => self.apply_key(c, arrival),
+                QueuedOp::Backspace(n) => self.apply_backspace(n),
+                QueuedOp::Escape => self.apply_escape(),
+            }
+        }
     }
 
     pub fn send(&mut self, romaji: &str, now: u64) {
@@ -125,7 +204,8 @@ impl PseudoMozc {
     }
 
     /// 共有メモリの読み。
-    pub fn read(&self, now: u64) -> ComposeReading {
+    pub fn read(&mut self, now: u64) -> ComposeReading {
+        self.resolve_pending(now);
         ComposeReading::Block(ComposeBlock {
             active: true,
             effective_open: true,
@@ -162,15 +242,46 @@ impl PseudoMozc {
         )
     }
 
-    pub fn escape(&mut self) {
+    /// `VK_ESCAPE`。入力中の文字があれば Cancel として消費し、無ければアプリへ素通りする
+    /// （`Session::Revert` の EchoBack。この模型では素通りした ESC の文書への効果は無いものとする——
+    /// 実機ではアプリ固有の操作になりうる。研究報告の「Chrome では ESC を足すほうが危険」の根拠）。
+    pub fn escape(&mut self, now: u64) {
+        self.resolve_pending(now);
+        if self.queue_gate_until.is_some() {
+            self.queue.push(QueuedOp::Escape);
+            return;
+        }
+        self.apply_escape();
+    }
+
+    fn apply_escape(&mut self) {
         self.composing.clear();
         self.composing_since = None;
     }
 
-    pub fn backspace(&mut self, n: usize) {
+    /// `VK_BACK` を `n` 回。入力中の文字があれば `Session::Backspace`（サーバーが消費し、1 文字ずつ
+    /// 入力中の文字から削る。文書には届かない）、無ければ `Session::Revert` の EchoBack（アプリへ素通りし、
+    /// 文書の直前の 1 文字を消す）。実機の調査報告（mozc の `session/session.cc` の `Backspace`/`Revert`）
+    /// に基づく。`backspaces_issued` は awase が送った回数（キューに積まれて later 処理される分も含む）。
+    pub fn backspace(&mut self, n: usize, now: u64) {
+        self.resolve_pending(now);
         self.backspaces_issued += n;
+        if self.queue_gate_until.is_some() {
+            self.queue.push(QueuedOp::Backspace(n));
+            return;
+        }
+        self.apply_backspace(n);
+    }
+
+    fn apply_backspace(&mut self, n: usize) {
         for _ in 0..n {
-            self.doc.pop();
+            if self.composing.pop().is_some() {
+                if self.composing.is_empty() {
+                    self.composing_since = None;
+                }
+            } else {
+                self.doc.pop();
+            }
         }
     }
 
@@ -429,9 +540,9 @@ fn recover(
     romaji: &str,
 ) {
     if escape {
-        pm.escape();
+        pm.escape(at);
     }
-    pm.backspace(backs);
+    pm.backspace(backs, at);
     pm.send(romaji, 10_000); // 全体を再送（cold は一度だけなので落ちない）
     trace.push((
         at,

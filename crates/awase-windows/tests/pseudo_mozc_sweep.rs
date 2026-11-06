@@ -3,9 +3,11 @@
 //! 1. 実測の目録（`support/cold_drop.rs`）の各観測を、現行の設定で擬似物が再現する。
 //! 2. 目録の数では「起きる割合」を確率として使えないことを、区間で固定する（観測が増えたら外す）。
 //! 3. 条件（素通りの有無 × 入力中の文字ができるまでの遅れ × 2 打目の数えの遅れ × 窓）を総当たりで掃引し、
-//!    「期限(`MOZC_COMPOSE_CHECK_MS`)より前に入力中の文字ができるなら、どの条件でも正しい文字になり、
-//!    直前の文字を消さない」ことを固定する。期限以降の遅れでは直前の文字を消しうる境界が実在することも固定する
-//!    （Chrome 系を張らない理由、PR #809 M3 と同じ型の危険）。
+//!    「期限(`MOZC_COMPOSE_CHECK_MS`)の前後どちらでも、どの条件でも正しい文字になり、直前の文字を消さない」
+//!    ことを固定する。期限以降に入力中の文字ができる遅い TIP で直前の文字が消えるという境界は、2026-11-06 の
+//!    Chrome×Mozc 調査で `PseudoMozc::backspace`/`escape` 自体の作り方の欠陥（composing の有無を見ずに
+//!    常に `doc` を削っていた）と判明し、修正した（PR #809 M3 が懸念した危険の実体は、実機の Mozc ではなく
+//!    擬似物側にあった）。
 
 mod support;
 
@@ -125,14 +127,26 @@ fn below_the_deadline_every_condition_types_correctly_and_keeps_the_previous_cha
     assert!(checked > 50, "掃引が空に近い: {checked}");
 }
 
-/// 期限以降に入力中の文字ができる遅い TIP では、直前の文字を消す誤判定が実在する（Chrome 系を張らない理由と同じ型）。
-/// 境界が消えたら（修正されたら）この試験を直す。
+/// 期限以降に入力中の文字ができる遅い TIP でも、直前の文字は消えない。
+///
+/// 旧版の擬似物は `PseudoMozc::backspace` が composing の有無を見ず常に `doc` を削っていたため、
+/// `compose_delay_ms` が期限を越える条件（この境界の `c.delay >= DEADLINE`）で `composing` に
+/// すでに入っている文字を見落とし、直前の `あ` を誤って消していた——これは擬似物の作り方の欠陥であって、
+/// 実機の Mozc の挙動ではなかった。Chrome×Mozc の調査（研究報告、2026-11-06）で実際の
+/// `session/session.cc` を確認した結果、入力中の文字がある状態の Backspace はサーバーが消費し
+/// （`Session::Backspace`）、文書には届かない。`PseudoMozc::backspace`/`escape` を composing の
+/// 有無で分岐させたことで、この境界は（擬似物の欠陥としては）消えた。
 #[test]
-fn at_or_after_the_deadline_a_slow_tip_can_make_the_recovery_delete_the_previous_char() {
-    let violations = sweep()
-        .iter()
-        .filter(|c| armed(c) && c.delay >= DEADLINE)
-        .filter(|c| run_case(c).0 != "あこ")
-        .count();
-    assert!(violations > 0, "期限以降の遅れで誤判定が出なくなった");
+fn at_or_after_the_deadline_a_slow_tip_still_keeps_the_previous_char() {
+    let mut checked = 0;
+    for c in sweep().iter().filter(|c| armed(c) && c.delay >= DEADLINE) {
+        let (text, _) = run_case(c);
+        assert_eq!(
+            text, "あこ",
+            "class={} drop={} delay={} lag={} cfg={:?}",
+            c.class, c.drop, c.delay, c.lag, c.cfg
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "掃引が空: {checked}");
 }
