@@ -1649,6 +1649,51 @@ fn main() {
         no_clear: false,
         cancel_after: std::env::args().any(|a| a == "--table"),
     };
+    // `--mozc-cold-chrome`(ADR-288 実機確認): BUG-225/226 と同じ repro(別窓へ退避→Chromeへ戻る=
+    // ColdReason::FocusChange→ひらがなキー→素早く2文字)を実 Chrome に対して行い、ADR-270 の確認
+    // (`[mozc-compose]`)が張られて `ko` が正しく `こ` になるか(Chrome 除外を外した後の挙動)を見る。
+    // 繰り返し回数は `--repeat=`(既定3)。
+    if args.iter().any(|a| a == "--mozc-cold-chrome") {
+        p.log
+            .line("=== ADR-288: Mozc cold Chrome compose-check 確認 ===");
+        for i in 1..=repeat {
+            p.focus_lost = false;
+            if !bring_to_front() {
+                p.log.line("前面化に失敗");
+            }
+            sleep(300);
+            let _ = p.command("clear", "cleared");
+            sleep(150);
+            // BUG-225/226 と同じ repro: 別窓(タスクバー)へ退避してから Chrome へ戻る(ColdReason::FocusChange)。
+            let away = focus_away();
+            p.log.line(&format!("[{i}/{repeat}] focus_away={away}"));
+            sleep(300);
+            let back = bring_to_front();
+            p.log.line(&format!("[{i}/{repeat}] bring_to_front={back}"));
+            sleep(200);
+            // ひらがなキー(F2)。cold_reason::physical_f2_marks_cold が Mozc 系では常に cold にする。
+            p.press(0xF2, false, 60);
+            sleep(100);
+            // BUG-225/226 と同じ間隔で素早く `ko` を打つ。
+            p.press(0x4B, false, 30);
+            sleep(30);
+            p.press(0x4F, false, 30);
+            // MOZC_COMPOSE_CHECK_MS(300ms)+マージンだけ待ってから読む。
+            sleep(400);
+            let snap = p.command("snap", "snap");
+            let text = snap.as_ref().map_or_else(String::new, |e| e.value.clone());
+            let ok = text.trim() == "こ";
+            p.log.line(&format!(
+                "[{i}/{repeat}] RESULT text={text:?} {}",
+                if ok { "PASS" } else { "FAIL" }
+            ));
+            let _ = p.command("clear", "cleared");
+            sleep(300);
+        }
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
     // `--tray-cmd=<ID>`(+ `--file-state=<path,...>`): トレイメニュー操作の再現。前後のファイル状態を FILE_STATE 行に出す。
     if let Some(id) = args.iter().find_map(|a| {
         a.strip_prefix("--tray-cmd=")
