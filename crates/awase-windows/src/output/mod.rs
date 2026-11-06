@@ -15,6 +15,9 @@ pub(crate) use sender::OutputSession;
 pub(crate) mod conv_actuation;
 pub(crate) mod held_modifiers;
 mod key_injector;
+// EXPERIMENTAL(awase exp/mozc-direct-actuation、未マージ): Mozc Readable 版6(直接actuationコマンド、
+// 未リリース)を送る殻。runtime/ からはまだ呼ばれていない。
+pub(crate) mod mozc_direct_actuation;
 pub(crate) mod probe_io;
 mod resolve;
 mod tsf_warmup_coord;

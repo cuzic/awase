@@ -27,6 +27,13 @@ pub const V3_BLOCK_SIZE: usize = 80;
 /// pulse しない）を後に並べ直された。境界は旧version間の個別の区切りではなく、この統合後のオフセットのみ。
 pub const V5_BLOCK_SIZE: usize = 160;
 
+/// version 6 以降のブロックの大きさ（直接actuationコマンドのnonce/結果。**EXPERIMENTAL、未リリース**）。
+///
+/// awase の「開ループではなく閉ループにしたい」という方針（所有者判断、2026-11-05）を受けた実験実装。
+/// mozc-readable `exp/direct-actuation-channel` ブランチでの追記で、`readable` へはまだマージされていない。
+/// 詳細は `readable/docs/shared-memory.md` 6-5 節。
+pub const V6_BLOCK_SIZE: usize = 176;
+
 /// `magic`（メモリ上のバイト列は `4D 44 52 5A`、ASCII の `MDRZ`）。
 pub const MAGIC: u32 = 0x5A52_444D;
 
@@ -276,6 +283,66 @@ impl KeyResults {
         Self {
             eaten: u32_at(bytes, 152),
             passed: u32_at(bytes, 156),
+        }
+    }
+}
+
+/// 直接actuationコマンドの結果（version 6 の `last_cmd_result`、**EXPERIMENTAL**）。
+///
+/// 数値は mozc-readable 側の `TipDirectActuationResult`（`tip_state_publisher.h`）と同じ、ワイヤー契約の一部。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectActuationResult {
+    /// この TIP はまだ 1 件も直接actuationコマンドを処理していない（`last_cmd_nonce == 0`）
+    None,
+    /// 適用済み。実キーと同じ server round trip が完了し、`effective_open`/`tsf_open` 等はこの結果より前に反映済み
+    Applied,
+    /// このスレッドにフォーカス中の `ITfContext` が無かった
+    NoFocusedContext,
+    /// server round trip 自体が失敗した、または edit session が得られなかった
+    SendCommandFailed,
+    /// 要求の予約ビットが 0 でなかった（何もしていない）
+    ReservedBitsSet,
+    /// 0〜4 の範囲外（読み手がまだ知らない将来の値）
+    Unknown(u32),
+}
+
+impl DirectActuationResult {
+    /// `last_cmd_result` の生の値から。範囲外は `Unknown`（将来の値を黙って既知の値にしない）。
+    #[must_use]
+    pub const fn from_u32(value: u32) -> Self {
+        match value {
+            0 => Self::None,
+            1 => Self::Applied,
+            2 => Self::NoFocusedContext,
+            3 => Self::SendCommandFailed,
+            4 => Self::ReservedBitsSet,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+/// version 6 の追記分（オフセット 160〜175、**EXPERIMENTAL、未リリース**）。
+///
+/// 直接actuationコマンドの nonce/結果と、要求の宛先窓。`last_cmd_nonce`/`last_cmd_result` は状態
+/// （pulseする）、`cmd_window_handle` は診断用（pulseしない）。`readable/docs/shared-memory.md` 6-5 節。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectActuationAck {
+    /// この TIP が最後に処理した直接actuation要求の nonce（0=まだ無い）
+    pub last_cmd_nonce: u32,
+    /// `last_cmd_nonce` の要求の結果
+    pub last_cmd_result: DirectActuationResult,
+    /// 直接actuation要求を送る宛先の `HWND`（値そのまま。0=まだ窓が無い）
+    pub cmd_window_handle: u64,
+}
+
+impl DirectActuationAck {
+    /// 176 バイトの追記分のうちオフセット 160〜175 を解釈する（検証はしない）。
+    #[must_use]
+    pub fn parse(bytes: &[u8; V6_BLOCK_SIZE]) -> Self {
+        Self {
+            last_cmd_nonce: u32_at(bytes, 160),
+            last_cmd_result: DirectActuationResult::from_u32(u32_at(bytes, 164)),
+            cmd_window_handle: u64_at(bytes, 168),
         }
     }
 }
@@ -1440,6 +1507,60 @@ mod tests {
         assert_eq!(t.key_sink_blur_tick_ms, 2_000);
         assert_eq!(t.thread_focus_tick_ms, 3_000);
         assert_eq!(t.first_key_tick_ms, 4_000);
+    }
+
+    #[test]
+    fn direct_actuation_result_values_are_the_wire_contract() {
+        assert_eq!(
+            DirectActuationResult::from_u32(0),
+            DirectActuationResult::None
+        );
+        assert_eq!(
+            DirectActuationResult::from_u32(1),
+            DirectActuationResult::Applied
+        );
+        assert_eq!(
+            DirectActuationResult::from_u32(2),
+            DirectActuationResult::NoFocusedContext
+        );
+        assert_eq!(
+            DirectActuationResult::from_u32(3),
+            DirectActuationResult::SendCommandFailed
+        );
+        assert_eq!(
+            DirectActuationResult::from_u32(4),
+            DirectActuationResult::ReservedBitsSet
+        );
+        // 将来の値を黙って既知の値にしない（out_of_range_mode_value_is_kept_as_unknown_not_guessed と同じ流儀）。
+        assert_eq!(
+            DirectActuationResult::from_u32(5),
+            DirectActuationResult::Unknown(5)
+        );
+    }
+
+    #[test]
+    fn direct_actuation_ack_parse_reads_the_version_6_fields_little_endian() {
+        let mut b = [0u8; V6_BLOCK_SIZE];
+        b[160..164].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        b[164..168].copy_from_slice(&1u32.to_le_bytes());
+        b[168..176].copy_from_slice(&0x0000_7FFE_0010u64.to_le_bytes());
+        assert_eq!(
+            DirectActuationAck::parse(&b),
+            DirectActuationAck {
+                last_cmd_nonce: 0x1234_5678,
+                last_cmd_result: DirectActuationResult::Applied,
+                cmd_window_handle: 0x0000_7FFE_0010,
+            }
+        );
+    }
+
+    #[test]
+    fn direct_actuation_ack_none_before_any_request() {
+        let b = [0u8; V6_BLOCK_SIZE];
+        let ack = DirectActuationAck::parse(&b);
+        assert_eq!(ack.last_cmd_nonce, 0);
+        assert_eq!(ack.last_cmd_result, DirectActuationResult::None);
+        assert_eq!(ack.cmd_window_handle, 0);
     }
 
     #[test]

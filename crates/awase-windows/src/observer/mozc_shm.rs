@@ -33,8 +33,8 @@ use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
 use crate::state::mozc_shm::{
     app_container_section_path, classify, format_sid, local_mapping_name, ComposeBlock,
-    ComposeReading, CompositionFields, FocusTicks, InputStyle, KeyResults, RawBlock, ReadFailure,
-    Reading, Route, BLOCK_SIZE, V3_BLOCK_SIZE, V5_BLOCK_SIZE,
+    ComposeReading, CompositionFields, DirectActuationAck, FocusTicks, InputStyle, KeyResults,
+    RawBlock, ReadFailure, Reading, Route, BLOCK_SIZE, V3_BLOCK_SIZE, V5_BLOCK_SIZE, V6_BLOCK_SIZE,
 };
 
 /// seqlock の再試行の上限（書き込みは数命令なので、実際には 1〜2 回で終わる）。
@@ -283,6 +283,34 @@ fn read_input_style_inner(handle: HANDLE, process_id: u32) -> Option<InputStyle>
     first.copy_from_slice(&full[..BLOCK_SIZE]);
     classify(&RawBlock::parse(&first), process_id).ok()?;
     Some(InputStyle::parse(&full))
+}
+
+/// EXPERIMENTAL（awase `exp/mozc-direct-actuation`、未マージ）: 対象のスレッドの共有メモリから、
+/// version 6（直接actuationコマンドの nonce/結果/宛先窓、未リリース）の追記分を読む。
+///
+/// [`read_input_style`] と同じ手順（`version >= 6` のときだけ 176 バイトまで読み直す）。version 5 以下・
+/// 読めない・受け入れられないときは `None`。belief にも IME にも何も書かない（読むだけ）。
+#[must_use]
+pub fn read_direct_actuation_ack(thread_id: u32, process_id: u32) -> Option<DirectActuationAck> {
+    let (_route, opened) = open_handle(thread_id, process_id);
+    let handle = opened.ok()?;
+    let ack = read_direct_actuation_ack_inner(handle, process_id);
+    // SAFETY: `handle` は `open_handle` が返した有効なハンドルで、ここで 1 回だけ閉じる。
+    let _ = unsafe { CloseHandle(handle) };
+    ack
+}
+
+fn read_direct_actuation_ack_inner(handle: HANDLE, process_id: u32) -> Option<DirectActuationAck> {
+    let head = read_bytes::<BLOCK_SIZE>(handle).ok()?;
+    let state = classify(&RawBlock::parse(&head), process_id).ok()?;
+    if state.version < 6 {
+        return None;
+    }
+    let full = read_bytes::<V6_BLOCK_SIZE>(handle).ok()?;
+    let mut first = [0u8; BLOCK_SIZE];
+    first.copy_from_slice(&full[..BLOCK_SIZE]);
+    classify(&RawBlock::parse(&first), process_id).ok()?;
+    Some(DirectActuationAck::parse(&full))
 }
 
 /// マップしたビューから seqlock の手順で 48 バイトを読み、ビューとハンドルを閉じる。

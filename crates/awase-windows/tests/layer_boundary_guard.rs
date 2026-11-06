@@ -528,6 +528,10 @@ const CORE_MODULES: &[&str] = &[
     "conv_classify",
     "conv_mode",
     "deferred_gate_plan",
+    // EXPERIMENTAL(awase exp/mozc-direct-actuation、未マージ): Mozc Readable 版6(未リリース)の
+    // 閉ループ実行計画。drift_plan と同じ形(Facts→核のdecide→Plan)の純粋関数、壁時計・static・
+    // Win32・FSなし。
+    "direct_actuation_plan",
     "drift_correction",
     "drift_follow_would",
     "drift_plan",

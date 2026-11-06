@@ -24,6 +24,10 @@ pub mod indicator_glyph_store;
 pub mod ime_actuation;
 pub mod ime_update;
 pub mod mozc_shm;
+// EXPERIMENTAL(awase exp/mozc-direct-actuation、未マージ): Mozc Readable の version 6(直接actuation
+// コマンド、未リリース)を使った閉ループの実行計画を決める純粋関数。送った nonce の ack を待つ・再送する・
+// 諦めるの判断だけで、PostMessage・共有メモリの読み取り(殻)には触れない。
+pub mod direct_actuation_plan;
 // ADR-208 L0: `runtime/transport.rs::PhysicalKeyDisposition::plan` の本体（配送判断の核）を挙動を変えずに
 // 移した。ungated にして、`explicit_press` の全列挙テストが本番と同じ判断コードを Linux で呼べるようにする。
 pub mod physical_disposition;
