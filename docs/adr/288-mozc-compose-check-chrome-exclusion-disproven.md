@@ -12,11 +12,13 @@ summary: |-
   終わるかを確かめた。結果: 期限超過後も Backspace+再送は常に正しい文字列に終わった(素通りは一度も起きず
   〈`passed` カウンタが 0 のまま〉、直前の文字も消えなかった)。除外の前提は成立しないと判断する。
   **決定は実装済み**(`is_mozc_compose_check_window` から Chrome 除外を外す本番コード変更、2026-11-06)。
-  実機 Chrome 自体での確認はまだ未着手(下記「残っている懸念」参照)。
+  実機 Chrome 自体での確認も実施した(dragonflyg4、2026-11-06): 除外を外したビルドで実 Chrome に対し
+  `[mozc-compose]` が実際に張られ、6 回連続で正しく confirmed することを確認した(下記「実機 Chrome での
+  確認」参照)。
 status: |-
   提案・検証済み(実機 TIP + 実際の Mozc サーバーでの CI 確認、2026-11-06)。本番コード(`is_mozc_compose_check_window`
-  の Chrome 除外を外す変更)も実装済み(2026-11-06、同ブランチ)。実機 Chrome 自体での確認は未着手
-  (下記「残っている懸念」参照)。
+  の Chrome 除外を外す変更)も実装済み(2026-11-06、同ブランチ)。実機 Chrome 自体での確認も実施済み(2026-11-06、
+  dragonflyg4、下記「実機 Chrome での確認」参照)。
 related_adr:
   - "ADR-270"
   - "ADR-284"
@@ -104,19 +106,34 @@ Mozc サーバーに対しても再現しなかった。** Chrome を除外す�
 `cargo check --target x86_64-pc-windows-msvc`・`cargo fmt -- --check` はいずれも green(2026-11-06)。
 実機 Chrome 自体での確認はまだ行っていない(下記「残っている懸念」参照、マージ前に確認を推奨)。
 
-## 残っている懸念(Chrome 自体では確認していない)
+## 実機 Chrome での確認(dragonflyg4、2026-11-06)
 
-- このプローブは素の EDIT コントロールを使い、Chrome 自体では確認していない。理由: 検証対象の分岐
-  (`Session::Backspace`/`Session::Revert`)は Mozc 側のセッション状態機械のロジックで、Chrome 固有の TSF
-  text store 実装には依存しない。唯一の Chrome 固有リスク(ESCAPE の素通りがブラウザ操作になる)は、
-  この検証経路(`escape_composition: false`)では発生しない。ただし、これは「Chrome の TSF text store が
-  素の EDIT コントロールと同じように振る舞う」という前提に依存しており、Chrome 固有の別の問題(候補ウィンドウ
-  の位置づけ、TSF text store の別の実装差異)まではこの検証で排除できていない。
+Chrome 除外を外したビルド(`exp/mozc-chrome-compose-queue`)を実機にデプロイし、実 Chrome(`googlechrome`、
+`scoop` 版)に対して BUG-225/226 と同型の repro(別窓〈タスクバー〉へ退避 → Chrome へ戻る
+= `ColdReason::FocusChange` → ひらがなキー(F2) → NICOLA Engine 経由の romaji 送信)を 6 回連続で行った
+(`chrome_probe --mozc-cold-chrome --repeat=6`、`crates/awase-windows/examples/chrome_probe.rs` に追加)。
+
+結果: **6 回すべてで `[mozc-compose]` が実 Chrome 上で張られ、"composition confirmed" で正しく終わった**
+(`cold=4`〜`cold=9`、いずれも confirmed after 15〜16ms、`key_seq` の進みは送った文字数と一致、Backspace は
+発生しなかった=素通りなし)。除外を外す前はこの窓クラス(`Chrome_RenderWidgetHostHWND` 等)で
+`is_mozc_compose_check_window` が常に偽を返し、`[mozc-compose]` 自体が一度も現れなかった(BUG-226 の LINE と
+同じ構造の「確認が張られない」状態)。これで、**窓クラス名の一致判定が実際の Chrome の前景窓に対して正しく
+働くこと**(this ADR の唯一の未検証部分だった、CI は素の EDIT コントロールだったため)を確認した。
+
+**この実機確認で捕まえられなかったもの**: 6 回とも `sent 1 chars` で健全に confirmed しており、BUG-225/226 型の
+本物の素通り(先頭文字だけ TIP に届かず Backspace 回収が走る場面)は起きなかった(NICOLA Engine が単キーを
+直接仮名に訳す経路のため、2 文字以上の romaji バーストを安定して作れなかった)。この「期限超過後の回収」側の
+安全性は、実際の Mozc TIP + サーバーに対する CI の人為的遅延実験(run `42195405660`、上記「実機検証(CI)」節)
+で既に確認済みであり、本節はそれとは別の懸念(**Chrome の前景窓判定がそもそも効くか**)を補う。
+
+残っている懸念:
+
+- Chrome で本物の先頭文字素通り(A1/A2)自体を実機で意図的に起こす実験は、CI の人為的遅延フック
+  (`MOZC_CI_DELAY_AT_KEY_SEQ`)と同じ仕掛けを実機 Mozc Readable に入れないと安定して再現できない。今回は
+  未実施(CI 側の検証で代替)。
 - Chrome の実際の cold-start 遅延が、本当に A1(キューに積まれるだけ、いずれ届く)なのか、確認していない。
   この ADR の安全性の主張は A1・A2 のどちらでも成り立つので、除外を外す決定自体はこの区別に依存しないが、
   「Chrome でどのくらいの頻度で compose-check が必要になるか」はまだ分からない。
-- 除外を外した後の実機 Chrome での動作確認(実際に `[mozc-compose]` が Chrome で張られ、正しく回収すること)
-  は未着手。
 
 ## 撤去した一回限りの検証(one-off-verification-workflows.md)
 
