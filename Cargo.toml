@@ -65,7 +65,7 @@ libraries = [
 
 [package]
 name = "awase"
-version = "2.2.0"
+version = "2.3.0"
 edition = "2021"
 description = "A simultaneous-keystroke keyboard remapper for NICOLA thumb shift and beyond"
 repository = "https://github.com/cuzic/awase"
