@@ -110,9 +110,35 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[2.3.0] - 2026-11-08</h2>
+<blockquote>
+<p>Additions, changes and fixes since v2.2.0. The two big additions are <strong>a diagnostic setting (advanced users) that reads the taskbar input indicator</strong> and <strong>a new decision method for keystroke-based input-language estimation (additive logistic regression, now the default)</strong>.</p>
+</blockquote>
+<h3>Added</h3>
+<ul>
+<li><strong>Added a diagnostic setting (advanced users, off by default) that reads the taskbar input indicator (its glyph and right-click menu) as reference information about the IME state.</strong> It is meant for investigating misbehavior in windows whose IME state cannot be read, such as Ichitaro; nothing changes by default. Turn it on from the "Advanced" tab of the settings window, or via <code>[indicator_evidence]</code> in <code>config.toml</code>.</li>
+<li><strong>You can now choose the decision method for "input-language estimation from keystrokes", and the default method has changed to a new one (additive logistic regression).</strong> The previous method (n-gram) can still be chosen via <code>auto_detect.decider</code> in <code>config.toml</code>. If you are not using this feature beyond "record only" (i.e. you have not enabled sending the Hiragana key or switching to half-width alphanumeric), nothing changes.</li>
+</ul>
 <h3>Changed</h3>
 <ul>
-<li><strong>Retired <code>app_overrides.force_vk</code> and <code>app_overrides.force_tsf</code>; every app now gets VK keystrokes (through the IME, sent as a batch).</strong> WezTerm and Windows Terminal, which were in <code>force_tsf</code> by default, now use the same path as other apps. If either setting is present it is ignored without a load error (a "no longer needed" notice is shown at startup when it is not empty and not the old bundled default; saving from the settings window removes it).</li>
+<li><strong>The old settings <code>muhenkan_solo_tap_ime_action</code> / <code>henkan_solo_tap_ime_action</code> are now ignored.</strong> They used to be migrated on load to the equivalent <code>keys.ime_on</code> / <code>ime_off</code> / <code>ime_toggle</code> entries; that migration has now ended. A notice is shown at startup if they remain in <code>config.toml</code> (saving from the settings window removes the line). To open/close the IME with a solo tap of Muhenkan/Henkan, write them under <code>keys.ime_on</code> / <code>keys.ime_off</code> instead (for example <code>ime_on = ["変換"]</code>, <code>ime_off = ["無変換"]</code>).</li>
+<li><strong>Retired <code>app_overrides.force_vk</code>, and awase no longer reads the list of apps that an earlier version auto-recorded as "send via TSF" (<code>[injection_mode]</code> in <code>cache.toml</code>).</strong> With the removal of direct Unicode injection (ADR-276), every app not otherwise specified now gets VK keystrokes, which is the same as what <code>force_vk</code> used to do. If the setting is present it is ignored without a load error (a "no longer needed" notice is shown at startup when it is not empty; saving from the settings window removes it).</li>
+<li><strong>Retired <code>app_overrides.force_tsf</code>; every app now gets VK keystrokes (through the IME, sent as a batch).</strong> WezTerm and Windows Terminal, which were in <code>force_tsf</code> by default, now use the same path as other apps. If the setting is present it is ignored without a load error (a "no longer needed" notice is shown at startup when it is not empty and not the old bundled default; saving from the settings window removes it).</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed a case where toggling the IME on/off from the tray icon or a hotkey did not actually reach the IME.</strong> Confirmed with Chrome × Google Japanese Input.</li>
+<li><strong>Fixed a case where the very first keystroke right after switching windows was still handled under the previous window's IME state.</strong> With Windows Terminal/WezTerm × Google Japanese Input, a Henkan keystroke could leave the IME closed and the character garbled.</li>
+<li><strong>Fixed cases in Zoom's chat box where correctly typed characters could be deleted, or some keystrokes (such as vowels) could be dropped.</strong> Keys are now sent one at a time with a short gap instead of in a batch.</li>
+<li><strong>Fixed a case in Windows Terminal where, right after closing the IME with Ctrl+Muhenkan, a stale cache turned the IME back on by itself.</strong></li>
+<li><strong>Fixed a case with Mozc (including the mozc-readable derivative) and Chrome where awase briefly mistook the IME as closed while typing, outputting that stretch of keystrokes as plain letters.</strong></li>
+<li><strong>Fixed a case, in windows where the IME state can be read, where the predicted open/close state after deleting an uncommitted character with Backspace could end up the opposite of the real IME right before the next mode key (Henkan, Muhenkan, Eisu, etc.).</strong></li>
+<li><strong>Fixed a case, in windows where the IME state can be read, where pressing the Eisu key during half-width-katakana conversion mode predicted the opposite of what actually happens (it should return to hiragana).</strong> A fix for windows where the IME state cannot be read is planned separately.</li>
+<li><strong>Fixed a case where holding Ctrl and pressing a Hiragana-role key left the real IME on but awase's internal state stuck at off, garbling the next input.</strong> Confirmed with Google Japanese Input and the Mozc family.</li>
+<li><strong>Fixed several small issues in how "estimate the input language from keystrokes and switch to half-width alphanumeric" enters and leaves that state</strong> (misjudgement right after moving to another window, being unable to return to hiragana with the Hiragana key after an automatic switch to half-width alphanumeric, and a modifier key getting stuck down when discarding held keystrokes).</li>
+<li><strong>Fixed a case where pressing a single digit key was misjudged as English and triggered an irreversible switch to half-width alphanumeric.</strong> This happened when using the new decision method described above under "Added".</li>
+<li><strong>Fixed a case with Mozc-family IMEs where only the first character of the first input after a focus change passed through uncommitted (for example "こちら" becoming "kおちら").</strong> In some apps, such as LINE, the check-and-recover mechanism for this was not even running; that has been fixed as well.</li>
+<li><strong>Fixed leftover awase entries in the "Other system tray icons" list after uninstalling.</strong></li>
 </ul>
 <h2>[2.2.0] - 2026-10-20</h2>
 <blockquote>
