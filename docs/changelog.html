@@ -110,11 +110,35 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[2.3.0] - 2026-11-08</h2>
+<blockquote>
+<p>v2.2.0 のあとの追加と変更・修正です。大きな追加は次の 2 つです。<strong>タスクバーの入力インジケーターを読む診断用設定（上級者向け）</strong>。<strong>「打鍵列からの入力言語の推定」の判定方式の追加（追加式ロジスティック回帰、既定）</strong>。</p>
+</blockquote>
+<h3>追加</h3>
+<ul>
+<li><strong>タスクバーの入力インジケーター（字形・右クリックメニュー）を読んで、IME の状態の参考情報にする診断用の設定を追加しました（上級者向け、既定は無効）。</strong> 一太郎のように IME の状態が読み取れないウィンドウでの誤動作を調べるためのもので、既定では何も変わりません。設定画面の「上級者向け設定」タブ、または <code>config.toml</code> の <code>[indicator_evidence]</code> から有効にできます。(ADR-271)</li>
+<li><strong>「打鍵列からの入力言語の推定」の判定方式を選べるようにし、既定を新しい方式（追加式ロジスティック回帰）に変更しました。</strong> 従来の方式（n-gram）も <code>config.toml</code> の <code>auto_detect.decider</code> で選べます。この機能自体を「記録のみ」以外（ひらがなキーを送る・半角英数にする）で使っていない場合は、何も変わりません。(ADR-280)</li>
+</ul>
 <h3>変更</h3>
 <ul>
 <li><strong>旧設定 <code>muhenkan_solo_tap_ime_action</code> / <code>henkan_solo_tap_ime_action</code> は無視されるようになりました。</strong> これまでは読み込み時に <code>keys.ime_on</code> / <code>ime_off</code> / <code>ime_toggle</code> 相当へ移していましたが、この移行を終えました。<code>config.toml</code> に残っていると起動時に通知が出ます（設定画面で保存するとその行は消えます）。無変換／変換の単独タップで IME を開閉するには、<code>keys.ime_on</code> / <code>keys.ime_off</code> に「無変換」「変換」を単独で書いてください（例: <code>ime_on = [&quot;変換&quot;]</code>、<code>ime_off = [&quot;無変換&quot;]</code>）。</li>
 <li><strong>設定の <code>app_overrides.force_vk</code> を廃止し、以前の版が「TSF で送る」と自動で記録したアプリの一覧（<code>cache.toml</code> の <code>[injection_mode]</code>）を読まなくなりました。</strong> Unicode の直接注入の撤去（ADR-276）で、指定の無いアプリはすべて VK キーストロークで送るようになり、<code>force_vk</code> は既定と同じになりました。<code>force_vk</code> が書いてあっても読み込みエラーにはならず、無視されます（空でないときは起動時に「不要になった」と通知します。設定画面で保存すると消えます）。</li>
 <li><strong>設定の <code>app_overrides.force_tsf</code> も廃止し、文字はすべてのアプリに VK キーストローク（IME 経由、まとめて送る方式）で送るようにしました。</strong> これまで既定で <code>force_tsf</code> に入っていた WezTerm と Windows Terminal も、ほかのアプリと同じ送り方になります。<code>force_tsf</code> が書いてあっても読み込みエラーにはならず、無視されます（空でなく、以前の版の同梱の既定値〈WezTerm・Windows Terminal の 2 件〉とも違うときは、起動時に「不要になった」と通知します。設定画面で保存すると消えます）。</li>
+</ul>
+<h3>修正</h3>
+<ul>
+<li><strong>トレイアイコンやショートカットキーで IME の ON/OFF を切り替えても、実際の IME が反応しないことがある問題を直しました。</strong> Chrome × Google 日本語入力で確認しました。(BUG-213)</li>
+<li><strong>ウィンドウを切り替えた直後の最初の 1 打鍵が、前のウィンドウの IME 状態のまま処理されてしまう問題を直しました。</strong> Windows Terminal・WezTerm × Google 日本語入力で、変換キーが IME を閉じたまま文字が化けることがありました。(BUG-214)</li>
+<li><strong>Zoom のチャット入力欄で、正しく入った文字が消えたり、母音などの一部のキーが欠けたりする問題を直しました。</strong> キーをまとめて送らず、1 つずつ間を空けて送るようにしました。(BUG-215, BUG-217)</li>
+<li><strong>Windows Terminal で、Ctrl+無変換キーで IME を閉じた直後に、古いキャッシュのせいで IME だけが再び ON になってしまう問題を直しました。</strong>(BUG-218)</li>
+<li><strong>Mozc（および派生版の mozc-readable）と Chrome の組み合わせで、入力中に一瞬だけ IME の状態を OFF と誤認識し、その間の打鍵がそのまま英字で出てしまう問題を直しました。</strong>(BUG-219)</li>
+<li><strong>入力中に Backspace で未確定文字を消した直後、次のモードキー（変換・無変換・英数など）の開閉予測が実際の IME と逆になる問題を、IME の状態を読み取れるアプリで直しました。</strong>(BUG-211)</li>
+<li><strong>半角カタカナの変換モード中に英数キーを押すと、ひらがなに戻るはずが半角英数と逆に予測される問題を、IME の状態を読み取れるアプリで直しました。</strong> IME の状態が読めないアプリでは別途対応予定です。(BUG-212)</li>
+<li><strong>Ctrl キーを押したままひらがなキーを押すと、実際の IME は ON になるのに内部の状態が OFF のまま残り、直後の入力が化ける問題を直しました。</strong> Google 日本語入力・Mozc 系で確認しました。(BUG-221)</li>
+<li><strong>「打鍵列から入力言語を推定して半角英数にする」機能で、入り方・戻り方に関する細かい不具合（別ウィンドウへ移動した直後の誤判定、自動で入った半角英数からひらがなキーで戻れない、保持していたキー操作を取り消す際に修飾キーが押されたままになる）を直しました。</strong>(BUG-220, BUG-222, BUG-224)</li>
+<li><strong>数字キーを 1 回押しただけで英語と誤判定し、半角英数への切り替え（元に戻せません）が起きてしまう問題を直しました。</strong> 上記「追加」の新しい判定方式を使っている場合に起きていました。(BUG-228)</li>
+<li><strong>Mozc 系 IME で、フォーカス移動後の最初の入力の先頭の文字だけが変換されずに素通りしてしまう問題（「こちら」→「kおちら」など）を直しました。</strong> LINE など一部のアプリでは、この確認・回収の仕組み自体が働いていなかったため、合わせて直しました。(BUG-225, BUG-226, BUG-227)</li>
+<li><strong>アンインストール時に、タスクバーの「その他のシステムトレイアイコン」一覧に awase の行が残ってしまう問題を直しました。</strong></li>
 </ul>
 <h2>[2.2.0] - 2026-10-20</h2>
 <blockquote>
