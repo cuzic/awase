@@ -601,11 +601,21 @@ impl EpisodeDetector {
         }
         self.presses += 1;
         if let Some(lr) = &model.lr {
-            let (delta, ctx) = lr.step(self.lr_ctx, pos);
-            self.lr_llr += delta;
-            #[allow(clippy::cast_possible_truncation)] // ログ用の増分。f32 の精度で足りる
-            self.lr_trace.push(delta as f32);
-            self.lr_ctx = ctx;
+            // 仮名に読めないキー（記号・数字・未定義）は中立（0）。`delta`（仮名 n-gram側）と同じ理由:
+            // 学習データは ASCII（数字含む）に当たった時点で日本語側のエピソードを切っているため
+            // （`build_dataset.py::ja_episodes`）、日本語側にほぼ出現しない特徴の重みが学習で過大になりやすい
+            // （実機 2026-11-07、dragonflyg4・msedge: 20 秒弱の無操作の直後に数字キー「8」を 1 打しただけで
+            // `lr_llr=-4.46` となり `ime_on_eisu` の不可逆な入り〔半角英数トグル〕に入った）。
+            if model.key_kana.contains_key(&pos) {
+                let (delta, ctx) = lr.step(self.lr_ctx, pos);
+                self.lr_llr += delta;
+                #[allow(clippy::cast_possible_truncation)] // ログ用の増分。f32 の精度で足りる
+                self.lr_trace.push(delta as f32);
+                self.lr_ctx = ctx;
+            } else {
+                self.lr_trace.push(0.0);
+                self.lr_ctx = LrContext::default();
+            }
         }
         if model.usable {
             let (delta, ctx) = model.step(self.ctx, pos);
@@ -2416,6 +2426,44 @@ mod tests {
         }
         // 表が無いモデルに with_lr_decision を付けても何も変わらない（shadow の表が前提）。
         assert!(!real_model().with_lr_decision(4.0).decides_by_lr());
+    }
+
+    /// 実機の誤発火(2026-11-07、dragonflyg4・msedge): 無操作のあと数字キー「8」を 1 打しただけで
+    /// `lr_llr` が `eisu_threshold`(既定 4.0)を超え、`ime_on_eisu` の不可逆な入り(半角英数トグル)が起きた。
+    /// 数字は仮名 n-gram と同じく中立(0)なので、LR だけでは 1 打鍵で確定しない。
+    #[test]
+    fn lr_decision_treats_lone_digits_as_neutral() {
+        let model = real_model();
+        let lr = real_model()
+            .with_lr_shadow(LrModel::embedded())
+            .with_lr_decision(4.0);
+        for key in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] {
+            assert!(
+                !model.key_kana.contains_key(&qwerty(key)),
+                "digit {key:?} is unexpectedly kana-readable; this test's premise no longer holds"
+            );
+            let mut d =
+                EpisodeDetector::new(DetectParams::default(), ThumbOverlap::Enabled, [false; 2]);
+            d.observe(&lr, DetectEvent::CharDown(qwerty(key)));
+            assert_ne!(d.verdict(), Verdict::NotJapanese, "digit {key:?} alone");
+            assert!(
+                (d.lr_llr()).abs() < f64::EPSILON,
+                "digit {key:?}: lr_llr={}",
+                d.lr_llr()
+            );
+        }
+        // 英字の並びは、数字が混ざっても文字側の証拠で変わらず確定する(中立化は数字を「無視する」だけで、
+        // 英字の証拠を打ち消さない)。
+        let judge = |text: &str| {
+            let mut d =
+                EpisodeDetector::new(DetectParams::default(), ThumbOverlap::Enabled, [false; 2]);
+            for c in text.chars() {
+                d.observe(&lr, DetectEvent::CharDown(qwerty(c)));
+                d.observe(&lr, DetectEvent::CharUp(qwerty(c)));
+            }
+            d.verdict()
+        };
+        assert_eq!(judge("windows10"), Verdict::NotJapanese);
     }
 
     #[test]
