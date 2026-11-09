@@ -21,9 +21,10 @@ summary: |-
   `apply_input_mode_correction`〈`runtime/mod.rs`〉側でクリア、architecture_guardの文字列カウントに触れない形)に
   分割し、D5として`[focus-conv-check]`の書き込みに「探査開始後に明示操作が起きていないか」のガードを追加する。
 status: |-
-  起草(2026-11-09)。Opus round1〜round3レビュー反映(D4をD4a/D4bに分割・D5〈focus-conv-checkのガード〉追加・
-  D4bのPanicReset対象外化・D5の比較を値スナップショット方式に訂正・限界のテスト記述を精緻化)。
-  round3は「設計を塞ぐ指摘なし、細部の修正のみ」。round4で収束確認待ち。実装・実機確認とも未着手。
+  起草(2026-11-09)。Opus round1〜4レビュー(4ラウンドで収束、round4は「ブロッキングな指摘なし」)を反映。
+  D4をD4a/D4bに分割・D5〈focus-conv-checkのガード、値スナップショット方式〉追加・D4bのPanicReset対象外化・
+  限界のテスト記述を精緻化。設計(D1/D4a/D4b/D5、古いeisu再構成経路(a)〜(d)への対応)は確定。
+  実装・実機確認は未着手。
 related_adr:
   - "ADR-282"
   - "ADR-245"
