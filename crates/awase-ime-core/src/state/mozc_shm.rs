@@ -645,6 +645,11 @@ pub struct ComposeBlock {
     pub key_seq: u32,
     /// 組成の項目の元になった出力を生んだ打鍵の通番（ログ用）
     pub composition_key_seq: u32,
+    /// 未確定文字列の UTF-16 の長さ（観測専用、ログ用。判断には使わない——送ったローマ字の文字数と比べて、
+    /// 組成がかなに変換済みか、まだローマ字のままかを後から見分ける材料にする）
+    pub preedit_utf16_len: u32,
+    /// 未確定文字列内のカーソル位置（UTF-32 のコードポイント、観測専用、ログ用）
+    pub preedit_cursor: u32,
 }
 
 /// 入力中の文字ができるはずの入力モード（ひらがな・全角カタカナ・半角カタカナ）か。半角英数・全角英数・直接入力は
@@ -1203,6 +1208,8 @@ mod tests {
             server_ready: true,
             key_seq: 0,
             composition_key_seq: 0,
+            preedit_utf16_len: 0,
+            preedit_cursor: 0,
         };
         f(&mut b);
         ComposeReading::Block(b)

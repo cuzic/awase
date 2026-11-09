@@ -390,9 +390,14 @@ impl MozcComposeCheckFsm {
             return self.attach_rest(actions);
         }
         let (verdict, mut actions) = self.step(now_ms, reading);
-        let (key_seq, composition_key_seq) = match reading {
-            ComposeReading::Block(b) => (b.key_seq, b.composition_key_seq),
-            ComposeReading::Unreadable => (0, 0),
+        let (key_seq, composition_key_seq, preedit_utf16_len, preedit_cursor) = match reading {
+            ComposeReading::Block(b) => (
+                b.key_seq,
+                b.composition_key_seq,
+                b.preedit_utf16_len,
+                b.preedit_cursor,
+            ),
+            ComposeReading::Unreadable => (0, 0, 0, 0),
         };
         // 診断（判断には使わない）: 確認の結論が出たとき、キーボードフォーカスの時刻を送信の時刻と並べて出す。
         if matches!(verdict, ComposeVerdict::Confirmed | ComposeVerdict::Literal) {
@@ -403,8 +408,12 @@ impl MozcComposeCheckFsm {
             ComposeVerdict::Confirmed => {
                 // 送った文字数より `key_seq` の進みが少なければ、先頭の文字を TIP が見ていない疑いがある（例: `ko` の `k`
                 // だけ文書へ素通りし、`o` から入力中になった、BUG-225）。
+                // `preedit_utf16_len`/`preedit_cursor` は観測専用（判断には使わない）: `phase >= 1`（Confirmed）は
+                // 「組成ができた」ことしか言わず、その中身がかなに変換済みか、まだ送ったローマ字のままかは
+                // 区別できない（2026-11-09、`A`+左親指=「を」のはずが文書に `wo` が残った報告の調査で判明）。
+                // 送ったローマ字の文字数と `preedit_utf16_len` を後から突き合わせられるよう、まずログに出すだけにする。
                 tracing::info!(
-                    "[mozc-compose] cold={} composition confirmed after {elapsed_ms}ms (sent {} chars, key_seq {}→{}, composition_key_seq {composition_key_seq})",
+                    "[mozc-compose] cold={} composition confirmed after {elapsed_ms}ms (sent {} chars, key_seq {}→{}, composition_key_seq {composition_key_seq}, preedit_utf16_len={preedit_utf16_len}, preedit_cursor={preedit_cursor})",
                     self.target.cold_seq.value(),
                     compose_literal_backs(&self.target.romaji),
                     self.target.key_seq_before,
@@ -431,7 +440,7 @@ impl MozcComposeCheckFsm {
                         .unwrap_or(u32::MAX);
                 if crate::tsf::window_thread_responds(self.target.hwnd_addr, response_check_ms) {
                     tracing::warn!(
-                        "[mozc-compose] cold={} no composition {elapsed_ms}ms after sending {:?} (server ready) → literal; backspace ×{} + re-send (key_seq {}→{}, composition_key_seq {composition_key_seq})",
+                        "[mozc-compose] cold={} no composition {elapsed_ms}ms after sending {:?} (server ready) → literal; backspace ×{} + re-send (key_seq {}→{}, composition_key_seq {composition_key_seq}, preedit_utf16_len={preedit_utf16_len}, preedit_cursor={preedit_cursor})",
                         self.target.cold_seq.value(),
                         self.target.romaji,
                         compose_literal_backs(&self.target.romaji),
@@ -500,6 +509,8 @@ mod tests {
             server_ready,
             key_seq: 0,
             composition_key_seq: 0,
+            preedit_utf16_len: 0,
+            preedit_cursor: 0,
         })
     }
 
@@ -513,6 +524,8 @@ mod tests {
             server_ready: true,
             key_seq,
             composition_key_seq: key_seq,
+            preedit_utf16_len: 0,
+            preedit_cursor: 0,
         })
     }
 

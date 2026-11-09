@@ -199,6 +199,8 @@ fn read_compose_inner(handle: HANDLE, process_id: u32) -> ComposeReading {
         server_ready: fields.server_ready != 0,
         key_seq: fields.key_seq,
         composition_key_seq: fields.composition_key_seq,
+        preedit_utf16_len: fields.preedit_utf16_len,
+        preedit_cursor: fields.preedit_cursor,
     })
 }
 

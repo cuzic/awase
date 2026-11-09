@@ -215,6 +215,9 @@ impl PseudoMozc {
             server_ready: self.server_ready,
             key_seq: self.key_seq_at(now),
             composition_key_seq: self.key_seq_at(now),
+            // 擬似物はまだ未確定文字列の長さを模していない（観測専用のログ項目、ADR-270追補）。
+            preedit_utf16_len: 0,
+            preedit_cursor: 0,
         })
     }
 
