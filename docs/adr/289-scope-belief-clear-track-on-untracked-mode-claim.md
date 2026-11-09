@@ -21,8 +21,9 @@ summary: |-
   `apply_input_mode_correction`〈`runtime/mod.rs`〉側でクリア、architecture_guardの文字列カウントに触れない形)に
   分割し、D5として`[focus-conv-check]`の書き込みに「探査開始後に明示操作が起きていないか」のガードを追加する。
 status: |-
-  起草(2026-11-09)。Opus round1・round2レビュー反映(D4をD4a/D4bに分割・D5〈focus-conv-checkのガード〉追加・
-  限界のテスト記述とreset_for_panicの記述を訂正)。round3レビュー待ち。実装・実機確認とも未着手。
+  起草(2026-11-09)。Opus round1〜round3レビュー反映(D4をD4a/D4bに分割・D5〈focus-conv-checkのガード〉追加・
+  D4bのPanicReset対象外化・D5の比較を値スナップショット方式に訂正・限界のテスト記述を精緻化)。
+  round3は「設計を塞ぐ指摘なし、細部の修正のみ」。round4で収束確認待ち。実装・実機確認とも未着手。
 related_adr:
   - "ADR-282"
   - "ADR-245"
@@ -131,14 +132,17 @@ D1の結果、`track`に常に具体値(`Some`)が渡るようになるため、
 `track.conv` → `conv_raw` → 入力モードの既定、の順で試す(`key_effect_predictor.rs:557-563`)ため、
 `conv_raw`に古いeisu読みが残っていればD1だけでは防げない(D4bの背景も参照)。
 
-旧belief側では、`key_track`(`ImeModel`の`pub(crate)`フィールド、`ime_model.rs:332`)が同じ役割を持つ。
-観測の受理時(`InputModeObserved`の`confidence`判定が通った枝、`ime_model.rs:1005-1006`)に
-`self.key_track.conv = None`へ戻す処理が既にある。これと対になる処理が`InputModeApplied`
-(`ime_model.rs:1014-1019`、現状は`result == Applied`なら`self.input_mode = mode`を書くだけ)には無い。
-`key_track`は`ImeModel`自身のフィールドなので、この修正は同じ`reduce()`関数内で閉じる
-(**round2で確認: コンパイルも通る配置**)。
+旧belief側では、`key_track`(`ImeModel`自身の**private**フィールド、`ime_model.rs:332`。round3訂正:
+旧版は誤って`pub(crate)`と書いていた)が同じ役割を持つ。観測の受理時(`InputModeObserved`の
+`confidence`判定が通った枝、`ime_model.rs:1005-1006`)に`self.key_track.conv = None`へ戻す処理が
+既にある。これと対になる処理が`InputModeApplied`(`ime_model.rs:1014-1019`、現状は`result == Applied`
+なら`self.input_mode = mode`を書くだけ)には無い。`key_track`は`ImeModel`自身のフィールドなので、
+この修正は同じ`reduce()`関数内で閉じる(**round2で確認: コンパイルも通る配置**)。
 
 ```rust
+// `ime_model.rs`冒頭の `use super::ime_event::{..}` に `InputModeApplyStrategy` を追加する必要がある
+// (round3訂正: 現状は`InputModeApplyResult`のみimportされ、`InputModeApplyStrategy`はテスト内の
+// 完全修飾参照しかない)。
 ImeEvent::InputModeApplied { mode, strategy, result } => {
     if result == InputModeApplyResult::Applied {
         self.input_mode = mode;
@@ -167,11 +171,13 @@ ImeEvent::InputModeApplied { mode, strategy, result } => {
 `ImeModel::reduce()`(core crate)から`self.belief...`は参照できず、D4aと同じ場所には書けない
 (round2で発覚、旧版はコンパイルしないコードを提案していた)。
 
-代わりに、`UserHalfWidthAlnumToggle`/`PanicReset`の`InputModeApplied`を実際に発行する唯一の共通経路
-`Runtime::apply_input_mode_correction`(`runtime/mod.rs:1109-1123`、呼び出し元はGJI/MS-IME双方の
-トグルenter/exitと復元のすべて)の`strategy`引数を見て、`dispatch_event`の前後どちらでもよいが
-同じ呼び出しの中で`self.platform_state.ime.belief.set_prev_conversion_mode(None)`(既存のpublicな
-setter、`belief.rs:69-71`)を呼ぶ。
+代わりに、`UserHalfWidthAlnumToggle`の`InputModeApplied`を実際に発行する経路
+`Runtime::apply_input_mode_correction`(`runtime/mod.rs:1109-1123`)の`strategy`引数を見て、
+`dispatch_event`の前後どちらでもよいが同じ呼び出しの中で、**ハブ自身の既存setter**
+`self.platform_state.ime.set_prev_conversion_mode(None)`(`platform_state.rs:2181-2183`。round3訂正:
+旧版は`.ime.belief.set_prev_conversion_mode(..)`という、本番コードに前例の無い経路を書いていた。
+`focus_tracking.rs:412`・`key_pipeline.rs:870`・`:3512`と同じ、ハブのsetterを素通しで呼ぶ既存の
+作法に揃える)を呼ぶ。
 
 ```rust
 pub fn apply_input_mode_correction(
@@ -180,13 +186,10 @@ pub fn apply_input_mode_correction(
     strategy: crate::state::ime_event::InputModeApplyStrategy,
     tick_ms: crate::state::TickMs,
 ) {
-    if matches!(
-        strategy,
-        InputModeApplyStrategy::UserHalfWidthAlnumToggle | InputModeApplyStrategy::PanicReset
-    ) {
+    if matches!(strategy, InputModeApplyStrategy::UserHalfWidthAlnumToggle) {
         // D4a(ImeModel::key_track.conv)と対になる掃除。殻側が持つprev_conversion_modeも
         // 同じタイミングでクリアする(BUG-229)。
-        self.platform_state.ime.belief.set_prev_conversion_mode(None);
+        self.platform_state.ime.set_prev_conversion_mode(None);
     }
     self.platform_state.ime.dispatch_event(
         crate::state::ime_event::ImeEvent::InputModeApplied { mode, strategy, result: /* Applied */ },
@@ -194,6 +197,14 @@ pub fn apply_input_mode_correction(
     );
 }
 ```
+
+**`PanicReset`はD4bの対象から外す(round3訂正)**: 旧版は`UserHalfWidthAlnumToggle | PanicReset`の
+両方をD4bの対象と書いていたが、`PanicReset`はこの経路を通らない。`apply_panic_reset`
+(`platform_state.rs:1891-1897`)は`InputModeApplied{PanicReset}`を**直接**構築し、直後に
+`self.belief.reset_for_panic()`(`:1898`)を呼んで`prev_conversion_mode`を含め既にクリアしている
+(architecture_guardのコメント`:774-775`も「直接構築、`apply_input_mode_correction`未経由」と
+明記)。D4bの`matches!`は`UserHalfWidthAlnumToggle`単独にする——`PanicReset`はD4a(`ime_model.rs`側)
+だけが新しい挙動で、D4b側はそもそも関与しない。
 
 **architecture_guardの罠(round2で発見)**: `tests/architecture_guard.rs::input_mode_applied_construction_sites_are_accounted_for`
 (`:793-816`)は、`platform_state.rs`/`key_pipeline.rs`/`ime_refresh.rs`/`runtime/mod.rs`の各ファイル内で
@@ -216,11 +227,29 @@ pub fn apply_input_mode_correction(
 これを読んでeisuを再構成し、同じ`z-explicit eisu`主張と170msフェンスが再現しうる。この競合が実際に
 起きる頻度は未測定。
 
-ADR-245 R1(`state/resume_observation.rs`、「復元の書き込みより前に始まった読みの棄却」)やidle-conv-check
-の抑制窓(`last_explicit_ime_action_ms_raw()`/`explicit_ime_action_age_ms()`、`platform_state.rs:1302-1323`、
-既存の利用例は`:547`)と同じ考え方を転用し、`[focus-conv-check]`の書き込み(`:3512`)を「探査を開始した
-時刻より後に明示的なIME操作(`note_explicit_ime_action`)が起きていれば、この読みは古いので書かない」
-というガードを足す。探査の開始時刻を関数まで運ぶ配線の詳細は実装時に確認する(限界参照)。
+**比較は「時刻の前後」ではなく「値の一致」にする(round3訂正)**: 探査の起案(`kp_stage_focus_probe`、
+`:106`)と復元の`note_explicit_ime_action`呼び出し(`kp_restore_kana_from_half_width`内、`:2822`付近)は
+同じ`kp_run_inner`呼び出しの中で、どちらも`GetTickCount64`(分解能~15.6ms)から取るため、通常は
+**同じ値**になる。「探査開始時刻 `probe_started_ms` より後に明示操作の時刻が来ていれば棄却」という
+比較(`>`)は、まさにD5が狙うこの同一打鍵のケースでは**成立しない**(両者が等しいため「後」にならない)。
+
+代わりに、idle-conv-checkが既に使っている**値スナップショット**の作法(`last_explicit_ime_action_ms_raw()`、
+`platform_state.rs:1302-1323`。このgetter自身のdocが、age/時刻比較よりも値の一致判定を使う理由
+〈BUG-34の長時間ブロックへの耐性、時計の分解度に左右されない〉を説明している)を転用する: 探査を
+`spawn_local`する時点(`:430`付近)で`last_explicit_ime_action_ms_raw()`を**値として**キャプチャし、
+探査タスクが完了して書き込む時点(`:3512`)でもう一度読み、**値が変わっていたら書かない**。
+`probe_started_ms`自体は既に`apply_focus_probe`まで配線済み(`:3378`、既存の利用例`:3389`)なので、
+新しい配線はこのキャプチャした値を1つ、`spawn_local`のクロージャと`apply_focus_probe`の引数に
+追加するだけで足りる(「配線は実装時に確認」としていたが、既存の仕組みの組み合わせで足りることが
+round3で分かったため、この限定は外す)。
+
+**ガードの範囲**: `:3512`の`set_prev_conversion_mode(Some(conv))`だけを止める。同じ`apply_focus_probe`が
+更新する`is_japanese_ime`(`:3397-3400`)や開閉観測は止めない(round3確認)。
+
+**過剰な棄却(round3指摘)**: このガードは、最初の打鍵がモードキー等、半角英数トグル以外の明示操作で
+あっても読みを棄却する(保守的)。その場合、予測器は入力モードから既定のconvへフォールバックし、
+`EXPLICIT_IME_SUPPRESS_MS`経過後にidle-conv-checkが`conv_raw`を再度埋める。実害は小さいと見るが、
+実装時に意図して受け入れる。
 
 D1・D4a・D4b・D5のいずれも「belief-v2側だけで閉じる」という当初案(旧版の却下した案の前提)は成り立たない。
 古いeisuの再構成経路は(a) belief-v2の`track.conv`、(b) 旧beliefの`key_track.conv`、(c) 旧beliefの
@@ -241,10 +270,15 @@ D1・D4a・D4b・D5のいずれも「belief-v2側だけで閉じる」という�
   - D4a用: `ime_model.rs`に、`InputModeApplied{UserHalfWidthAlnumToggle, Applied}`の前に
     `key_track.conv`が非`None`の状態を作り、事象後に`None`になっていることを確認するユニットテストを
     追加する。
-  - D4b・D5用: Z単体やImeModel単体では`conv_raw`の経路そのものが現れないため、殻を含む層
+  - D4b用: Z単体やImeModel単体では`conv_raw`の経路そのものが現れないため、殻を含む層
     (`crates/awase-windows/tests/support/harness.rs`のハーネス、または`key_effect_predictor.rs`の
-    予測関数に`conv_raw = Some(0x00)`〈eisu相当〉を直接渡すテスト)で確認する必要がある。具体的な
-    配線は実装時に確認する。
+    予測関数に`conv_raw = Some(0x00)`〈eisu相当〉を直接渡すテスト)で確認する必要がある。
+  - D5用: `apply_focus_probe`自体は`#[cfg(windows)]`でLinuxでは走らない(CLAUDE.md参照)。
+    「スナップショットした値と現在値が違えば書かない」という判定を、`apply_focus_probe`本体から
+    呼び出し可能な純粋関数(他の値スナップショット判定と同様、引数を取って真偽値を返すだけの形)として
+    切り出せれば、その関数だけはLinuxホストでユニットテストできる。切り出さない場合、D5は
+    [fix-requires-evidence](../../.claude/rules/fix-requires-evidence.md)の(b)(`docs/known-bugs/`への
+    記録)で代替する——実装時にどちらの経路を取ったかをBUG-229に書く。
 - **既存テストの明示的な反転が必要**: `scope_belief.rs`の既存テスト
   `panic_reset_and_half_width_toggle_enter_the_claims`(:1220-1235付近)は、現在
   `assert_eq!(z.view().track, before.track)`で「追跡も変えない」ことを**意図的に固定**している
@@ -260,7 +294,7 @@ D1・D4a・D4b・D5のいずれも「belief-v2側だけで閉じる」という�
   の`UserHalfWidthAlnumToggle`系シナリオ(:663-740付近)が`KeyTrack`(`serde::Serialize`)を含む値を
   snapshotしていれば、D4aでgoldenの期待値がずれる可能性がある。実装時に
   `cargo test -p awase-windows --test golden_scenarios`で確認する。
-- **関連だが対象外の2点**(round1レビューで発見、別ADR/BUG候補):
+- **関連だが対象外の点**(round1・round3レビューで発見、別ADR/BUG候補):
   1. ADR-245の離脱時トグルOFF(`ir_notify_focus_changed`経由の`InputModeApplied{AssumedRomaji, UserHalfWidthAlnumToggle}`)
      は、離脱先の新しい窓Bの行に対して発行される可能性が高い(`focus_tracking.rs`と`ime_refresh.rs`の
      呼び出し順を完全には追えていない、未確証)。その場合、Bは本来関係のない`mode=kana`主張と170ms
@@ -268,6 +302,17 @@ D1・D4a・D4b・D5のいずれも「belief-v2側だけで閉じる」という�
   2. `UserImeOnEisuReset`/`UserTurnOnEisuReset`strategy(旧beliefをeisu→kanaへ動かす)は`scope_event_of`
      の対象外(:742でNoneにマップ)で、Z側のmode・convのどちらも更新されない。旧beliefとZが
      ここでも分岐しうるが、本ADRのバグとは別の発生経路であり対象としない。
+  3. `[focus-conv-check]`の同じ処理ブロックは、`set_prev_conversion_mode`の直前(`:3501-3510`)で
+     同じ古い読みを`conv_mode.observe(ConvObservation{source: FocusCheck, ..})`にも渡している。
+     この値はwarmupの最初のVK選択や`ImmSetConversionStatus`のターゲット値に使われる
+     (`:855-857`のコメント)。D5は`:3512`の`set_prev_conversion_mode`だけをガードし、この2つ目の
+     書き込み先には触れない(同じ古い読みが別の消費者〈conv mode再発ファミリー〉に残る余地がある)。
+     D5を実装する人が「なぜブロック内の片方だけガードしたのか」で迷わないよう、この区別を明記する
+     目的でここに残す。両方をガードするかは別の判断(conv mode actuationの変更になるため)。
+  4. `apply_ime_update`(`platform_state.rs:1977`、`ime_refresh`のポーリング)もconv_rawを書けるが、
+     TsfNative/Chromeでは何も返さない(`runtime/mod.rs:1127`)。素のWin32窓でこの経路が復元送信と
+     競合する可能性は残るが、そうした窓では確定済みのモード観測も同時に`on_observed`へ届くため
+     影響は薄いと見て、残存リスクとして受け入れる(round3指摘)。
 
 ## 却下した案
 
