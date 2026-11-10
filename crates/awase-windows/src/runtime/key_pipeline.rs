@@ -428,6 +428,10 @@ impl Runtime {
 
         // キャプチャ（async タスク内で使う）
         let probe_started_ms = hook::current_tick_ms();
+        // ADR-289 D5(BUG-229): spawn〜apply の間に明示的なIME操作(ADR-245の半角英数復元等)が
+        // あったかを、経過時間ではなく値の一致で判定する(idle-conv-checkの`explicit_action_ms_at_spawn`
+        // と同じ作法、:547付近)。
+        let explicit_action_ms_at_spawn = self.platform_state.ime.last_explicit_ime_action_ms_raw();
         let obs = crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs());
         let gji_last_io_ms = obs.gji_last_io_ms;
         let active_ime_kind = obs.active_ime_kind;
@@ -461,6 +465,7 @@ impl Runtime {
                             shadow_on,
                             active_ime_kind,
                             accepted,
+                            explicit_action_ms_at_spawn,
                         );
                     },
                 );
@@ -3381,6 +3386,7 @@ impl Runtime {
         shadow_on: bool,
         active_ime_kind: crate::tsf::observer::ActiveImeKind,
         accepted: crate::state::probe_admission::AcceptedObservation,
+        explicit_action_ms_at_spawn: u64,
     ) {
         // epoch 照合は呼び出し元 (kp_stage_focus_probe の with_app 内) で完了済み。
         // ここではキャプチャ済みの AcceptedObservation をそのまま使う。
@@ -3476,12 +3482,19 @@ impl Runtime {
             let in_flight = self.platform.output_in_flight_ms();
             // cold start: ROMAN ビットが信頼できないためスキップ
             if in_flight != u64::MAX {
-                // BUG-34 横展開 C: この読み取りは apply_focus_probe 内で完全に同期
-                // （直前・直後に await 点が無い）なため、conv_mutation_seq のような
-                // spawn-to-apply 型の fence を足す意味はない（比較対象となる
-                // 「spawn 時と apply 時」の間に何も起こり得ない）。一方で
-                // SendMessageTimeoutW ベースの同期呼び出しであることは変わらないため、
-                // Step0-c の SendHealth ブレーカで直近 slow 判定後は発行を見送る。
+                // BUG-34 横展開 C: この読み取り自体(get_ime_conversion_mode_raw_timeout の呼び出し)は
+                // apply_focus_probe 内で完全に同期（直前・直後に await 点が無い）なため、
+                // conv_mutation_seq のような「読み取りの実行中に自己出力が割り込む」型の fence を
+                // 足す意味はない。一方で SendMessageTimeoutW ベースの同期呼び出しであることは
+                // 変わらないため、Step0-c の SendHealth ブレーカで直近 slow 判定後は発行を見送る。
+                //
+                // ただし kp_stage_focus_probe の spawn(probe_started_ms を採った時点)から、
+                // ここ(apply_focus_probe)が実際に呼ばれるまでには read_ime_state_fast_async の
+                // await を挟む非同期の間隙があり、この間に ADR-245 の半角英数復元等の明示的な
+                // IME 操作が起こり得る(ADR-289 D5、BUG-229)。この読み取りが拾うのはその操作より
+                // 前の(まだ半角英数だった)実IMEの値であり、復元後の prev_conversion_mode を
+                // 上書きしてしまう。下の set_prev_conversion_mode の直前だけ、idle-conv-check と
+                // 同じ値一致判定で spawn 後の明示操作を検出し、古い読みを棄却する。
                 //
                 // 【完全な修正を見送った理由】この読み取りを probe の await と
                 // 並行実行（join）に切り出せば、より応答性の良い設計にできる
@@ -3509,7 +3522,20 @@ impl Runtime {
                             },
                             accepted.fence,
                         );
-                        self.platform_state.ime.set_prev_conversion_mode(Some(conv));
+                        // ADR-289 D5(BUG-229): spawn 後に明示的なIME操作(半角英数トグルの出入り・
+                        // 復元等)が起きていたら、この読み取りはその操作より前の古い値なので
+                        // prev_conversion_mode には書かない(conv_mode.observe は対象外、§D5参照)。
+                        if self.platform_state.ime.last_explicit_ime_action_ms_raw()
+                            == explicit_action_ms_at_spawn
+                        {
+                            self.platform_state.ime.set_prev_conversion_mode(Some(conv));
+                        } else {
+                            tracing::debug!(
+                                "[focus-conv-check] apply 時に spawn 後の explicit IME action を検出 → \
+                                 conv=0x{conv:08X} の prev_conversion_mode への書き込みを棄却 \
+                                 (spawn={explicit_action_ms_at_spawn}ms)"
+                            );
+                        }
                         tracing::debug!(
                             "[focus-conv-check] TsfNative: conv=0x{conv:08X} 読み取り（belief 更新なし、\
                              フォーカス変更直後の値はユーザー意図の signal ではないため idle-conv-check に一任）"

@@ -1112,6 +1112,17 @@ impl Runtime {
         strategy: crate::state::ime_event::InputModeApplyStrategy,
         tick_ms: crate::state::TickMs,
     ) {
+        if matches!(
+            strategy,
+            crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle
+        ) {
+            // D4a(ImeModel::key_track.conv、core crate側)と対になる掃除(ADR-289、BUG-229)。
+            // 半角英数トグルの出入り・復元は実変換モードを確定させる行為なので、殻が持つ
+            // prev_conversion_mode(予測の conv_raw フォールバック元)も同じタイミングでクリアする。
+            // `PanicReset` はこの経路を通らない(`apply_panic_reset` が直接構築し
+            // `ImeBelief::reset_for_panic` で既にクリアしている)ので対象に含めない。
+            self.platform_state.ime.set_prev_conversion_mode(None);
+        }
         self.platform_state.ime.dispatch_event(
             crate::state::ime_event::ImeEvent::InputModeApplied {
                 mode,

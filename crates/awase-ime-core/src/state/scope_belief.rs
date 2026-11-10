@@ -736,7 +736,12 @@ pub fn scope_event_of(
         } => mode_class_of(*mode).map(|m| ScopeEvent::Explicit {
             open: None,
             mode: Some(m),
-            track: None,
+            // 半角英数トグルの出入り・復元は実IMEの変換モードを確定させる行為なので、窓ごとに持続する
+            // 追跡中conv(ADR-282)は古い値のまま残さずクリアする(ADR-289、BUG-229)。stageは引き継ぐ。
+            track: Some(KeyTrack {
+                conv: None,
+                ..view.track
+            }),
             at_ms,
         }),
         _ => None,
@@ -1217,7 +1222,8 @@ mod tests {
             }
         );
 
-        // 半角英数トグル ON: モード軸が半角英数になり、開は変わらず、追跡も変えない。
+        // 半角英数トグル ON: モード軸が半角英数になり、開は変わらない。追跡中convは古い値のまま残さず
+        // クリアする(ADR-289、BUG-229。段階〈stage〉は引き継ぐ)。
         let applied = |mode, strategy, result| ImeEvent::InputModeApplied {
             mode,
             strategy,
@@ -1232,7 +1238,13 @@ mod tests {
         z.evolve(scope_event_of(&on, &before, 0, 500).expect("トグルは写す"));
         assert_eq!(z.view().input_mode, InputModeState::ObservedEisu);
         assert_eq!(z.view().open, before.open);
-        assert_eq!(z.view().track, before.track);
+        assert_eq!(
+            z.view().track,
+            KeyTrack {
+                conv: None,
+                stage: before.track.stage,
+            }
+        );
 
         // トグル OFF(AssumedRomaji)はかなに戻る。
         let off = applied(
@@ -1268,6 +1280,70 @@ mod tests {
         assert_eq!(
             scope_event_of(&ImeEvent::HwndCacheRestored { target: true }, &view, 0, 700),
             None
+        );
+    }
+
+    /// BUG-229/ADR-289 D1: 半角英数トグルがアクティブな間にテーブルキー(Enter 等)を押すと、
+    /// その打鍵自身の予測結果(`after_conv`)が `track.conv = Some(C10)` として窓の行に書き戻る
+    /// (ADR-289背景、round1 finding)。トグルを抜けて明示的にかなへ戻した後も、この古いC10が
+    /// 残っていては意味が無い——`on_explicit`(D1)がトグル出入りのmode主張とあわせて
+    /// `track.conv` をクリアすることを、手で仕込まず実際の手順(トグルON→テーブルキー→
+    /// トグルOFF)で確認する。
+    #[test]
+    fn half_width_toggle_off_clears_the_stale_conv_left_by_a_table_key_pressed_while_active() {
+        use crate::state::key_effect_predictor::{Conv, PredictedEffect};
+        let mut z = ScopeBelief::new(170);
+        focus(&mut z, 1, READABLE, 0);
+        explicit(&mut z, true, 5);
+
+        let applied = |mode, strategy, result| ImeEvent::InputModeApplied {
+            mode,
+            strategy,
+            result,
+        };
+
+        // 半角英数トグル ON。
+        let on = applied(
+            InputModeState::ObservedEisu,
+            InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            InputModeApplyResult::Applied,
+        );
+        z.evolve(scope_event_of(&on, &z.view(), 0, 10).expect("トグルONは写す"));
+
+        // トグル中にテーブルキー(Enter相当)を1回押す。予測器はトグル中もテーブルキー自身の
+        // after_conv(C10)を追跡へ書き戻す(ADR-244 M-2はこの経路を防げない、ADR-289背景参照)。
+        let enter = Prediction {
+            effect: PredictedEffect {
+                open: None,
+                mode: None,
+            },
+            track: KeyTrack {
+                conv: Some(Conv::C10),
+                stage: Stage::None,
+            },
+        };
+        z.evolve(scope_event_of_prediction(true, &enter, &z.view(), 20));
+        assert_eq!(
+            z.view().track.conv,
+            Some(Conv::C10),
+            "テーブルキー自身の予測で古いeisu追跡が残ることを前提として確認する"
+        );
+
+        // トグル OFF(復元、AssumedRomaji)。D1: 古いtrack.convをクリアする。
+        let off = applied(
+            InputModeState::AssumedRomaji {
+                reason: AssumedReason::KeyEffectPrediction,
+            },
+            InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            InputModeApplyResult::Applied,
+        );
+        z.evolve(scope_event_of(&off, &z.view(), 0, 30).expect("トグルOFFも写す"));
+
+        assert_eq!(
+            z.view().track.conv,
+            None,
+            "半角英数トグルを抜けた後は、トグル中にテーブルキーが書き戻した古いeisu追跡を\
+             残してはならない(BUG-229)"
         );
     }
 

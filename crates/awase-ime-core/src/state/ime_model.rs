@@ -16,7 +16,8 @@ use awase::engine::InputModeState;
 
 use super::ime_event::{
     ApplyError, ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile,
-    InputModeApplyResult, ObservationConfidence, ObservationSource, UserIntentSource,
+    InputModeApplyResult, InputModeApplyStrategy, ObservationConfidence, ObservationSource,
+    UserIntentSource,
 };
 use super::input_barrier::InputBarrier;
 use super::observation_store::{DeriveOutcome, ObservationStore};
@@ -1011,10 +1012,25 @@ impl ImeModel {
                     );
                 }
             }
-            ImeEvent::InputModeApplied { mode, result, .. } => {
+            ImeEvent::InputModeApplied {
+                mode,
+                strategy,
+                result,
+            } => {
                 // Skipped の場合はモード変更が起きていないため更新しない。
                 if result == InputModeApplyResult::Applied {
                     self.input_mode = mode;
+                    if matches!(
+                        strategy,
+                        InputModeApplyStrategy::UserHalfWidthAlnumToggle
+                            | InputModeApplyStrategy::PanicReset
+                    ) {
+                        // D1(ScopeBelief::track.conv)と対になる掃除(ADR-289、BUG-229)。半角英数トグルの
+                        // 出入り・復元は実変換モードを確定させる行為なので、古いkey_track.convへの
+                        // フォールバックを断つ。観測の受理時(上の`InputModeObserved`の分岐)が
+                        // `self.key_track.conv = None`へ戻すのと同じ扱い。
+                        self.key_track.conv = None;
+                    }
                 }
             }
             ImeEvent::FocusHwndUpdated { hwnd } => {
@@ -2401,6 +2417,44 @@ mod tests {
             model.key_track().stage,
             Stage::Typing,
             "段階は観測できないので残す"
+        );
+    }
+
+    /// BUG-229/ADR-289 D4a: 半角英数トグルの出入り・復元(`InputModeApplied{UserHalfWidthAlnumToggle,
+    /// Applied}`)の受理時にも、`InputModeObserved`の受理(上のテスト)と同じく`key_track.conv`を
+    /// `None`へ戻す。古いeisu追跡(`conv_raw`へのフォールバック、D4b/D5が別途対処する)とは別の、
+    /// `ImeModel`自身が持つ追跡を直すのがこのテストの対象。
+    #[test]
+    fn half_width_toggle_applied_returns_conv_tracking_to_none() {
+        use crate::state::key_effect_predictor::{Conv, KeyTrack, Stage};
+        let mut model = ImeModel::new();
+        predict_with_track(
+            &mut model,
+            1000,
+            KeyTrack {
+                conv: Some(Conv::C10),
+                stage: Stage::Typing,
+            },
+        );
+        model.reduce(&envelope(
+            2,
+            ImeEvent::InputModeApplied {
+                mode: InputModeState::AssumedRomaji {
+                    reason: awase::engine::AssumedReason::KeyEffectPrediction,
+                },
+                strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+                result: InputModeApplyResult::Applied,
+            },
+        ));
+        assert_eq!(
+            model.key_track().conv,
+            None,
+            "トグルの出入り・復元が受理されたら、古いeisu追跡をクリアする(BUG-229)"
+        );
+        assert_eq!(
+            model.key_track().stage,
+            Stage::Typing,
+            "段階は引き継ぐ(ADR-289 D1と同じ扱い)"
         );
     }
 
@@ -4229,7 +4283,7 @@ mod tests {
             1,
             ImeEvent::InputModeApplied {
                 mode: InputModeState::ObservedEisu,
-                strategy: crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
+                strategy: InputModeApplyStrategy::ImmBrokenCorrection,
                 result: InputModeApplyResult::Applied,
             },
         ));
@@ -4250,7 +4304,7 @@ mod tests {
             1,
             ImeEvent::InputModeApplied {
                 mode: InputModeState::ObservedEisu,
-                strategy: crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
+                strategy: InputModeApplyStrategy::ImmBrokenCorrection,
                 result: InputModeApplyResult::Skipped,
             },
         ));
