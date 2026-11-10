@@ -2481,7 +2481,7 @@ impl Runtime {
             self.platform_state
                 .gate
                 .half_width_alnum
-                .rearm_after_failed_gji_exit();
+                .rearm_after_failed_gji_exit(crate::state::TickMs(hook::current_tick_ms()));
             tracing::warn!(
                 "[shift-conv-guard] GJI 半角英数トグル exit の SendInput を見送った \
                  (Win/Alt押下中 or effective_open=false)。実GJIは半角英数のままの \
@@ -2684,7 +2684,7 @@ impl Runtime {
         self.platform_state
             .gate
             .half_width_alnum
-            .rebuild_toggle_from_entry(entry);
+            .rebuild_toggle_from_entry(entry, now);
         self.platform_state.ime.note_explicit_ime_action(now);
         self.apply_input_mode_correction(
             InputModeState::ObservedEisu,

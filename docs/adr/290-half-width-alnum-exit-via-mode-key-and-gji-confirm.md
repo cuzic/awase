@@ -15,16 +15,21 @@ summary: |-
   「IME ONの半角英数入力でひらがなキーを押せば、そもそも規定動作としてかなへ戻るはず」と指摘した通り、
   モード切替自体はIME側が標準動作として行う。真の欠落は「awase自身のbookkeeping(`toggle_held`)がその
   標準動作の結果に追随していないこと」だけであり、awase側からの能動的なキー送信は不要・有害(二重送信・
-  BUG-192型の回帰)。第1版の実装(D1′、observation-based)もOpus敵対的レビューで2件の欠陥が見つかり
-  (F1致命的: mozcの`Hiragana`をawaseの`ObservedKana`〈JISかな直接入力〉として書くとEngineが
+  BUG-192型の回帰)。第1版の実装(D1′、observation-based)もOpus敵対的レビューround1で2件の欠陥が
+  見つかり(F1致命的: mozcの`Hiragana`をawaseの`ObservedKana`〈JISかな直接入力〉として書くとEngineが
   `Inactive(NotRomajiInput)`のまま戻らない。F2高: エントリ以前の古い共有メモリの読みで入った直後に
-  手放してしまう)、belief を一切書かないedge-triggeredの純粋判定(D1″)へ置き換えた。D2(GJI抜け出し
-  直後のMozc確認・回収)とD3(MS-IME側の対象確認)は未着手のまま残る。
+  手放してしまう)、belief を一切書かないedge-triggeredの純粋判定(D1″)へ置き換えた。D1″もround2で
+  F2が「半分しか直っていない」(R2-1)と指摘された——`update_tick_ms`は「共有メモリに何か書いた最後の
+  時刻」であって「モードが変わった最後の時刻」ではないため、エントリ直後のキー入力自身が
+  `update_tick_ms`だけ進めてしまう経路があった。2段ラッチ(エントリ後に英数の読みを実際に観測してから
+  のかなの読みだけを追随と認める)で修正した版が現在の実装。D2(GJI抜け出し直後のMozc確認・回収)と
+  D3(MS-IME側の対象確認)は未着手のまま残る。
 status: |-
-  D1″(edge-triggeredの純粋判定によるtoggle_held解除、Opusレビューで指摘されたF1/F2を修正した版)を
-  `docs/bug230-adr290-half-width-f2-exit-race`ブランチに実装・コミット済み(2026-11-10、developへは
-  未マージ)。D1′はOpus敵対的レビューで指摘され却下済み(下記却下した案参照)。実機確認は未着手。
-  D2(GJI抜け出しのMozc確認・回収)・D3は未着手。
+  D1″(edge-triggeredの2段ラッチによるtoggle_held解除、Opusレビューround1〈F1/F2〉・round2〈R2-1〉で
+  指摘された欠陥を修正した版)を`docs/bug230-adr290-half-width-f2-exit-race`ブランチに実装・コミット済み
+  (2026-11-10、developへは未マージ)。D1′はOpus敵対的レビューround1で指摘され却下済み(下記却下した案
+  参照)。round2の残りの軽微な指摘(R2-2・R2-4)はADR本文の限界に記録。実機確認は未着手。D2(GJI抜け出し
+  のMozc確認・回収)・D3は未着手。
 related_adr:
   - "ADR-270"
   - "ADR-289"
@@ -78,30 +83,45 @@ engineがpass-throughを抜けて生ローマ字を送る——同型の実害�
 
 ## 決定
 
-### D1″. mozc-shmの`effective_mode`観測(edge-triggered)で`toggle_held`を手放す(実装済み、D1・D1′を置き換え)
+### D1″. mozc-shmの`effective_mode`観測(edge-triggered・2段ラッチ)で`toggle_held`を手放す(実装済み、D1・D1′を置き換え)
 
 当初のD1(モードキー受信時にawase側から脱出コミットを能動的に送る案)はOpusレビューとユーザー指摘で
 却下した(下記「却下した案」参照)。第1版の実装D1′(`InputModeObserved`をbeliefへ書く案)もOpus敵対的
-レビューで2件の欠陥(F1致命的・F2高)が見つかり却下した(同)。実装したD1″は、IME自身の標準動作
-(ひらがなキーで実際にかなへ戻る)には一切介入せず、**belief を一切書かない純粋な判定**で
-`toggle_held`のbookkeepingだけを追随させる。
+レビューround1で2件の欠陥(F1致命的・F2高)が見つかり却下した(同)。D1′を置き換えた最初のD1″
+(edge-triggeredのみ、ラッチ無し)もround2でF2が「半分しか直っていない」(R2-1)と指摘された——
+`update_tick_ms`は「共有メモリに何か書いた最後の時刻」であって「モードが変わった最後の時刻」ではない
+(mozc-readableの書き手`tip_state_publisher.cc`は、モード以外のフィールド`key_seq`等の変化でも
+`update_tick_ms`を進める、`readable/docs/shared-memory.md` §3-1)。そのため「エントリより後」だけでは、
+エントリ直後の`VK_DBE_ALPHANUMERIC`自身がまだ`Hiragana`のまま`key_seq`だけ進めて書いた読みを
+「かなへの追随」と誤認しうる。現在の実装は2段ラッチでこれを修正した版。IME自身の標準動作(ひらがな
+キーで実際にかなへ戻る)には一切介入せず、**belief を一切書かない純粋な判定**で`toggle_held`の
+bookkeepingだけを追随させる。
 
 - `crates/awase-ime-core/src/state/mozc_shm.rs::eisu_of_effective_mode`: `effective_mode`
   (Hiragana/FullKatakana/HalfKatakana→かな、HalfAscii/FullAscii→英数、Direct/None→判定不能)
   から英数/かなを判定する純粋関数(`classify_*`系、`is_composing_mode`と同じ「かな系」の定義を再利用)。
   belief には一切触れない。
-- `crates/awase-hook-core/src/state/half_width_alnum.rs::should_abandon_on_mozc_shm_kana_follow`:
-  トグルのエントリtick(`entered_at_tick_ms`)・判定した`eisu`・読みの`update_tick_ms`の3つから、
-  edge-triggeredに「手放すべきか」を決める純粋関数。`update_tick_ms`がエントリtick**より後**(≦では
-  ない)で、かつ`eisu == Some(false)`のときだけ真。エントリ以前の古い`hiragana`読み(`decide_use`の
-  Held/lost-write fallbackを経由して受け入れられたものを含む)で、入った直後に即座に手放してしまう
-  誤判定(F2)を、`update_tick_ms`自体の値で機械的に排除する。
-- `HalfWidthAlnumState`に`entered_at_tick_ms: Option<u64>`を追加。`commit_enter_imc`/
-  `commit_enter_gji`自体の引数は変えず(既存の呼び出し元・テストのシグネチャを保つ)、直後に呼び出し元
-  (`key_pipeline.rs`の2箇所)が新設の`mark_entered_tick(tick_ms)`を呼んでセットする。クリアは
-  `entered_in`と対で`begin_restore_kana`・`abandon_on_observed_follow`で行う(ADR-245の
-  `rebuild_toggle_from_entry`、戻り待ちからの立て直しでは**セットしない**——`None`のままなら
-  `should_abandon_on_mozc_shm_kana_follow`は常に偽を返す、フェイルセーフ。下記「限界・未確認」参照)。
+- `crates/awase-hook-core/src/state/half_width_alnum.rs::plan_mozc_shm_follow`: トグルのエントリtick
+  (`entered_at_tick_ms`)・2段ラッチの状態(`eisu_seen_since_entry`)・判定した`eisu`・読みの
+  `update_tick_ms`の4つから、`MozcShmFollowPlan::{None, MarkEisuSeen, Abandon}`を決める純粋関数。
+  - `update_tick_ms`がエントリtick以下(≦)なら常に`None`(エントリ**以前**の古い値を、入った直後に
+    「追随した」と誤認しない、round1 F2)。
+  - エントリより後の読みが英数側(`eisu == Some(true)`)で、まだラッチが立っていなければ
+    `MarkEisuSeen`(エントリ後にMozcが実際に英数のままであることを一度確認した、という事実だけを記録)。
+  - ラッチが立った**後**に来た、エントリより後のかな側(`eisu == Some(false)`)の読みだけが`Abandon`
+    (round2 R2-1の修正: エントリ直後のkey_seq書き込みだけでは`MarkEisuSeen`すら立たない——
+    `eisu == Some(true)`を要求するため——ので、そのタイミングのかな読みの誤認自体は発生しない。
+    ラッチが一度立った後のかな読みは、共有メモリが最新値しか持たないことから、エントリ後に実際に
+    Mozcがかなへ切り替わった証拠になる)。
+- `HalfWidthAlnumState`に`entered_at_tick_ms: Option<u64>`と`eisu_seen_since_entry: bool`(2段ラッチ)を
+  追加。`commit_enter_imc`/`commit_enter_gji`自体の引数は変えず(既存の呼び出し元・テストのシグネチャを
+  保つ)、直後に呼び出し元(`key_pipeline.rs`の2箇所)が新設の`mark_entered_tick(tick_ms)`を呼んでセット
+  する(ラッチも同時に未観測へ戻す)。クリアは`entered_in`と対で`begin_restore_kana`・
+  `abandon_on_observed_follow`で行う。ADR-245の`rebuild_toggle_from_entry`(戻り待ちからの立て直し)と
+  `rearm_after_failed_gji_exit`(GJI exit失敗時の巻き戻し)は、呼び出し元が渡す現在の tick を新しい
+  エントリ点として`mark_entered_tick`を呼ぶ(round2 R2-3の修正。以前は`entered_at_tick_ms`を`None`の
+  ままにしていたため、これらの経路で立て直した/巻き戻したトグルはmozc-shm観測ベースの手放しの対象に
+  永久にならなかった)。
 - `runtime/mozc_shm_shadow.rs::mozc_shm_on_tick`/`mozc_shm_on_timer`/`mozc_shm_read_once`の
   戻り値を`Option<(CompositionMode, u64)>`(受け入れた読みの`effective_mode`・`update_tick_ms`、
   belief を経由しない生の値)に変更。`report_mozc_shm`自体はADR-268時点の形(`ShmUse`のみを返す、
@@ -112,13 +132,14 @@ engineがpass-throughを抜けて生ローマ字を送る——同型の実害�
   半角英数トグルの関心を持ち込まない**(観測した生の値をそのまま呼び出し元まで持ち出すだけで十分、と
   設計を単純化した)。
 - `gate.half_width_alnum`へアクセスできる呼び出し元(`ir_execute`・`TIMER_MOZC_SHM`ハンドラ)が、
-  `mode_read`(受け入れた読み)と`entered_at_tick_ms`(gateから読む)を`ir_abandon_half_width_alnum_
-  from_mozc_shm_if`へ渡し、そこで`eisu_of_effective_mode` → `should_abandon_on_mozc_shm_kana_follow`
-  の判定 → 真なら`abandon_on_observed_follow()`を呼んで実際に手放す。
+  `mode_read`(受け入れた読み)・`entered_at_tick_ms`・`eisu_seen_since_entry`(いずれもgateから読む)を
+  `ir_abandon_half_width_alnum_from_mozc_shm_if`へ渡し、`eisu_of_effective_mode` → `plan_mozc_shm_follow`
+  の判定結果に従う: `MarkEisuSeen`なら`mark_eisu_seen_since_entry()`を呼ぶだけ、`Abandon`なら実際に
+  `abandon_on_observed_follow()`を呼んで手放す。
 - 手放した後、BUG-222(`kp_exit_lang_detect_toggle_on_hiragana`)と同じ後始末
   (`confirm_gate_deadline_override_ms`のクリア・`bump_shift_conv_guard_gen`)に加えて、
   `eisu_recovery::eisu_reset_on_turn_on_while_open(true, input_mode())` → `InputModeApplied
-  {strategy: UserTurnOnEisuReset}`でbeliefをromaji-capableへ戻す(F1の修正。D1′は`ObservedKana`を
+  {strategy: UserTurnOnEisuReset}`でbeliefをromaji-capableへ戻す(round1 F1の修正。D1′は`ObservedKana`を
   belief へ直接書いていたため、JISかな直接入力と誤認されEngineが`Inactive(NotRomajiInput)`のまま
   戻らなかった)。
 
@@ -167,20 +188,34 @@ IME種別に関わらず共通の問題だが、MS-IME本体は既にADR-244 D3(
   トグルが残る)自体は残る。ユーザー自身の指摘(「GJI/MSIMEでは低コストな観測手段が無いのは
   仕方ない」)を踏まえ、この対象範囲の限定は意図的な設計判断であり、「素のGJI利用者への対応」は
   本ADRの範囲外(将来、字形〈ADR-261/273〉等の別の観測手段が育てば再検討)。
-- ADR-245の戻り待ちから`rebuild_toggle_from_entry`で立て直したトグルは`entered_at_tick_ms`を
-  セットしない(`None`のまま)。これは意図的なフェイルセーフ(分からないときは手放さない)だが、
-  結果としてこの経路で立て直したトグルは、mozc-shm観測による解除の対象に**ならない**(従来の
-  3経路のみで解除される)。実機でこの経路がどの程度頻度があるかは未確認。
-- `should_abandon_on_mozc_shm_kana_follow`が真を返しても、`toggle_held`を手放すこと自体は
-  ADR-244 D3の既存の仕組み(`abandon_on_observed_follow()`、OS書き込み無し)に委ねている。これが
-  MS-IME側で想定していない副作用(例: 手放した直後に別の観測が逆方向に動く)をGJI/Mozc側でも
-  起こさないかは、実機でのみ確認できる(未確認)。
+- `plan_mozc_shm_follow`が`Abandon`を返しても、`toggle_held`を手放すこと自体はADR-244 D3の既存の
+  仕組み(`abandon_on_observed_follow()`、OS書き込み無し)に委ねている。これがMS-IME側で想定していない
+  副作用(例: 手放した直後に別の観測が逆方向に動く)をGJI/Mozc側でも起こさないかは、実機でのみ確認
+  できる(未確認)。
 - D2(GJI抜け出し直後の送信をADR-270の確認・回収機構に乗せる)とD3は未着手。原因2(GJIの抜け出し
   送信自体にMozc切替完了の確認が無い)はD1″では解決していない——D1″が直すのは「`toggle_held`の
   bookkeeping」(原因1)のみで、「抜け出し送信後、Mozcの実際の切替完了まで約2秒romajiがリテラルの
   まま出力される」症状そのものは別問題として残る。
 - 「約2秒」というMozc側の切替所要時間は未確認(上記「原因2」注記参照)。D2の実装時にこの前提を
   再検証すること。
+- **(round2 R2-2)** 手放した後のbeliefの訂正に`InputModeApplyStrategy::UserTurnOnEisuReset`を使っている
+  (BUG-222の既存の呼び出し元`kp_exit_lang_detect_toggle_on_hiragana`と同じラベル付け)。この変体名は
+  「ユーザーがTurnOn系キーを押した」を意味し、「観測ベースでトグルを手放した」という実際の事象と
+  厳密には食い違う。実害は、ADR-289(BUG-229、別ブランチ`docs/bug229-adr289-belief-v2-stale-track`)が
+  追跡中conv(belief-v2の`track.conv`・旧beliefの`key_track.conv`・殻側の`prev_conversion_mode`)の
+  クリアを`UserHalfWidthAlnumToggle`(と`PanicReset`)にだけ対で配線していること——`UserTurnOnEisuReset`
+  はこの対象に入らないため、手放し後に古い追跡中convが残る(BUG-229と同型の)可能性がある。この問題は
+  BUG-222・ADR-244 D3の既存の呼び出し元にも**既に存在する**(本ADRが新規に持ち込んだものではない)。
+  2つのブランチが合流する時点で、`UserHalfWidthAlnumToggle`を再利用するか、ADR-289のクリア対象に
+  新しいvariantを加えるかを決めること。
+- **(round2 R2-3の残課題)** `rearm_after_failed_gji_exit`/`rebuild_toggle_from_entry`は現在の tick を
+  新しいエントリ点として扱う(上記D1″参照)。これは「巻き戻し/立て直しの時点でMozcが実際にどちらの
+  モードだったか」を見ていない、保守的な近似(エントリ以降に英数の読みを1回観測してからのかな読みしか
+  手放しの根拠にしない2段ラッチが、この近似の誤りを吸収する設計)。実機での頻度・挙動は未確認。
+- **(round2 R2-4)** `entered_at_tick_ms`・`update_tick_ms`は双方`GetTickCount64`(分解度 約15.6ms)。
+  エントリと同じ分解度単位内に書かれた読みは`update_tick_ms <= entered_at`で「エントリ以前」と判定され
+  うる(安全側の誤り)。2段ラッチにより、この回のかな読みを取りこぼしても次の読みで追随できるため、
+  実害は無いと考えている。
 
 ## 却下した案
 
@@ -211,6 +246,13 @@ IME種別に関わらず共通の問題だが、MS-IME本体は既にADR-244 D3(
   - 両方とも、belief を書く・`decide_use`の判定に相乗りする、という設計そのものに起因していたため、
     D1″では「belief を一切書かない・`decide_use`を経由しない独立したedge-triggered判定」に全面的に
     置き換えた。
+- **D1″初版(round2レビュー前、ラッチ無しのedge-triggered判定のみ)**: `update_tick_ms`がエントリtick
+  より後であることだけを条件にしていた。Opus敵対的レビューround2(R2-1)で、`update_tick_ms`が
+  「共有メモリに何か書いた最後の時刻」であって「モードが変わった最後の時刻」ではないと指摘され
+  (mozc-readableの書き手はモード以外のフィールドの変化でも`update_tick_ms`を進める、
+  `shared-memory.md` §3-1)、エントリ直後の`VK_DBE_ALPHANUMERIC`自身の`key_seq`書き込みが
+  「かなへの追随」と誤認されうる反例(`entered=1000`、`(かな, 1001)`、英数の読みを一度も観測して
+  いない)が示され、現在の2段ラッチ版に置き換えた。
 - **確認の期限(`MOZC_COMPOSE_CHECK_MS`)を実測の約2秒に合わせて延ばす**: D2(未着手)の検討時点での
   却下理由。対象をGJI脱出直後の1回に限定できないため(他の全てのMozc初回送信の確認にも適用される
   既存の共有定数)、本当にcompositionができないケース(真のリテラル)での利用者の待ち時間が2秒に

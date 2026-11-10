@@ -86,19 +86,25 @@ impl Runtime {
         self.ir_abandon_half_width_alnum_from_mozc_shm_if(mode_read);
     }
 
-    /// ADR-290/BUG-230(Opusレビュー後のD1″): `mozc_shm_on_tick`/`mozc_shm_on_timer`が受け入れた
+    /// ADR-290/BUG-230(Opusレビュー round2後のD1″): `mozc_shm_on_tick`/`mozc_shm_on_timer`が受け入れた
     /// `effective_mode`の読み(`mode_read`、belief は一切書いていない)から、半角英数トグルを観測ベースで
     /// 手放すべきかを**ここで初めて**判断し、手放す(OS 書き込みなし、ADR-244 D3 と同じ形)。
     ///
     /// `mozc_shm_shadow.rs`は`gate.half_width_alnum`に一切触れない設計を保つため
     /// (`mozc_shm_reader_touches_belief_only_through_report_mozc_shm`)、判断に要る「トグルの入り口の
-    /// tick」(`entered_at_tick_ms`)は`gate`に届くここで読む。edge-trigger(`update_tick_ms`がエントリより
-    /// 後)を要求するのは、エントリ直前の古い`hiragana`読み(decide_useのHeld/lost-write fallback経由でも
-    /// 古い値が受け入れられ得る)で入った直後にトグルを即座に手放してしまう誤判定を避けるため(Opusレビュー
-    /// F2)。手放すと分かったら、BUG-222(`kp_exit_lang_detect_toggle_on_hiragana`)と同じ後始末に加えて
+    /// tick」(`entered_at_tick_ms`)・2段ラッチ(`eisu_seen_since_entry`)は`gate`に届くここで読む。
+    ///
+    /// 判定自体は`plan_mozc_shm_follow`(純関数)に委ねる。2段ラッチにしているのは、`update_tick_ms`が
+    /// 「共有メモリに何か書いた最後の時刻」であって「モードが変わった最後の時刻」ではないため
+    /// (mozc-readableはキー入力時点で`key_seq`等を更新し`update_tick_ms`を進める)——エントリより後、
+    /// というだけでは、エントリ直後の`VK_DBE_ALPHANUMERIC`自身がまだ`Hiragana`のまま`key_seq`だけ進めて
+    /// 書いた読みを「かなへの追随」と誤認しうる(Opusレビュー round2 R2-1)。エントリ後に英数の読みを
+    /// 実際に観測してからのかなの読みだけを「本当の追随」として受理する。
+    ///
+    /// 手放すと分かったら、BUG-222(`kp_exit_lang_detect_toggle_on_hiragana`)と同じ後始末に加えて
     /// `eisu_reset_on_turn_on_while_open` → `InputModeApplied`でromaji-capableへ戻す(ADR-244 D3の
     /// 直接観測と違い、ここでは一切`InputModeObserved`を書いていないため、ObservedEisuのまま放置すると
-    /// Engineが`Inactive(NotRomajiInput)`のまま戻らない、Opusレビュー F1)。
+    /// Engineが`Inactive(NotRomajiInput)`のまま戻らない、Opusレビュー round1 F1)。
     pub(super) fn ir_abandon_half_width_alnum_from_mozc_shm_if(
         &mut self,
         mode_read: Option<(crate::state::mozc_shm::CompositionMode, u64)>,
@@ -115,13 +121,32 @@ impl Runtime {
             .gate
             .half_width_alnum
             .entered_at_tick_ms();
-        if !crate::state::half_width_alnum::should_abandon_on_mozc_shm_kana_follow(
+        let eisu_seen_since_entry = self
+            .platform_state
+            .gate
+            .half_width_alnum
+            .eisu_seen_since_entry();
+        match crate::state::half_width_alnum::plan_mozc_shm_follow(
             entered_at_tick_ms,
+            eisu_seen_since_entry,
             eisu,
             update_tick_ms,
         ) {
-            return;
+            crate::state::half_width_alnum::MozcShmFollowPlan::None => {}
+            crate::state::half_width_alnum::MozcShmFollowPlan::MarkEisuSeen => {
+                self.platform_state
+                    .gate
+                    .half_width_alnum
+                    .mark_eisu_seen_since_entry();
+            }
+            crate::state::half_width_alnum::MozcShmFollowPlan::Abandon => {
+                self.ir_do_abandon_half_width_alnum_from_mozc_shm();
+            }
         }
+    }
+
+    /// 上記`plan_mozc_shm_follow`が`Abandon`を返したときの実際の手放し(ADR-244 D3・BUG-222と同じ後始末)。
+    fn ir_do_abandon_half_width_alnum_from_mozc_shm(&mut self) {
         if !self
             .platform_state
             .gate

@@ -161,9 +161,17 @@ pub struct HalfWidthAlnumState {
     /// `rearm_after_failed_gji_exit` は触らない。
     entered_in: Option<(ForegroundScope, bool)>,
     /// トグルに入った時点の tick（`mark_entered_tick`。`entered_in` と対で、クリアも同じ3箇所で揃える）。
-    /// mozc-shm の観測ベースの手放し判定（ADR-290、`should_abandon_on_mozc_shm_kana_follow`）が、
+    /// mozc-shm の観測ベースの手放し判定（ADR-290、`plan_mozc_shm_follow`）が、
     /// エントリより前の古い読みで即座に手放す誤判定を避けるための edge-trigger の基準点に使う。
     entered_at_tick_ms: Option<u64>,
+    /// ADR-290(Opus round2、R2-1): エントリ以降に英数側(`eisu == Some(true)`)の読みを実際に観測したか
+    /// (2段ラッチ)。`update_tick_ms`は「共有メモリに何か書いた最後の時刻」であり「モードが変わった
+    /// 最後の時刻」ではない(mozc-readableの`tip_state_publisher.cc`は`key_seq`等、モード以外のフィールド
+    /// の変化でも`update_tick_ms`を進める)。そのため「エントリより後」だけでは、エントリ直後の
+    /// `VK_DBE_ALPHANUMERIC`自身がまだ`Hiragana`のまま`key_seq`だけ進めて書いた読みを「かなへの追随」と
+    /// 誤認しうる。英数の読みを実際に1回経由したことを確認してから、その後のかなの読みだけを
+    /// 「本当の追随」として受理する。`entered_at_tick_ms`と対でクリア・セットする。
+    eisu_seen_since_entry: bool,
     /// 今の持続トグルが、打鍵列からの英数判定（ADR-263 `ime_on_eisu`）で入ったものか（BUG-222）。左Shift単独タップの
     /// 手動のトグルは偽。`commit_enter_*` が偽に戻し、殻が入りの成功後に [`Self::mark_entered_by_lang_detect`] で立てる。
     /// 戻り待ちには引き継がない（離脱で偽に戻る。戻った窓の復元は手動のトグルと同じ扱い）。
@@ -424,17 +432,29 @@ impl HalfWidthAlnumState {
     /// ADR-290(BUG-230): `commit_enter_imc`/`commit_enter_gji`の**直後**に呼び出し元が渡す、
     /// トグルに入った tick。`commit_enter_*`自体の引数には加えない(既存の呼び出し元・テストの
     /// シグネチャを変えない、追加専用のメソッドにする)。mozc-shmの観測ベースの手放し判定
-    /// (`should_abandon_on_mozc_shm_kana_follow`)の edge-trigger の基準点に使う。
+    /// (`plan_mozc_shm_follow`)の edge-trigger の基準点に使う。2段ラッチ
+    /// (`eisu_seen_since_entry`、R2-1)も新しいエントリのたびに未観測へ戻す。
     pub fn mark_entered_tick(&mut self, tick_ms: TickMs) {
         self.entered_at_tick_ms = Some(tick_ms.0);
+        self.eisu_seen_since_entry = false;
     }
 
-    /// 読み取り専用。トグルが入っていない、または`mark_entered_tick`を呼ばれていない経路
-    /// (ADR-245の戻り待ちからの`rebuild_toggle_from_entry`等)では`None`——`None`なら
-    /// `should_abandon_on_mozc_shm_kana_follow`は常に偽を返す(分からないときは手放さない)。
+    /// 読み取り専用。トグルが入っていない、または`mark_entered_tick`を呼ばれていない経路では`None`
+    /// ——`None`なら`plan_mozc_shm_follow`は常に`None`(何もしない)を返す(分からないときは手放さない)。
     #[must_use]
     pub const fn entered_at_tick_ms(&self) -> Option<u64> {
         self.entered_at_tick_ms
+    }
+
+    /// ADR-290(R2-1): エントリ以降に英数側の読みを実際に観測済みか(2段ラッチの読み取り)。
+    #[must_use]
+    pub const fn eisu_seen_since_entry(&self) -> bool {
+        self.eisu_seen_since_entry
+    }
+
+    /// ADR-290(R2-1): `plan_mozc_shm_follow`が`MarkEisuSeen`を返したときに呼び出し元が立てる。
+    pub fn mark_eisu_seen_since_entry(&mut self) {
+        self.eisu_seen_since_entry = true;
     }
 
     // ── Exit/Restore ──────────────────────────────────────────────────
@@ -447,6 +467,7 @@ impl HalfWidthAlnumState {
     pub fn begin_restore_kana(&mut self) -> bool {
         self.entered_in = None;
         self.entered_at_tick_ms = None;
+        self.eisu_seen_since_entry = false;
         self.entered_by_lang_detect = false;
         std::mem::replace(&mut self.toggle_held, false)
     }
@@ -457,8 +478,15 @@ impl HalfWidthAlnumState {
     /// 次のタップ/緊急解除で再試行できるようにする（旧
     /// `kp_send_gji_restore_exit` の `gate.half_width_alnum_toggle_active =
     /// true` 相当）。
-    pub fn rearm_after_failed_gji_exit(&mut self) {
+    ///
+    /// ADR-290(Opus round2 R2-3): `begin_restore_kana`が消した`entered_at_tick_ms`/
+    /// `eisu_seen_since_entry`をこの巻き戻しでは復元しない(巻き戻し前の値をそのまま持ち出すのではなく)
+    /// ——`tick_ms`(呼び出し元の現在時刻)を新しいエントリ点として扱う。これにより、巻き戻した
+    /// トグルもmozc-shmの観測ベースの手放し(R2-1のラッチ)の対象になる(巻き戻し以前は対象外のまま
+    /// 固定されていた)。
+    pub fn rearm_after_failed_gji_exit(&mut self, tick_ms: TickMs) {
         self.toggle_held = true;
+        self.mark_entered_tick(tick_ms);
     }
 
     /// 直接観測（ADR-188）が実状態の「かな」（NATIVE の読み）へ追随したとき、持続トグルを OS 書き込みなしで手放す
@@ -470,6 +498,7 @@ impl HalfWidthAlnumState {
     pub fn abandon_on_observed_follow(&mut self) -> bool {
         self.entered_in = None;
         self.entered_at_tick_ms = None;
+        self.eisu_seen_since_entry = false;
         self.entered_by_lang_detect = false;
         std::mem::replace(&mut self.toggle_held, false)
     }
@@ -512,10 +541,15 @@ impl HalfWidthAlnumState {
     /// `RebuildToggle`（ADR-245 決定8）: 取り出したエントリから、注入せずにトグルを立て直す。
     /// `commit_enter_gji` は呼ばない（SendInput の成功がcommitの条件のため）。控えをエントリから戻すので、
     /// 次の離脱で再び戻り待ちへ積める。
-    pub fn rebuild_toggle_from_entry(&mut self, entry: ReturnPendingEntry) {
+    ///
+    /// ADR-290(Opus round2 R2-3): `tick_ms`(呼び出し元の現在時刻)を新しいエントリ点として
+    /// `mark_entered_tick`に渡す——戻り待ちから立て直したトグルも mozc-shm の観測ベースの手放し
+    /// (R2-1のラッチ)の対象にする(以前は`entered_at_tick_ms`が`None`のままで対象外固定だった)。
+    pub fn rebuild_toggle_from_entry(&mut self, entry: ReturnPendingEntry, tick_ms: TickMs) {
         self.toggle_held = true;
         self.entered_by_lang_detect = false;
         self.entered_in = Some((entry.scope, entry.uses_imc_conv_write));
+        self.mark_entered_tick(tick_ms);
     }
 
     /// 戻り待ちが 1 件でもあるか。空のときは殻が打鍵ごとの `foreground_scope()` を呼ばない（ADR-245 決定2）。
@@ -580,16 +614,35 @@ pub fn should_abandon_on_observed_follow(
         && belief_left_eisu
 }
 
-/// mozc-readable の共有メモリ(`effective_mode`)の観測(edge-triggered)から、持続トグルを手放すべきか
-/// (ADR-290、BUG-230。Opus敵対的レビューで指摘されたF1/F2を踏まえた版)。
+/// [`plan_mozc_shm_follow`]が返す、1回の読みに対する次の操作（ADR-290、Opus round2 R2-1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MozcShmFollowPlan {
+    /// 何もしない（エントリ前の読み・まだ判定に使える情報が無い・既に確定した状態と同じ）。
+    None,
+    /// エントリ後に英数側の読みを初めて観測した。呼び出し元は`mark_eisu_seen_since_entry`を呼ぶこと。
+    MarkEisuSeen,
+    /// 手放すべき。呼び出し元は`abandon_on_observed_follow`を呼ぶこと。
+    Abandon,
+}
+
+/// mozc-readable の共有メモリ(`effective_mode`)の観測(edge-triggered・2段ラッチ)から、持続トグルを
+/// 手放すべきかを計画する(ADR-290、BUG-230。Opus敵対的レビュー round1 F1/F2・round2 R2-1を踏まえた版)。
 ///
-/// - `entered_at_tick_ms`が`None`(トグルが入っていない・`mark_entered_tick`を呼ばれていない経路)なら
-///   常に偽。
-/// - 読みの`update_tick_ms`がエントリの tick 以下(≦)なら偽——エントリの**前**に mozc-readable が書いた
-///   古い`hiragana`を、入った直後に「かなへ追随した」と誤認しない(decide_use の Held・lost-write
-///   fallback を経由しても、`update_tick_ms`自体はこのチェックで古いままなので通らない)。
-/// - `update_tick_ms`がエントリより後(エントリ後に mozc が実際に書いた値)で、かつ`eisu == Some(false)`
-///   (composing側、かな系)のときだけ真。
+/// `update_tick_ms`は「共有メモリに何か書いた最後の時刻」であり「モードが変わった最後の時刻」では
+/// ない——mozc-readableの書き手(`tip_state_publisher.cc`)は`key_seq`等、モード以外のフィールドの
+/// 変化でも`update_tick_ms`を進める(`shared-memory.md` §3-1)。そのため「`update_tick_ms`がエントリ
+/// より後」だけでは、エントリ直後の`VK_DBE_ALPHANUMERIC`自身がまだ`Hiragana`のまま`key_seq`だけ進めて
+/// 書いた読みを「かなへの追随」と誤認しうる(round2 R2-1)。
+///
+/// このため2段ラッチにした: エントリ後に**まず英数側(`eisu == Some(true)`)の読みを実際に観測する**
+/// (`MarkEisuSeen`)まで、かなの読みを追随とは認めない。英数を観測済みの状態で、エントリより後の
+/// かなの読み(`eisu == Some(false)`)が来たときだけ`Abandon`を返す。共有メモリは最新値しか持たない
+/// ため、英数の読みの後に来たかなの読みは、エントリ後に実際にMozcが切替えた証拠になる
+/// (`update_tick_ms`自体の精度に依らない)。
+///
+/// `entered_at_tick_ms`が`None`(トグルが入っていない・`mark_entered_tick`を呼ばれていない経路)、
+/// または読みの`update_tick_ms`がエントリの tick 以下(≦)なら常に`None`(エントリの**前**に
+/// mozc-readable が書いた古い値を、入った直後に「追随した」と誤認しない)。
 ///
 /// **belief は一切参照・変更しない**——`should_abandon_on_observed_follow`(ADR-244 D3、MS-IME 本体)と
 /// 違い、この判定だけでは「観測した」ことを belief に書かない(`InputModeObserved`を構築しない)。
@@ -598,14 +651,22 @@ pub fn should_abandon_on_observed_follow(
 /// Mozc の`Hiragana`は awase の`ObservedKana`(JIS かな直接入力)と同義ではないため、観測を直接
 /// `ObservedKana`として書くと engine が`Inactive(NotRomajiInput)`のまま戻らない。
 #[must_use]
-pub const fn should_abandon_on_mozc_shm_kana_follow(
+pub const fn plan_mozc_shm_follow(
     entered_at_tick_ms: Option<u64>,
+    eisu_seen_since_entry: bool,
     eisu: Option<bool>,
     update_tick_ms: u64,
-) -> bool {
-    match entered_at_tick_ms {
-        Some(entered_at) if update_tick_ms > entered_at => matches!(eisu, Some(false)),
-        _ => false,
+) -> MozcShmFollowPlan {
+    let Some(entered_at) = entered_at_tick_ms else {
+        return MozcShmFollowPlan::None;
+    };
+    if update_tick_ms <= entered_at {
+        return MozcShmFollowPlan::None;
+    }
+    match eisu {
+        Some(true) if !eisu_seen_since_entry => MozcShmFollowPlan::MarkEisuSeen,
+        Some(false) if eisu_seen_since_entry => MozcShmFollowPlan::Abandon,
+        _ => MozcShmFollowPlan::None,
     }
 }
 
@@ -1116,10 +1177,15 @@ mod tests {
         );
         assert!(!state.is_toggle_active());
 
-        state.rearm_after_failed_gji_exit();
+        state.rearm_after_failed_gji_exit(TickMs(500));
         assert!(
             state.is_toggle_active(),
             "GJI SendInput見送り後は再試行に備えてtoggle_heldをtrueへ戻すべき"
+        );
+        assert_eq!(
+            state.entered_at_tick_ms(),
+            Some(500),
+            "ADR-290(R2-3): 巻き戻しも新しいエントリ点として記録し、mozc-shmの観測ベースの手放しの対象にすること"
         );
         assert!(
             state.begin_restore_kana(),
@@ -1272,31 +1338,40 @@ mod tests {
     /// 読みだけを「このトグル区間中の観測」として認める。エントリ**以前**の古い`hiragana`(decide_use の
     /// Held/lost-write fallback を経由して受け入れられたものを含む)で即座に手放す誤判定を防ぐ。
     #[test]
-    fn mozc_shm_kana_follow_requires_a_read_strictly_after_entry() {
-        use super::should_abandon_on_mozc_shm_kana_follow as f;
+    fn mozc_shm_kana_follow_requires_an_eisu_read_after_entry_before_abandoning() {
+        use super::{plan_mozc_shm_follow as f, MozcShmFollowPlan::{Abandon, MarkEisuSeen, None as NoPlan}};
         // エントリ(tick=1000)より前のupdate_tick_ms(=900、エントリ前からshmに残っていた古いhiragana)
-        // では、かな読みでも手放さない(F2)。
-        assert!(!f(Some(1000), Some(false), 900));
-        // エントリと同時刻(境界)もまだ「後」ではないので手放さない。
-        assert!(!f(Some(1000), Some(false), 1000));
-        // エントリより後(mozcが実際にエントリ後に書いた値)のかな読みでは手放す。
-        assert!(f(Some(1000), Some(false), 1001));
-        // エントリより後でも英数のまま(Some(true))・判定不能(None、Direct等)では手放さない。
-        assert!(!f(Some(1000), Some(true), 2000));
-        assert!(!f(Some(1000), None, 2000));
-        // エントリ自体が記録されていない(None、トグル非アクティブ・rebuild_toggle_from_entry経由等)では
-        // 常に手放さない(分からないときは手放さない、フェイルセーフ)。
-        assert!(!f(None, Some(false), 2000));
+        // では、かな読みでも何もしない(round1 F2)。
+        assert_eq!(f(Some(1000), false, Some(false), 900), NoPlan);
+        // エントリと同時刻(境界)もまだ「後」ではないので何もしない。
+        assert_eq!(f(Some(1000), false, Some(false), 1000), NoPlan);
+        // round2 R2-1の反例: エントリより後のかな読みが来ても、英数の読みをまだ観測していなければ
+        // (eisu_seen_since_entry=false)手放さない——これがエントリ直後のVK_DBE_ALPHANUMERIC自身の
+        // key_seq書き込み(モードはまだHiraganaのまま)を「追随した」と誤認する経路(R2-1)。
+        assert_eq!(f(Some(1000), false, Some(false), 1001), NoPlan);
+        // エントリより後の英数の読みは、ラッチを立てる計画を返す(まだ手放さない)。
+        assert_eq!(f(Some(1000), false, Some(true), 1001), MarkEisuSeen);
+        // 既にラッチが立っていれば、英数の読みは何もしない(既に観測済み)。
+        assert_eq!(f(Some(1000), true, Some(true), 1001), NoPlan);
+        // ラッチが立った後(eisu_seen_since_entry=true)のかな読みで、ようやく手放す。
+        assert_eq!(f(Some(1000), true, Some(false), 1002), Abandon);
+        // 判定不能(None、Direct等)では、ラッチの有無に関わらず何もしない。
+        assert_eq!(f(Some(1000), true, None, 2000), NoPlan);
+        assert_eq!(f(Some(1000), false, None, 2000), NoPlan);
+        // エントリ自体が記録されていない(None、トグル非アクティブ・rebuild前等)では常に何もしない
+        // (分からないときは手放さない、フェイルセーフ)。
+        assert_eq!(f(None, true, Some(false), 2000), NoPlan);
     }
 
     /// `commit_enter_imc`/`commit_enter_gji`の直後に`mark_entered_tick`を呼ぶ使い方と、
-    /// `begin_restore_kana`/`abandon_on_observed_follow`でのクリアを固定する。
+    /// `begin_restore_kana`/`abandon_on_observed_follow`でのクリア、2段ラッチの出入りを固定する。
     #[test]
-    fn entered_at_tick_ms_is_set_on_entry_and_cleared_on_exit_or_abandon() {
+    fn entered_at_tick_ms_and_eisu_latch_are_set_on_entry_and_cleared_on_exit_or_abandon() {
         use super::HalfWidthAlnumState;
 
         let mut st = HalfWidthAlnumState::default();
         assert_eq!(st.entered_at_tick_ms(), None, "初期状態はNone");
+        assert!(!st.eisu_seen_since_entry(), "初期状態は未観測");
 
         st.commit_enter_imc(scope(1, 1));
         assert_eq!(
@@ -1306,6 +1381,10 @@ mod tests {
         );
         st.mark_entered_tick(TickMs(1000));
         assert_eq!(st.entered_at_tick_ms(), Some(1000));
+        assert!(!st.eisu_seen_since_entry());
+
+        st.mark_eisu_seen_since_entry();
+        assert!(st.eisu_seen_since_entry());
 
         assert!(st.begin_restore_kana());
         assert_eq!(
@@ -1313,15 +1392,32 @@ mod tests {
             None,
             "begin_restore_kanaでクリアすること(entered_inと対)"
         );
+        assert!(
+            !st.eisu_seen_since_entry(),
+            "begin_restore_kanaでラッチもクリアすること"
+        );
 
         st.commit_enter_gji(scope(1, 1));
         st.mark_entered_tick(TickMs(2000));
         assert_eq!(st.entered_at_tick_ms(), Some(2000));
+        st.mark_eisu_seen_since_entry();
         assert!(st.abandon_on_observed_follow());
         assert_eq!(
             st.entered_at_tick_ms(),
             None,
             "abandon_on_observed_followでクリアすること(entered_inと対)"
+        );
+        assert!(
+            !st.eisu_seen_since_entry(),
+            "abandon_on_observed_followでラッチもクリアすること"
+        );
+
+        // 新しいエントリ(mark_entered_tick)は、前回のラッチを引き継がず未観測へ戻す。
+        st.commit_enter_imc(scope(1, 1));
+        st.mark_entered_tick(TickMs(3000));
+        assert!(
+            !st.eisu_seen_since_entry(),
+            "新しいエントリのたびにラッチを未観測へ戻すこと"
         );
     }
 
@@ -1579,7 +1675,7 @@ mod tests {
         let mut b = HalfWidthAlnumState::default();
         b.commit_enter_imc(scope(1, 1));
         b.abandon_on_observed_follow();
-        b.rearm_after_failed_gji_exit();
+        b.rearm_after_failed_gji_exit(TickMs(1));
         assert_eq!(
             b.plan_leave(),
             LeavePlan::SuspendWithoutReturn,
@@ -1588,7 +1684,7 @@ mod tests {
         // rearm は控えがあれば触らない。
         let mut c = HalfWidthAlnumState::default();
         c.commit_enter_gji(scope(1, 1));
-        c.rearm_after_failed_gji_exit();
+        c.rearm_after_failed_gji_exit(TickMs(1));
         assert_eq!(c.plan_leave(), LeavePlan::SuspendAndQueue);
     }
 
@@ -1603,8 +1699,13 @@ mod tests {
             .take_return_pending(scope(10, 0x100))
             .expect("積んだエントリ");
         assert!(!state.is_toggle_active());
-        state.rebuild_toggle_from_entry(taken);
+        state.rebuild_toggle_from_entry(taken, TickMs(5));
         assert!(state.is_toggle_active());
+        assert_eq!(
+            state.entered_at_tick_ms(),
+            Some(5),
+            "ADR-290(R2-3): 立て直しも新しいエントリ点として記録すること"
+        );
         assert_eq!(state.plan_leave(), LeavePlan::SuspendAndQueue);
         // 再び離脱すると同じスコープ・同じ IME 種別で積み直される。
         state.suspend_toggle_for_return(TickMs(9));
