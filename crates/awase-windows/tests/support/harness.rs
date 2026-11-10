@@ -56,12 +56,13 @@ use awase_windows::state::evidence::{
 use awase_windows::state::foreground_scope::ForegroundScope;
 use awase_windows::state::hub_clock::HubClock;
 use awase_windows::state::ime_event::{
-    HwndId, ImeEvent, ImePolicyProfile, ObservationConfidence, ObservationSource, UserIntentSource,
+    HwndId, ImeEvent, ImePolicyProfile, InputModeApplyResult, InputModeApplyStrategy,
+    ObservationConfidence, ObservationSource, UserIntentSource,
 };
 use awase_windows::state::ime_model::ImeModel;
 use awase_windows::state::key_effect_predictor::{
-    plan_key_effect_track, KeyEffectKeymap, KeyTrack, KeyTrackFacts, ModeKeyModifiers,
-    PredictInput, Prediction,
+    plan_key_effect_track, Conv, KeyEffectKeymap, KeyTrack, KeyTrackFacts, ModeKeyModifiers,
+    PredictInput, Prediction, PredictedEffect, Stage,
 };
 use awase_windows::state::open_warrant::{issue_open_warrant, OpenWarrant};
 use awase_windows::state::platform_state::ImeStateHub;
@@ -1250,6 +1251,49 @@ impl Harness {
         self.hub.set_engine_belief_z(true);
         self.adopted = true;
         self
+    }
+
+    /// BUG-229/ADR-289 のシナリオテスト用: 本物の `ImeStateHub::dispatch_event` へ、半角英数トグルの出入り
+    /// (`InputModeApplied{strategy: UserHalfWidthAlnumToggle, result: Applied}`)を渡す。本番の
+    /// `runtime/mod.rs::apply_input_mode_correction` が送るのと同じ事象で、`dispatch_event` 内部の
+    /// `scope_shadow_map`(D1: `scope_event_of` が `track.conv` をクリアする)まで本物の経路を通す
+    /// (`with_scope_belief` の後、`Alt::Wired` の読み取りに使う)。
+    pub fn half_width_alnum_toggle_applied(&mut self, mode: InputModeState) -> &mut Self {
+        self.reduce(ImeEvent::InputModeApplied {
+            mode,
+            strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            result: InputModeApplyResult::Applied,
+        });
+        self
+    }
+
+    /// BUG-229/ADR-289 のシナリオテスト用: 表のキー(Enter 等)の予測が `track.conv` に残す値を、本物の
+    /// `ImeStateHub::scope_shadow_key`(`z_key` の `Alt::Wired` 分岐と同じ口)へ直接渡す。実キーマップの
+    /// どのセルが実際に `after_conv: Some(_)` を返すかは本テストの対象外のため、`scope_event_of_prediction`
+    /// の表のキー分岐(`track: Some(prediction.track)`、トグル中かどうかを見ない——これ自体がBUG-229の原因)
+    /// を直接駆動する。
+    pub fn wired_table_key_prediction(&mut self, conv: Option<Conv>) -> &mut Self {
+        let view = self.hub.scope_shadow_view();
+        let tick = TickMs(self.tick());
+        let prediction = Prediction {
+            effect: PredictedEffect {
+                open: None,
+                mode: None,
+            },
+            track: KeyTrack {
+                conv,
+                stage: Stage::None,
+            },
+        };
+        let event = scope_belief::scope_event_of_prediction(true, &prediction, &view, tick.0);
+        self.hub.scope_shadow_key(Some(event), tick);
+        self
+    }
+
+    /// BUG-229/ADR-289 のシナリオテスト用: 本物の hub の Z shadow(`Alt::Wired`)が持つ、窓ごとに持続する
+    /// 追跡中conv の読み取り専用アクセサ。
+    pub fn wired_scope_track_conv(&self) -> Option<Conv> {
+        self.hub.scope_shadow_view().track.conv
     }
 
     /// `effective_open` の根拠の分類名（殻の `ImeStateHub::effective_open_basis` と同じ式。あちらは `pub(crate)`）。

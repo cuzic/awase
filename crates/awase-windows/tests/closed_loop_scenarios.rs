@@ -47,8 +47,10 @@ mod support;
 
 use awase::engine::decision::InactiveReason;
 use awase::engine::{ActivationState, AssumedReason, InputModeState};
+use awase_windows::state::ime_event::HwndId;
+use awase_windows::state::key_effect_predictor::Conv;
 use awase_windows::state::open_warrant::WarrantBasis;
-use support::harness::{Harness, Setup, Source, WriteOrigin};
+use support::harness::{Harness, Setup, Source, Window, WriteOrigin};
 use support::invariants::{
     assert_ok, belief_matches_truth_at_end, p1_no_warranted_write_without_intent,
     p2_no_stale_stage_after_unpredicted_key, p3_startup_aligns_desired_without_drift,
@@ -913,4 +915,61 @@ fn adr281_ctrl_hiragana_key_while_open_keeps_belief_open() {
         .advance_ms(100);
     assert!(h.ime.state().open, "擬似 IME: 開のまま\n{}", h.trace());
     assert_ok(&h, belief_matches_truth_at_end(&h));
+}
+
+/// BUG-229/ADR-289(D1): 半角英数トグルの出入り(`InputModeApplied{strategy: UserHalfWidthAlnumToggle}`)が、
+/// 窓ごとに持続する追跡中conv(ADR-282 `ScopeBelief`)に残ったトグル中のテーブルキーの古いeisu追跡を
+/// 正しく掃除することを、本物の`ImeStateHub::dispatch_event`(`with_scope_belief`の`Alt::Wired`、擬似IMEの
+/// 窓モデル)を通して確認する。既存の`scope_belief.rs`のユニットテスト
+/// (`half_width_toggle_off_clears_the_stale_conv_left_by_a_table_key_pressed_while_active`)は
+/// `scope_event_of`/`ScopeBelief::evolve`を直接呼ぶため、`dispatch_event`内部の配線
+/// (`scope_shadow_map`・`scope_shadow_after_dispatch`、本番の唯一の書き込み口)は通らない。
+/// 本テストはその配線ごと本物の経路で確認する(擬似IME版、ADR-289の実機報告の再現)。
+#[test]
+fn bug229_half_width_alnum_toggle_exit_clears_stale_conv_through_the_real_dispatch_path() {
+    let window = Window {
+        name: "explorer",
+        hwnd: HwndId(0x1001),
+        pid: 10,
+        thread: 1,
+        class: "CabinetWClass",
+        process: "explorer.exe",
+        input_relay: false,
+        learned_unavailable: false,
+    };
+    let mut h = Harness::start(Setup::in_window(
+        TrueState {
+            open: true,
+            conv: CONV_HIRAGANA,
+            stage: TrueStage::None,
+        },
+        window,
+    ));
+    h.with_scope_belief();
+
+    // 半角英数トグル ON(左 Shift 単独タップ相当)。
+    h.half_width_alnum_toggle_applied(InputModeState::ObservedEisu);
+
+    // トグル中にテーブルキー(Enter 等)を1回押す。予測器はトグル中もテーブルキー自身の
+    // after_conv を追跡へ無条件で書き戻す(`scope_event_of_prediction`の表のキー分岐、BUG-229の原因)。
+    h.wired_table_key_prediction(Some(Conv::C10));
+    assert_eq!(
+        h.wired_scope_track_conv(),
+        Some(Conv::C10),
+        "テーブルキー自身の予測で古い eisu 追跡が残ることを前提として確認する"
+    );
+
+    // トグル OFF(ADR-245 の復元、AssumedRomaji)。D1: 本物の dispatch_event 経路でも
+    // トグル中にテーブルキーが書き戻した古い追跡中 conv をクリアすること。
+    h.half_width_alnum_toggle_applied(InputModeState::AssumedRomaji {
+        reason: AssumedReason::UserHalfWidthAlnumToggleOff,
+    });
+
+    assert_eq!(
+        h.wired_scope_track_conv(),
+        None,
+        "半角英数トグルを抜けた後は、トグル中にテーブルキーが書き戻した古い eisu 追跡を\
+         本物の dispatch_event 経路でも残してはならない(BUG-229)\n{}",
+        h.trace()
+    );
 }
