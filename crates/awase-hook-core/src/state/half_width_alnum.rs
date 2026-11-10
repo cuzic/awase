@@ -160,6 +160,10 @@ pub struct HalfWidthAlnumState {
     /// クリアは `begin_restore_kana`・`abandon_on_observed_follow`・`suspend_toggle_for_return`、
     /// `rearm_after_failed_gji_exit` は触らない。
     entered_in: Option<(ForegroundScope, bool)>,
+    /// トグルに入った時点の tick（`mark_entered_tick`。`entered_in` と対で、クリアも同じ3箇所で揃える）。
+    /// mozc-shm の観測ベースの手放し判定（ADR-290、`should_abandon_on_mozc_shm_kana_follow`）が、
+    /// エントリより前の古い読みで即座に手放す誤判定を避けるための edge-trigger の基準点に使う。
+    entered_at_tick_ms: Option<u64>,
     /// 今の持続トグルが、打鍵列からの英数判定（ADR-263 `ime_on_eisu`）で入ったものか（BUG-222）。左Shift単独タップの
     /// 手動のトグルは偽。`commit_enter_*` が偽に戻し、殻が入りの成功後に [`Self::mark_entered_by_lang_detect`] で立てる。
     /// 戻り待ちには引き継がない（離脱で偽に戻る。戻った窓の復元は手動のトグルと同じ扱い）。
@@ -417,6 +421,22 @@ impl HalfWidthAlnumState {
         self.entered_in = scope.is_valid().then_some((scope, false));
     }
 
+    /// ADR-290(BUG-230): `commit_enter_imc`/`commit_enter_gji`の**直後**に呼び出し元が渡す、
+    /// トグルに入った tick。`commit_enter_*`自体の引数には加えない(既存の呼び出し元・テストの
+    /// シグネチャを変えない、追加専用のメソッドにする)。mozc-shmの観測ベースの手放し判定
+    /// (`should_abandon_on_mozc_shm_kana_follow`)の edge-trigger の基準点に使う。
+    pub fn mark_entered_tick(&mut self, tick_ms: TickMs) {
+        self.entered_at_tick_ms = Some(tick_ms.0);
+    }
+
+    /// 読み取り専用。トグルが入っていない、または`mark_entered_tick`を呼ばれていない経路
+    /// (ADR-245の戻り待ちからの`rebuild_toggle_from_entry`等)では`None`——`None`なら
+    /// `should_abandon_on_mozc_shm_kana_follow`は常に偽を返す(分からないときは手放さない)。
+    #[must_use]
+    pub const fn entered_at_tick_ms(&self) -> Option<u64> {
+        self.entered_at_tick_ms
+    }
+
     // ── Exit/Restore ──────────────────────────────────────────────────
 
     /// 「IME-ON半角英数」からかな入力への復元を開始する。
@@ -426,6 +446,7 @@ impl HalfWidthAlnumState {
     /// 判定に使う）。
     pub fn begin_restore_kana(&mut self) -> bool {
         self.entered_in = None;
+        self.entered_at_tick_ms = None;
         self.entered_by_lang_detect = false;
         std::mem::replace(&mut self.toggle_held, false)
     }
@@ -448,6 +469,7 @@ impl HalfWidthAlnumState {
     /// 手放さないと凍結（`ShiftConvGuard`）が続き、次の左 Shift タップが「開始」でなく「解除」になる。
     pub fn abandon_on_observed_follow(&mut self) -> bool {
         self.entered_in = None;
+        self.entered_at_tick_ms = None;
         self.entered_by_lang_detect = false;
         std::mem::replace(&mut self.toggle_held, false)
     }
@@ -537,31 +559,54 @@ impl HalfWidthAlnumState {
     }
 }
 
-/// 直接観測の追随の結果から、持続トグルを手放すべきか（ADR-244 D3・D4。GJI/Mozc の `mozc_shm_sourced` はADR-290・BUG-230）。
+/// 直接観測の追随の結果から、持続トグルを手放すべきか（ADR-244 D3・D4）。
 ///
 /// - 手放すのは **Microsoft IME 本体で、観測された読みが NATIVE（`eisu == Some(false)`）で、追随の後に belief が
-///   英数でなくなっているとき**、または**`eisu` の出所が mozc-readable の共有メモリ（`mozc_shm_sourced`）で、
-///   読みが composing 側（`eisu == Some(false)`）で、追随の後に belief が英数でなくなっているとき**だけ。
-///   `belief_left_eisu` は追随（`InputModeObserved`）が reducer の予測の fence（`KEY_EFFECT_SETTLE_MS` 以内の予測が
-///   優先）に捨てられなかったか。捨てられて belief が英数のまま残ったのにトグルだけ手放すと、「belief は英数・
-///   トグルは無し」になり、次の Shift タップが「開始」になる。
+///   英数でなくなっているとき**だけ。`belief_left_eisu` は追随（`InputModeObserved`）が reducer の予測の fence
+///   （`KEY_EFFECT_SETTLE_MS` 以内の予測が優先）に捨てられなかったか。捨てられて belief が英数のまま残ったのに
+///   トグルだけ手放すと、「belief は英数・トグルは無し」になり、次の Shift タップが「開始」になる。
 /// - キー押下を根拠にはしない（`024ca336`〜`6b1e91b8` の「素通しのキーが来たら無条件に手放す」案は、読みが届かず
 ///   `か` のままで、GJI の MS-IME プリセットに `ro` を出して戻した）。
-/// - `mozc_shm_sourced` でない GJI は手放さない（挙動を変えない。実 GJI 公式版には mozc-readable の共有メモリに
-///   相当する信頼できる観測源が無いため。元は「GJI の追随で `toggle_held` が残る潜在課題は BUG-186 の範囲外」として
-///   先送りしていたが、Mozc(mozc-readable)は共有メモリで `effective_mode` を安く確実に読めるため、`mozc_shm_sourced`
-///   を立てて呼べばこの経路に乗れる、BUG-230）。
+/// - GJI は手放さない（挙動を変えない。GJI の追随で `toggle_held` が残る潜在課題は BUG-186 の範囲外）。
 /// - 英数の読み（`Some(true)`）や追随なしでは手放さない（全角英数 `conv=0x18` は NATIVE が無く英数のまま）。
 #[must_use]
 pub fn should_abandon_on_observed_follow(
     kind: crate::state::ime_kind::ImeKindId,
     eisu: Option<bool>,
     belief_left_eisu: bool,
-    mozc_shm_sourced: bool,
 ) -> bool {
-    (matches!(kind, crate::state::ime_kind::ImeKindId::MsIme) || mozc_shm_sourced)
+    matches!(kind, crate::state::ime_kind::ImeKindId::MsIme)
         && eisu == Some(false)
         && belief_left_eisu
+}
+
+/// mozc-readable の共有メモリ(`effective_mode`)の観測(edge-triggered)から、持続トグルを手放すべきか
+/// (ADR-290、BUG-230。Opus敵対的レビューで指摘されたF1/F2を踏まえた版)。
+///
+/// - `entered_at_tick_ms`が`None`(トグルが入っていない・`mark_entered_tick`を呼ばれていない経路)なら
+///   常に偽。
+/// - 読みの`update_tick_ms`がエントリの tick 以下(≦)なら偽——エントリの**前**に mozc-readable が書いた
+///   古い`hiragana`を、入った直後に「かなへ追随した」と誤認しない(decide_use の Held・lost-write
+///   fallback を経由しても、`update_tick_ms`自体はこのチェックで古いままなので通らない)。
+/// - `update_tick_ms`がエントリより後(エントリ後に mozc が実際に書いた値)で、かつ`eisu == Some(false)`
+///   (composing側、かな系)のときだけ真。
+///
+/// **belief は一切参照・変更しない**——`should_abandon_on_observed_follow`(ADR-244 D3、MS-IME 本体)と
+/// 違い、この判定だけでは「観測した」ことを belief に書かない(`InputModeObserved`を構築しない)。
+/// 手放すと決めたら、呼び出し元が BUG-222(`kp_exit_lang_detect_toggle_on_hiragana`)と同じ経路
+/// (`eisu_reset_on_turn_on_while_open` → `InputModeApplied`)で romaji-capable へ戻すこと——
+/// Mozc の`Hiragana`は awase の`ObservedKana`(JIS かな直接入力)と同義ではないため、観測を直接
+/// `ObservedKana`として書くと engine が`Inactive(NotRomajiInput)`のまま戻らない。
+#[must_use]
+pub const fn should_abandon_on_mozc_shm_kana_follow(
+    entered_at_tick_ms: Option<u64>,
+    eisu: Option<bool>,
+    update_tick_ms: u64,
+) -> bool {
+    match entered_at_tick_ms {
+        Some(entered_at) if update_tick_ms > entered_at => matches!(eisu, Some(false)),
+        _ => false,
+    }
 }
 
 // ── 戻り待ち（ADR-245、BUG-193） ──────────────────────────────────────
@@ -1211,36 +1256,73 @@ mod tests {
     fn abandon_only_for_ms_ime_native_read_that_took_effect() {
         use super::should_abandon_on_observed_follow as f;
         use crate::state::ime_kind::ImeKindId::{Gji, MsIme};
-        assert!(f(MsIme, Some(false), true, false));
+        assert!(f(MsIme, Some(false), true));
         // 予測の fence に追随を捨てられ、belief が英数のまま残ったときは手放さない（belief は英数・トグルは無し、を作らない）。
-        assert!(!f(MsIme, Some(false), false, false));
+        assert!(!f(MsIme, Some(false), false));
         // 英数の読み・追随なしでは手放さない(全角英数 conv=0x18 は eisu=Some(true) のまま)。
-        assert!(!f(MsIme, Some(true), true, false));
-        assert!(!f(MsIme, None, true, false));
-        // GJI は mozc_shm_sourced が立っていない限り従来どおり手放さない(実GJI公式版には信頼できる観測源が無い)。
-        assert!(!f(Gji, Some(false), true, false));
-        assert!(!f(Gji, Some(true), true, false));
-        assert!(!f(Gji, None, true, false));
+        assert!(!f(MsIme, Some(true), true));
+        assert!(!f(MsIme, None, true));
+        // GJI は従来どおり手放さない。
+        assert!(!f(Gji, Some(false), true));
+        assert!(!f(Gji, Some(true), true));
+        assert!(!f(Gji, None, true));
     }
 
-    /// ADR-290 / BUG-230: mozc-readable の共有メモリ(`effective_mode`)が出所のときだけ、GJI(Mozc 系)でも
-    /// MS-IME 本体と同じ基準(composing 側の読み・belief が英数でない)で手放す。`mozc_shm_sourced=false` の
-    /// GJI(実GJI公式版、信頼できる観測源が無い)は従来どおり変えない——この拡張が無かった2026-11-10時点では
-    /// GJI 側に手放す経路が一切無く、半角英数トグルを抜けるつもりの物理キー(ひらがなキー等)の後も
-    /// `toggle_held` が残り続けた(BUG-230)。
+    /// ADR-290(BUG-230、Opusレビュー後のF2修正): mozc-shmの観測は、エントリの tick より後に書かれた
+    /// 読みだけを「このトグル区間中の観測」として認める。エントリ**以前**の古い`hiragana`(decide_use の
+    /// Held/lost-write fallback を経由して受け入れられたものを含む)で即座に手放す誤判定を防ぐ。
     #[test]
-    fn mozc_shm_sourced_gji_abandons_like_ms_ime_but_only_when_sourced() {
-        use super::should_abandon_on_observed_follow as f;
-        use crate::state::ime_kind::ImeKindId::Gji;
-        // mozc-shm の effective_mode が composing 側(= eisu == Some(false))へ移ったと観測し、belief も
-        // 追随して英数でなくなっていれば手放す(BUG-230 が直る中核の分岐)。
-        assert!(f(Gji, Some(false), true, true));
-        // 予測の fence に追随を捨てられ belief が英数のまま残っていれば、GJI/Mozc でも手放さない
-        // (MS-IME と同じ安全条件、「belief は英数・トグルは無し」を作らない)。
-        assert!(!f(Gji, Some(false), false, true));
-        // mozc-shm 由来でも、読みが英数側(Some(true))・追随なし(None)では手放さない。
-        assert!(!f(Gji, Some(true), true, true));
-        assert!(!f(Gji, None, true, true));
+    fn mozc_shm_kana_follow_requires_a_read_strictly_after_entry() {
+        use super::should_abandon_on_mozc_shm_kana_follow as f;
+        // エントリ(tick=1000)より前のupdate_tick_ms(=900、エントリ前からshmに残っていた古いhiragana)
+        // では、かな読みでも手放さない(F2)。
+        assert!(!f(Some(1000), Some(false), 900));
+        // エントリと同時刻(境界)もまだ「後」ではないので手放さない。
+        assert!(!f(Some(1000), Some(false), 1000));
+        // エントリより後(mozcが実際にエントリ後に書いた値)のかな読みでは手放す。
+        assert!(f(Some(1000), Some(false), 1001));
+        // エントリより後でも英数のまま(Some(true))・判定不能(None、Direct等)では手放さない。
+        assert!(!f(Some(1000), Some(true), 2000));
+        assert!(!f(Some(1000), None, 2000));
+        // エントリ自体が記録されていない(None、トグル非アクティブ・rebuild_toggle_from_entry経由等)では
+        // 常に手放さない(分からないときは手放さない、フェイルセーフ)。
+        assert!(!f(None, Some(false), 2000));
+    }
+
+    /// `commit_enter_imc`/`commit_enter_gji`の直後に`mark_entered_tick`を呼ぶ使い方と、
+    /// `begin_restore_kana`/`abandon_on_observed_follow`でのクリアを固定する。
+    #[test]
+    fn entered_at_tick_ms_is_set_on_entry_and_cleared_on_exit_or_abandon() {
+        use super::HalfWidthAlnumState;
+
+        let mut st = HalfWidthAlnumState::default();
+        assert_eq!(st.entered_at_tick_ms(), None, "初期状態はNone");
+
+        st.commit_enter_imc(scope(1, 1));
+        assert_eq!(
+            st.entered_at_tick_ms(),
+            None,
+            "commit_enter_imc単独ではまだentered_at_tick_msを立てない(呼び出し元が別途mark_entered_tickを呼ぶ)"
+        );
+        st.mark_entered_tick(TickMs(1000));
+        assert_eq!(st.entered_at_tick_ms(), Some(1000));
+
+        assert!(st.begin_restore_kana());
+        assert_eq!(
+            st.entered_at_tick_ms(),
+            None,
+            "begin_restore_kanaでクリアすること(entered_inと対)"
+        );
+
+        st.commit_enter_gji(scope(1, 1));
+        st.mark_entered_tick(TickMs(2000));
+        assert_eq!(st.entered_at_tick_ms(), Some(2000));
+        assert!(st.abandon_on_observed_follow());
+        assert_eq!(
+            st.entered_at_tick_ms(),
+            None,
+            "abandon_on_observed_followでクリアすること(entered_inと対)"
+        );
     }
 
     /// ADR-244 D3: 手放しは OS 書き込みを伴わず、直前の toggle_held を返す。手放した後の復元(begin_restore_kana)は不要。

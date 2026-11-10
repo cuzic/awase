@@ -82,31 +82,70 @@ impl Runtime {
         // ADR-265 段階 1: mozc-readable の共有メモリの影の読み（記録のみ。無効なら何もしない）。
         // この tick の観測・通知が終わった後に置く: 記録に添える belief に、同じ tick の更新が入るようにするため
         // （前に置くと、同じ tick の観測で belief が動いても 1 tick 遅れた値が記録に残り、測定に偏りが出る）。
-        let toggle_active = self.platform_state.gate.half_width_alnum.is_toggle_active();
-        let should_abandon = self.mozc_shm_on_tick(focus.focus_changed, toggle_active);
-        self.ir_abandon_half_width_alnum_from_mozc_shm_if(should_abandon);
+        let mode_read = self.mozc_shm_on_tick(focus.focus_changed);
+        self.ir_abandon_half_width_alnum_from_mozc_shm_if(mode_read);
     }
 
-    /// ADR-290/BUG-230: `mozc_shm_on_tick`/`mozc_shm_on_timer` が「`effective_mode` の観測から半角英数
-    /// トグルを手放すべき」と判断した（`should_abandon`）とき、実際に手放す（OS 書き込みなし、ADR-244 D3
-    /// と同じ形）。`report_mozc_shm`（`ImeStateHub`側）は`gate.half_width_alnum`に届かないため判断だけを返し、
-    /// ここ（`gate`に届く側）が`is_toggle_active()`を確認してから実行する——`mozc_shm_shadow.rs`からは
-    /// `gate`に一切触れない（`mozc_shm_reader_touches_belief_only_through_report_mozc_shm`）設計を保つ。
-    pub(super) fn ir_abandon_half_width_alnum_from_mozc_shm_if(&mut self, should_abandon: bool) {
-        if !should_abandon || !self.platform_state.gate.half_width_alnum.is_toggle_active() {
+    /// ADR-290/BUG-230(Opusレビュー後のD1″): `mozc_shm_on_tick`/`mozc_shm_on_timer`が受け入れた
+    /// `effective_mode`の読み(`mode_read`、belief は一切書いていない)から、半角英数トグルを観測ベースで
+    /// 手放すべきかを**ここで初めて**判断し、手放す(OS 書き込みなし、ADR-244 D3 と同じ形)。
+    ///
+    /// `mozc_shm_shadow.rs`は`gate.half_width_alnum`に一切触れない設計を保つため
+    /// (`mozc_shm_reader_touches_belief_only_through_report_mozc_shm`)、判断に要る「トグルの入り口の
+    /// tick」(`entered_at_tick_ms`)は`gate`に届くここで読む。edge-trigger(`update_tick_ms`がエントリより
+    /// 後)を要求するのは、エントリ直前の古い`hiragana`読み(decide_useのHeld/lost-write fallback経由でも
+    /// 古い値が受け入れられ得る)で入った直後にトグルを即座に手放してしまう誤判定を避けるため(Opusレビュー
+    /// F2)。手放すと分かったら、BUG-222(`kp_exit_lang_detect_toggle_on_hiragana`)と同じ後始末に加えて
+    /// `eisu_reset_on_turn_on_while_open` → `InputModeApplied`でromaji-capableへ戻す(ADR-244 D3の
+    /// 直接観測と違い、ここでは一切`InputModeObserved`を書いていないため、ObservedEisuのまま放置すると
+    /// Engineが`Inactive(NotRomajiInput)`のまま戻らない、Opusレビュー F1)。
+    pub(super) fn ir_abandon_half_width_alnum_from_mozc_shm_if(
+        &mut self,
+        mode_read: Option<(crate::state::mozc_shm::CompositionMode, u64)>,
+    ) {
+        if !self.platform_state.gate.half_width_alnum.is_toggle_active() {
             return;
         }
-        if self
+        let Some((mode, update_tick_ms)) = mode_read else {
+            return;
+        };
+        let eisu = crate::state::mozc_shm::eisu_of_effective_mode(Some(mode));
+        let entered_at_tick_ms = self
+            .platform_state
+            .gate
+            .half_width_alnum
+            .entered_at_tick_ms();
+        if !crate::state::half_width_alnum::should_abandon_on_mozc_shm_kana_follow(
+            entered_at_tick_ms,
+            eisu,
+            update_tick_ms,
+        ) {
+            return;
+        }
+        if !self
             .platform_state
             .gate
             .half_width_alnum
             .abandon_on_observed_follow()
         {
-            // ADR-244 D3 の既存のカウンターパート（`ir_follow_direct_mode_key_read`）と同じ後始末。
-            self.platform.output.confirm_gate_deadline_override_ms.set(0);
-            self.platform.output.bump_shift_conv_guard_gen();
-            tracing::info!(
-                "[shift-conv-guard] mozc-shm の観測でかなへの追随を確認 → 半角英数トグルを手放す (OS 書き込みなし、ADR-290)"
+            return;
+        }
+        // ADR-244 D3 の既存のカウンターパート（`ir_follow_direct_mode_key_read`）・BUG-222 と同じ後始末。
+        self.platform.output.confirm_gate_deadline_override_ms.set(0);
+        self.platform.output.bump_shift_conv_guard_gen();
+        tracing::info!(
+            "[shift-conv-guard] mozc-shm の観測でかなへの追随を確認 → 半角英数トグルを手放す (OS 書き込みなし、ADR-290)"
+        );
+        // BUG-222 と同じく、手放した belief を romaji-capable へ戻す(ObservedEisu を放置しない、F1)。
+        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+        if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_turn_on_while_open(
+            true,
+            self.platform_state.ime.input_mode(),
+        ) {
+            self.apply_input_mode_correction(
+                new_mode,
+                crate::state::ime_event::InputModeApplyStrategy::UserTurnOnEisuReset,
+                tick_ms,
             );
         }
     }
@@ -419,9 +458,6 @@ impl Runtime {
                 kind,
                 follow.eisu,
                 belief_left_eisu,
-                // この呼び出し元（ADR-188 直接観測）はIMM/TSFの読みが出所で、mozc-shmではない。
-                // mozc-shmのeffective_modeを出所にする呼び出しはADR-290/BUG-230で別途配線する(未着手)。
-                false,
             ) && self
                 .platform_state
                 .gate

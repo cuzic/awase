@@ -15,13 +15,15 @@ summary: |-
   「IME ONの半角英数入力でひらがなキーを押せば、そもそも規定動作としてかなへ戻るはず」と指摘した通り、
   モード切替自体はIME側が標準動作として行う。真の欠落は「awase自身のbookkeeping(`toggle_held`)がその
   標準動作の結果に追随していないこと」だけであり、awase側からの能動的なキー送信は不要・有害(二重送信・
-  BUG-192型の回帰)。実装したD1′は、ADR-244 D3(`should_abandon_on_observed_follow`、既存はMS-IME本体
-  専用)をmozc-readable利用時のGJI/Mozcへ拡張し、mozc-shmの`effective_mode`観測がかなへの追随を示したら
-  `toggle_held`を手放す、観測専用(IMEへは何も書かない)の経路にした。D2(GJI抜け出し直後のMozc確認・回収)
-  とD3(MS-IME側の対象確認)は未着手のまま残る。
+  BUG-192型の回帰)。第1版の実装(D1′、observation-based)もOpus敵対的レビューで2件の欠陥が見つかり
+  (F1致命的: mozcの`Hiragana`をawaseの`ObservedKana`〈JISかな直接入力〉として書くとEngineが
+  `Inactive(NotRomajiInput)`のまま戻らない。F2高: エントリ以前の古い共有メモリの読みで入った直後に
+  手放してしまう)、belief を一切書かないedge-triggeredの純粋判定(D1″)へ置き換えた。D2(GJI抜け出し
+  直後のMozc確認・回収)とD3(MS-IME側の対象確認)は未着手のまま残る。
 status: |-
-  D1′(observation-basedのtoggle_held解除)を`docs/bug230-adr290-half-width-f2-exit-race`ブランチに
-  実装・コミット済み(2026-11-10、developへは未マージ)。Opusレビュー予定。実機確認は未着手。
+  D1″(edge-triggeredの純粋判定によるtoggle_held解除、Opusレビューで指摘されたF1/F2を修正した版)を
+  `docs/bug230-adr290-half-width-f2-exit-race`ブランチに実装・コミット済み(2026-11-10、developへは
+  未マージ)。D1′はOpus敵対的レビューで指摘され却下済み(下記却下した案参照)。実機確認は未着手。
   D2(GJI抜け出しのMozc確認・回収)・D3は未着手。
 related_adr:
   - "ADR-270"
@@ -65,44 +67,60 @@ engineがpass-throughを抜けて生ローマ字を送る——同型の実害�
 成功した場合でもMozc側の実際の切替には時間がかかる**ことへの対応は無い。
 
 実機ログ(2026-11-10T08:09:59.859〜08:10:01.984)では、F2送信から`[mozc-shm]`が`"tsf_mode":
-"hiragana"`へ切り替わるまで**約2秒**かかっている。この間、`mozc_compose_precheck`
-(`output/probe_io.rs:92-123`)は送信直前の`effective_mode`を読むが、まだ`half-ascii`のため
-`should_check_compose`の`is_composing_mode(b.effective_mode)`(`state/mozc_shm.rs:675`)が
-偽になり、**確認(`MozcComposeCheckFsm`)が一切張られない**。ADR-270の「Mozc coldの最初の送信の
-確認・回収」は、Mozc自身のアイドル後cold startを対象にしており、この「awase自身がGJI半角英数
-トグルを抜けた直後」という既知の遷移中であることは認識していない。
+"hiragana"`へ切り替わるまで**約2秒**かかっている(**未確認**: ログが示すのは共有メモリの書き込みが
+2秒後に反映されたことのみで、Mozc自身の切替が遅かったのか、切替は早かったが共有メモリへの反映が
+次の打鍵まで遅れただけなのかは分からない。D2の前提・下記F2のedge-triggerの窓の両方に関わる)。この間、
+`mozc_compose_precheck`(`output/probe_io.rs:92-123`)は送信直前の`effective_mode`を読むが、まだ
+`half-ascii`のため`should_check_compose`の`is_composing_mode(b.effective_mode)`
+(`state/mozc_shm.rs:675`)が偽になり、**確認(`MozcComposeCheckFsm`)が一切張られない**。ADR-270の
+「Mozc coldの最初の送信の確認・回収」は、Mozc自身のアイドル後cold startを対象にしており、この
+「awase自身がGJI半角英数トグルを抜けた直後」という既知の遷移中であることは認識していない。
 
 ## 決定
 
-### D1′. mozc-shmの`effective_mode`観測で`toggle_held`を手放す(実装済み、D1を置き換え)
+### D1″. mozc-shmの`effective_mode`観測(edge-triggered)で`toggle_held`を手放す(実装済み、D1・D1′を置き換え)
 
-当初のD1(下記「却下した案」参照)はモードキー受信時にawase側から脱出コミットを能動的に送る案だったが、
-Opusレビューとユーザー指摘により却下した。実装したD1′は、IME自身の標準動作(ひらがなキーで実際に
-かなへ戻る)には一切介入せず、その結果を**観測するだけ**で`toggle_held`のbookkeepingを追随させる。
+当初のD1(モードキー受信時にawase側から脱出コミットを能動的に送る案)はOpusレビューとユーザー指摘で
+却下した(下記「却下した案」参照)。第1版の実装D1′(`InputModeObserved`をbeliefへ書く案)もOpus敵対的
+レビューで2件の欠陥(F1致命的・F2高)が見つかり却下した(同)。実装したD1″は、IME自身の標準動作
+(ひらがなキーで実際にかなへ戻る)には一切介入せず、**belief を一切書かない純粋な判定**で
+`toggle_held`のbookkeepingだけを追随させる。
 
-- `crates/awase-hook-core/src/state/half_width_alnum.rs::should_abandon_on_observed_follow`
-  (ADR-244 D3)に`mozc_shm_sourced: bool`引数を追加。既存のMS-IME本体限定の条件
-  (`kind == ImeKindId::MsIme`)を`kind == ImeKindId::MsIme || mozc_shm_sourced`に広げ、
-  mozc-readable経由の観測(`mozc_shm_sourced = true`)なら`ImeKindId::Gji`でも手放し判定に
-  使えるようにした。判定基準自体(`eisu == Some(false) && belief_left_eisu`)はMS-IMEと同じ。
-- `crates/awase-windows/src/state/platform_state.rs::ImeStateHub::report_mozc_shm`に新しい
-  `observe_mozc_shm_mode_for_half_width_alnum`ヘルパーを追加。mozc-shmの`effective_mode`
-  (Hiragana/Katakana系→かな、HalfAscii/FullAscii→英数、Direct/None→判定しない)から
-  `InputModeObserved{source: MozcShm, confidence: High}`をbeliefへdispatchし(`ObservationSource::MozcShm`
-  をinput_mode軸に使う初めての経路)、直後の`input_mode()`で実際にObservedEisuから離れたかを確認した
-  上で`should_abandon_on_observed_follow`を呼ぶ。
-- `ImeStateHub`(belief、`report_mozc_shm`が住む)と`GateStore`(`half_width_alnum`を持つ)は
-  `PlatformState`の兄弟フィールドで互いを参照できない(`GateStore`の既存docが明記、ADR-268以来の
-  構造)。そのため`report_mozc_shm`はトグルを実際には手放さず、戻り値を`(ShmUse, bool)`にして
-  「手放すべきか」の判定結果だけを返す。この`bool`を`mozc_shm_on_tick`/`mozc_shm_on_timer`/
-  `mozc_shm_read_once`(`runtime/mozc_shm_shadow.rs`、`gate`に一切触れない設計を保つ)経由で
-  gate側へアクセスできる呼び出し元(`ir_execute`・`TIMER_MOZC_SHM`ハンドラ)まで持ち出し、
-  `ir_abandon_half_width_alnum_from_mozc_shm_if`が実際に`abandon_on_observed_follow()`を呼ぶ。
-- 観測(`InputModeObserved{MozcShm}`のdispatch)自体は、呼び出し元が渡す
-  `half_width_alnum_toggle_active: bool`が真のときだけ行う(`&&`の短絡評価)。トグル非アクティブな
-  通常時に`ObservationSource::MozcShm`をinput_mode軸へ常時割り込ませると、既存の回帰テスト
-  (`report_mozc_shm_repeated_reports_are_journaled_once`)が想定するjournal件数を破る上、通常時の
-  beliefへの余計な干渉にもなるため。
+- `crates/awase-ime-core/src/state/mozc_shm.rs::eisu_of_effective_mode`: `effective_mode`
+  (Hiragana/FullKatakana/HalfKatakana→かな、HalfAscii/FullAscii→英数、Direct/None→判定不能)
+  から英数/かなを判定する純粋関数(`classify_*`系、`is_composing_mode`と同じ「かな系」の定義を再利用)。
+  belief には一切触れない。
+- `crates/awase-hook-core/src/state/half_width_alnum.rs::should_abandon_on_mozc_shm_kana_follow`:
+  トグルのエントリtick(`entered_at_tick_ms`)・判定した`eisu`・読みの`update_tick_ms`の3つから、
+  edge-triggeredに「手放すべきか」を決める純粋関数。`update_tick_ms`がエントリtick**より後**(≦では
+  ない)で、かつ`eisu == Some(false)`のときだけ真。エントリ以前の古い`hiragana`読み(`decide_use`の
+  Held/lost-write fallbackを経由して受け入れられたものを含む)で、入った直後に即座に手放してしまう
+  誤判定(F2)を、`update_tick_ms`自体の値で機械的に排除する。
+- `HalfWidthAlnumState`に`entered_at_tick_ms: Option<u64>`を追加。`commit_enter_imc`/
+  `commit_enter_gji`自体の引数は変えず(既存の呼び出し元・テストのシグネチャを保つ)、直後に呼び出し元
+  (`key_pipeline.rs`の2箇所)が新設の`mark_entered_tick(tick_ms)`を呼んでセットする。クリアは
+  `entered_in`と対で`begin_restore_kana`・`abandon_on_observed_follow`で行う(ADR-245の
+  `rebuild_toggle_from_entry`、戻り待ちからの立て直しでは**セットしない**——`None`のままなら
+  `should_abandon_on_mozc_shm_kana_follow`は常に偽を返す、フェイルセーフ。下記「限界・未確認」参照)。
+- `runtime/mozc_shm_shadow.rs::mozc_shm_on_tick`/`mozc_shm_on_timer`/`mozc_shm_read_once`の
+  戻り値を`Option<(CompositionMode, u64)>`(受け入れた読みの`effective_mode`・`update_tick_ms`、
+  belief を経由しない生の値)に変更。`report_mozc_shm`自体はADR-268時点の形(`ShmUse`のみを返す、
+  半角英数トグル関連の引数・戻り値は一切持たない)のまま変えていない——`ImeStateHub`
+  (belief、`report_mozc_shm`が住む)は`GateStore`(`half_width_alnum`を持つ)を参照できない
+  (`GateStore`の既存docが明記、ADR-268以来の構造)という制約は、D1′の設計時点では「`report_mozc_shm`
+  の戻り値をboolにして判定結果だけ持ち出す」形で対処していたが、D1″では**そもそも`report_mozc_shm`に
+  半角英数トグルの関心を持ち込まない**(観測した生の値をそのまま呼び出し元まで持ち出すだけで十分、と
+  設計を単純化した)。
+- `gate.half_width_alnum`へアクセスできる呼び出し元(`ir_execute`・`TIMER_MOZC_SHM`ハンドラ)が、
+  `mode_read`(受け入れた読み)と`entered_at_tick_ms`(gateから読む)を`ir_abandon_half_width_alnum_
+  from_mozc_shm_if`へ渡し、そこで`eisu_of_effective_mode` → `should_abandon_on_mozc_shm_kana_follow`
+  の判定 → 真なら`abandon_on_observed_follow()`を呼んで実際に手放す。
+- 手放した後、BUG-222(`kp_exit_lang_detect_toggle_on_hiragana`)と同じ後始末
+  (`confirm_gate_deadline_override_ms`のクリア・`bump_shift_conv_guard_gen`)に加えて、
+  `eisu_recovery::eisu_reset_on_turn_on_while_open(true, input_mode())` → `InputModeApplied
+  {strategy: UserTurnOnEisuReset}`でbeliefをromaji-capableへ戻す(F1の修正。D1′は`ObservedKana`を
+  belief へ直接書いていたため、JISかな直接入力と誤認されEngineが`Inactive(NotRomajiInput)`のまま
+  戻らなかった)。
 
 旧D1が前提にしていた「モードキーの効果がIME ON・かな入力側になるものを`mode_key_pass`で判定する」
 手順は不要になった——mozc-shmの`effective_mode`という実際の切替結果を直接読むため、どのキーが
@@ -123,41 +141,46 @@ Opusレビューとユーザー指摘により却下した。実装したD1′�
 (この1回だけの迂回、恒常的な迂回にしない)。
 
 これにより、確認が「composition未確立」と判定した場合は既存のリテラル回収(Backspace+再送、
-`RawTsfLiteralRecovery`)がそのまま働く。Mozcの実際の切替完了(実測~2秒)より確認の期限
-(`MOZC_COMPOSE_CHECK_MS`=300ms)が短いため、初回の確認は「Literal」寄りに倒れて1回分の
-回収(Backspace+再送)を消費する可能性が高いが、連続失敗の打ち切り(2回目は消すだけで再送しない、
-BUG-227関連)を含む既存の挙動の範囲で収束する。**新しい固定の待ち時間は作らない**
-(`tuning-constants.md`の実測義務。約2秒という値自体も1回の実機観測に基づく参考値で、
+`RawTsfLiteralRecovery`)がそのまま働く。Mozcの実際の切替完了(実測~2秒、ただし上記「原因2」の
+注記のとおり未確認)より確認の期限(`MOZC_COMPOSE_CHECK_MS`=300ms)が短いため、初回の確認は
+「Literal」寄りに倒れて1回分の回収(Backspace+再送)を消費する可能性が高いが、連続失敗の打ち切り
+(2回目は消すだけで再送しない、BUG-227関連)を含む既存の挙動の範囲で収束する。**新しい固定の待ち
+時間は作らない**(`tuning-constants.md`の実測義務。約2秒という値自体も1回の実機観測に基づく参考値で、
 確認の期限そのものを2秒へ延ばすことは提案しない——その場合の副作用〈本当にcompositionが
 できない場合に2秒待つ〉の方が大きいと判断。既存の300ms期限+既存の回収ループに委ねる)。
 
 ### D3. MS-IME側は対象外
 
 MS-IME分岐(`kp_restore_kana_from_half_width`のMicrosoftIme側)は既に160ms×4回のIMC write
-確認リトライループを持つため、D2の対象に含めない。D1(モードキーでの`toggle_held`解除)は
-IME種別に関わらず適用する(bookkeepingの問題はGJI/MS-IME共通)。
+確認リトライループを持つため、D2の対象に含めない。`toggle_held`のbookkeeping不備(原因1)自体は
+IME種別に関わらず共通の問題だが、MS-IME本体は既にADR-244 D3(`should_abandon_on_observed_follow`、
+`ir_follow_direct_mode_key_read`からのIMM/TSF直接観測)でモードキー直後の観測ベースの手放しを
+持っている(D1″はこの既存経路に一切変更を加えていない)。D1″が新規に対象にしたのは、ADR-244 D3の
+対象外だったmozc-readable経由のGJI/Mozcだけ。
 
 ## 限界・未確認
 
-- **D1′はmozc-readableを使っている利用者だけに効く**。共有メモリが無い窓(mozc-readableを使わない
+- **D1″はmozc-readableを使っている利用者だけに効く**。共有メモリが無い窓(mozc-readableを使わない
   GJI利用者、素のMozc)では`report_mozc_shm`自体が`NotFound`のまま観測を一切行わない
   (`MozcShmShadow::absent_for`、ADR-268 D1)ため、`toggle_held`の解除は従来通り2回目Shiftタップ・
   右Shift緊急解除・ADR-245窓復帰の3経路に限られ、BUG-230の症状(ひらがなキーで戻ったつもりでも
   トグルが残る)自体は残る。ユーザー自身の指摘(「GJI/MSIMEでは低コストな観測手段が無いのは
   仕方ない」)を踏まえ、この対象範囲の限定は意図的な設計判断であり、「素のGJI利用者への対応」は
   本ADRの範囲外(将来、字形〈ADR-261/273〉等の別の観測手段が育てば再検討)。
-- 観測からbeliefが実際に更新され`should_abandon_on_observed_follow`が真を返しても、`toggle_held`を
-  手放すこと自体はADR-244 D3の既存の仕組み(`abandon_on_observed_follow()`、OS書き込み無し)に
-  委ねている。これがMS-IME側で想定していない副作用(例: 手放した直後に別の観測が逆方向に動く)を
-  GJI/Mozc側でも起こさないかは、実機でのみ確認できる(未確認)。
-- D2(GJI抜け出し直後の送信をADR-270の確認・回収機構に乗せる)とD3(MS-IME側の対象確認)は未着手。
-  原因2(GJIの抜け出し送信自体にMozc切替完了の確認が無い)はD1′では解決していない——D1′が直すのは
-  「`toggle_held`のbookkeeping」(原因1)のみで、「抜け出し送信後、Mozcの実際の切替完了まで約2秒
-  romajiがリテラルのまま出力される」症状そのものは別問題として残る。
-- D1′は`mozc_shm_sourced`を`true`固定で`observe_mozc_shm_mode_for_half_width_alnum`から呼んでいる
-  (呼び出し元が常にmozc-shm経由であるため)。将来、別の低コストな観測源(字形等)を同じ関数に
-  繋ぐ場合、`mozc_shm_sourced`という名前のまま使うのか、より一般的なフラグ名に改めるかは
-  未検討。
+- ADR-245の戻り待ちから`rebuild_toggle_from_entry`で立て直したトグルは`entered_at_tick_ms`を
+  セットしない(`None`のまま)。これは意図的なフェイルセーフ(分からないときは手放さない)だが、
+  結果としてこの経路で立て直したトグルは、mozc-shm観測による解除の対象に**ならない**(従来の
+  3経路のみで解除される)。実機でこの経路がどの程度頻度があるかは未確認。
+- `should_abandon_on_mozc_shm_kana_follow`が真を返しても、`toggle_held`を手放すこと自体は
+  ADR-244 D3の既存の仕組み(`abandon_on_observed_follow()`、OS書き込み無し)に委ねている。これが
+  MS-IME側で想定していない副作用(例: 手放した直後に別の観測が逆方向に動く)をGJI/Mozc側でも
+  起こさないかは、実機でのみ確認できる(未確認)。
+- D2(GJI抜け出し直後の送信をADR-270の確認・回収機構に乗せる)とD3は未着手。原因2(GJIの抜け出し
+  送信自体にMozc切替完了の確認が無い)はD1″では解決していない——D1″が直すのは「`toggle_held`の
+  bookkeeping」(原因1)のみで、「抜け出し送信後、Mozcの実際の切替完了まで約2秒romajiがリテラルの
+  まま出力される」症状そのものは別問題として残る。
+- 「約2秒」というMozc側の切替所要時間は未確認(上記「原因2」注記参照)。D2の実装時にこの前提を
+  再検証すること。
 
 ## 却下した案
 
@@ -171,7 +194,23 @@ IME種別に関わらず適用する(bookkeepingの問題はGJI/MS-IME共通)。
   リテラル化を引き起こしrevertされた経緯と同型である、と指摘され却下。ユーザー自身も
   「IME ONの半角英数入力のときのかなキーって、そもそも規定の動作としてひらがなになりますよね」と
   同じ結論に達した。真に欠けていたのは「awaseの能動的な介入」ではなく「IME側の標準動作の結果を
-  awase自身が追随していないこと」だけであり、D1′(観測ベースの追随)に置き換えた。
+  awase自身が追随していないこと」だけであり、D1′(その後D1″)に置き換えた。
+- **D1′(第1版、`InputModeObserved{source: MozcShm}`をbeliefへdispatchし、
+  `should_abandon_on_observed_follow`に`mozc_shm_sourced: bool`を追加する案)**: Opus敵対的レビューで
+  2件の欠陥が見つかり却下した。
+  - **F1(致命的)**: Mozcの`CompositionMode::Hiragana`を、awaseの`InputModeState::ObservedKana`
+    (「JISかな直接入力と確認できた」という意味、ADR-091決定2によりサポート対象外)として書いていた。
+    `Hiragana`はローマ字テーブルでの入力(NICOLAの前提そのもの)とJISかな入力を区別できないため、
+    手放しに成功するたびにbeliefが`ObservedKana`になり、`engine.rs::compute_state`が
+    `Inactive(NotRomajiInput)`を返し続けてEngineが戻らなかった(BUG-230の症状を直すはずの変更が、
+    むしろ悪化させる方向だった)。
+  - **F2(高)**: `report_mozc_shm`内の観測が`decide_use`の`Held`/`Split`判定を素通りしていたため、
+    トグルに入った直後、共有メモリにまだ残っているエントリ**前**の古い`hiragana`値を「かなへの
+    追随」と誤認し、入った直後にトグルを即座に手放してしまう経路があった(ADR-244 D3が本来防ぐ
+    はずの「belief は英数・トグルは無し」を作る反転)。
+  - 両方とも、belief を書く・`decide_use`の判定に相乗りする、という設計そのものに起因していたため、
+    D1″では「belief を一切書かない・`decide_use`を経由しない独立したedge-triggered判定」に全面的に
+    置き換えた。
 - **確認の期限(`MOZC_COMPOSE_CHECK_MS`)を実測の約2秒に合わせて延ばす**: D2(未着手)の検討時点での
   却下理由。対象をGJI脱出直後の1回に限定できないため(他の全てのMozc初回送信の確認にも適用される
   既存の共有定数)、本当にcompositionができないケース(真のリテラル)での利用者の待ち時間が2秒に
