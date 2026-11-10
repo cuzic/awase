@@ -82,7 +82,100 @@ impl Runtime {
         // ADR-265 段階 1: mozc-readable の共有メモリの影の読み（記録のみ。無効なら何もしない）。
         // この tick の観測・通知が終わった後に置く: 記録に添える belief に、同じ tick の更新が入るようにするため
         // （前に置くと、同じ tick の観測で belief が動いても 1 tick 遅れた値が記録に残り、測定に偏りが出る）。
-        self.mozc_shm_on_tick(focus.focus_changed);
+        let mode_read = self.mozc_shm_on_tick(focus.focus_changed);
+        self.ir_abandon_half_width_alnum_from_mozc_shm_if(mode_read);
+    }
+
+    /// ADR-290/BUG-230(Opusレビュー round2後のD1″): `mozc_shm_on_tick`/`mozc_shm_on_timer`が受け入れた
+    /// `effective_mode`の読み(`mode_read`、belief は一切書いていない)から、半角英数トグルを観測ベースで
+    /// 手放すべきかを**ここで初めて**判断し、手放す(OS 書き込みなし、ADR-244 D3 と同じ形)。
+    ///
+    /// `mozc_shm_shadow.rs`は`gate.half_width_alnum`に一切触れない設計を保つため
+    /// (`mozc_shm_reader_touches_belief_only_through_report_mozc_shm`)、判断に要る「トグルの入り口の
+    /// tick」(`entered_at_tick_ms`)・2段ラッチ(`eisu_seen_since_entry`)は`gate`に届くここで読む。
+    ///
+    /// 判定自体は`plan_mozc_shm_follow`(純関数)に委ねる。2段ラッチにしているのは、`update_tick_ms`が
+    /// 「共有メモリに何か書いた最後の時刻」であって「モードが変わった最後の時刻」ではないため
+    /// (mozc-readableはキー入力時点で`key_seq`等を更新し`update_tick_ms`を進める)——エントリより後、
+    /// というだけでは、エントリ直後の`VK_DBE_ALPHANUMERIC`自身がまだ`Hiragana`のまま`key_seq`だけ進めて
+    /// 書いた読みを「かなへの追随」と誤認しうる(Opusレビュー round2 R2-1)。エントリ後に英数の読みを
+    /// 実際に観測してからのかなの読みだけを「本当の追随」として受理する。
+    ///
+    /// 手放すと分かったら、BUG-222(`kp_exit_lang_detect_toggle_on_hiragana`)と同じ後始末に加えて
+    /// `eisu_reset_on_turn_on_while_open` → `InputModeApplied`でromaji-capableへ戻す(ADR-244 D3の
+    /// 直接観測と違い、ここでは一切`InputModeObserved`を書いていないため、ObservedEisuのまま放置すると
+    /// Engineが`Inactive(NotRomajiInput)`のまま戻らない、Opusレビュー round1 F1)。
+    pub(super) fn ir_abandon_half_width_alnum_from_mozc_shm_if(
+        &mut self,
+        mode_read: Option<(crate::state::mozc_shm::CompositionMode, u64)>,
+    ) {
+        if !self.platform_state.gate.half_width_alnum.is_toggle_active() {
+            return;
+        }
+        let Some((mode, update_tick_ms)) = mode_read else {
+            return;
+        };
+        let eisu = crate::state::mozc_shm::eisu_of_effective_mode(Some(mode));
+        let entered_at_tick_ms = self
+            .platform_state
+            .gate
+            .half_width_alnum
+            .entered_at_tick_ms();
+        let eisu_seen_since_entry = self
+            .platform_state
+            .gate
+            .half_width_alnum
+            .eisu_seen_since_entry();
+        match crate::state::half_width_alnum::plan_mozc_shm_follow(
+            entered_at_tick_ms,
+            eisu_seen_since_entry,
+            eisu,
+            update_tick_ms,
+        ) {
+            crate::state::half_width_alnum::MozcShmFollowPlan::None => {}
+            crate::state::half_width_alnum::MozcShmFollowPlan::MarkEisuSeen => {
+                self.platform_state
+                    .gate
+                    .half_width_alnum
+                    .mark_eisu_seen_since_entry();
+            }
+            crate::state::half_width_alnum::MozcShmFollowPlan::Abandon => {
+                self.ir_do_abandon_half_width_alnum_from_mozc_shm();
+            }
+        }
+    }
+
+    /// 上記`plan_mozc_shm_follow`が`Abandon`を返したときの実際の手放し(ADR-244 D3・BUG-222と同じ後始末)。
+    fn ir_do_abandon_half_width_alnum_from_mozc_shm(&mut self) {
+        if !self
+            .platform_state
+            .gate
+            .half_width_alnum
+            .abandon_on_observed_follow()
+        {
+            return;
+        }
+        // ADR-244 D3 の既存のカウンターパート（`ir_follow_direct_mode_key_read`）・BUG-222 と同じ後始末。
+        self.platform
+            .output
+            .confirm_gate_deadline_override_ms
+            .set(0);
+        self.platform.output.bump_shift_conv_guard_gen();
+        tracing::info!(
+            "[shift-conv-guard] mozc-shm の観測でかなへの追随を確認 → 半角英数トグルを手放す (OS 書き込みなし、ADR-290)"
+        );
+        // BUG-222 と同じく、手放した belief を romaji-capable へ戻す(ObservedEisu を放置しない、F1)。
+        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+        if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_turn_on_while_open(
+            true,
+            self.platform_state.ime.input_mode(),
+        ) {
+            self.apply_input_mode_correction(
+                new_mode,
+                crate::state::ime_event::InputModeApplyStrategy::UserTurnOnEisuReset,
+                tick_ms,
+            );
+        }
     }
 
     // ── Stage 1: フォーカス検出 ──

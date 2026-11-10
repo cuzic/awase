@@ -2347,6 +2347,11 @@ impl Runtime {
             .commit_enter_imc(crate::win32::foreground_scope());
         tracing::info!("[shift-conv-guard] {trigger} → 半角英数トグルON (conv=0x0000 書き込み)");
         let now_tick = crate::state::TickMs(hook::current_tick_ms());
+        // ADR-290(BUG-230): mozc-shmの観測ベースの手放し判定のedge-triggerの基準点(F2)。
+        self.platform_state
+            .gate
+            .half_width_alnum
+            .mark_entered_tick(now_tick);
         self.platform_state.ime.note_explicit_ime_action(now_tick);
         // ADR-084 P1/INV-1/INV-2: 書き込みと belief 無効化を
         // `Runtime::actuate_conv_mode` に集約（`runtime/conv_actuation.rs`）。
@@ -2418,6 +2423,11 @@ impl Runtime {
                 .gate
                 .half_width_alnum
                 .commit_enter_gji(crate::win32::foreground_scope());
+            // ADR-290(BUG-230): mozc-shmの観測ベースの手放し判定のedge-triggerの基準点(F2)。
+            self.platform_state
+                .gate
+                .half_width_alnum
+                .mark_entered_tick(now_tick);
             tracing::info!(
                 "[shift-conv-guard] {trigger} → GJI 半角英数トグルON \
                          (VK_DBE_ALPHANUMERIC)"
@@ -2471,7 +2481,7 @@ impl Runtime {
             self.platform_state
                 .gate
                 .half_width_alnum
-                .rearm_after_failed_gji_exit();
+                .rearm_after_failed_gji_exit(crate::state::TickMs(hook::current_tick_ms()));
             tracing::warn!(
                 "[shift-conv-guard] GJI 半角英数トグル exit の SendInput を見送った \
                  (Win/Alt押下中 or effective_open=false)。実GJIは半角英数のままの \
@@ -2674,7 +2684,7 @@ impl Runtime {
         self.platform_state
             .gate
             .half_width_alnum
-            .rebuild_toggle_from_entry(entry);
+            .rebuild_toggle_from_entry(entry, now);
         self.platform_state.ime.note_explicit_ime_action(now);
         self.apply_input_mode_correction(
             InputModeState::ObservedEisu,

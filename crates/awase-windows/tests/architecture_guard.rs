@@ -695,6 +695,8 @@ fn input_mode_observed_construction_sites_are_accounted_for() {
         // +1 (ADR-188、2026-10-06) = `follow_direct_read_in_scope`(ConvBitsInference, Medium)。物理のモードキー通過／FSM 再送出の
         // 直接観測の窓の中で、prefetch が実際に `IMC_GETCONVERSIONMODE` で読んだ conv の NATIVE ビットから英数かどうかを決める
         // 真正の観測（偽装ではない）。設計は docs/adr/188 追記4（R2）。
+        // ADR-290(BUG-230)はこの軸にInputModeObservedを構築しない設計(D1″、Opusレビュー後)に
+        // 落ち着いたため、platform_state.rs自体への増減は無い（2026-11-10）。
         ("src/state/platform_state.rs", 3),
         // idle-conv-check / ImmCrossProbe。focus-conv-check は ALT+TAB 直後の conv 値で
         // belief を書き換えるバグの温床だったため撤去済み（フォーカス変更直後の読み取りは

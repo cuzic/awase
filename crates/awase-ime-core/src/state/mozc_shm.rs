@@ -660,6 +660,25 @@ fn is_composing_mode(mode: u32) -> bool {
     )
 }
 
+/// `effective_mode`から英数(true)/かな系(false)を判定する。
+///
+/// ADR-290、半角英数トグルの観測ベースの手放し判定`plan_mozc_shm_follow`の入力。
+/// 「かな系」の定義は`is_composing_mode`と同じ(Hiragana/FullKatakana/HalfKatakana)。`Direct`
+/// (直接入力・IMEが閉じているときの値)・`None`は判定できない(`None`)——`Direct`を安易に
+/// 「英数でも仮名でもない」と決め打たず、呼び出し元に「分からない」を伝える。
+#[must_use]
+pub const fn eisu_of_effective_mode(mode: Option<CompositionMode>) -> Option<bool> {
+    match mode {
+        Some(
+            CompositionMode::Hiragana
+            | CompositionMode::FullKatakana
+            | CompositionMode::HalfKatakana,
+        ) => Some(false),
+        Some(CompositionMode::HalfAscii | CompositionMode::FullAscii) => Some(true),
+        Some(CompositionMode::Direct) | None => None,
+    }
+}
+
 /// 確認の対象にするか（送信の**直前**の読みと、送るローマ字から）。
 ///
 /// すべてが成り立つときだけ真: 読める、TIP が有効、IME が開いている、入力中の文字を作るモード、まだ入力中の文字が
@@ -1556,5 +1575,32 @@ mod imm_vs_shm_tests {
         assert_eq!(split_first_key(""), None);
         assert_eq!(split_first_key("K0"), None);
         assert_eq!(split_first_key("k."), None);
+    }
+
+    /// ADR-290(BUG-230): `is_composing_mode`と同じ「かな系」の定義を使い、英数/かな/判定不能を分ける。
+    #[test]
+    fn eisu_of_effective_mode_classifies_kana_vs_eisu_vs_unknown() {
+        assert_eq!(
+            eisu_of_effective_mode(Some(CompositionMode::Hiragana)),
+            Some(false)
+        );
+        assert_eq!(
+            eisu_of_effective_mode(Some(CompositionMode::FullKatakana)),
+            Some(false)
+        );
+        assert_eq!(
+            eisu_of_effective_mode(Some(CompositionMode::HalfKatakana)),
+            Some(false)
+        );
+        assert_eq!(
+            eisu_of_effective_mode(Some(CompositionMode::HalfAscii)),
+            Some(true)
+        );
+        assert_eq!(
+            eisu_of_effective_mode(Some(CompositionMode::FullAscii)),
+            Some(true)
+        );
+        assert_eq!(eisu_of_effective_mode(Some(CompositionMode::Direct)), None);
+        assert_eq!(eisu_of_effective_mode(None), None);
     }
 }

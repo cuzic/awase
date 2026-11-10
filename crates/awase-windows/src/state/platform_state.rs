@@ -2406,7 +2406,6 @@ impl ImeStateHub {
     /// 観測の記録（上）→ 対象の明示意図（`IntentStore`）を削除 → `ModeKeyPassedThrough{align_desired, demote_applied}`
     /// （`last_intent` を捨て、`desired_open` を観測へ揃え、食い違う `applied` を未確認へ落とす）。
     /// 意図が残ると、観測より優先されて belief が直らない（ADR-268 D3、`resolve_open_at` の優先順）。
-    /// 戻り値は判断（診断の記録用）。
     pub(crate) fn report_mozc_shm(
         &mut self,
         shm: crate::state::mozc_shm::ShmState,
