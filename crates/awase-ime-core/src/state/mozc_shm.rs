@@ -669,9 +669,11 @@ fn is_composing_mode(mode: u32) -> bool {
 #[must_use]
 pub const fn eisu_of_effective_mode(mode: Option<CompositionMode>) -> Option<bool> {
     match mode {
-        Some(CompositionMode::Hiragana | CompositionMode::FullKatakana | CompositionMode::HalfKatakana) => {
-            Some(false)
-        }
+        Some(
+            CompositionMode::Hiragana
+            | CompositionMode::FullKatakana
+            | CompositionMode::HalfKatakana,
+        ) => Some(false),
         Some(CompositionMode::HalfAscii | CompositionMode::FullAscii) => Some(true),
         Some(CompositionMode::Direct) | None => None,
     }

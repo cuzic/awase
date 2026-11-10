@@ -4288,9 +4288,9 @@ mod tests {
         };
         let before = count(&ps);
         for i in 0..5u64 {
-            let _ = ps
-                .ime
-                .report_mozc_shm(mozc_shm_state(true), 5000, 5100 + i, 100, TickMs(5100 + i));
+            let _ =
+                ps.ime
+                    .report_mozc_shm(mozc_shm_state(true), 5000, 5100 + i, 100, TickMs(5100 + i));
         }
         assert_eq!(count(&ps) - before, 1, "同じ報告は 1 件だけ journal に書く");
         let _ = ps

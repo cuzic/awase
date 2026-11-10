@@ -156,7 +156,10 @@ impl Runtime {
             return;
         }
         // ADR-244 D3 の既存のカウンターパート（`ir_follow_direct_mode_key_read`）・BUG-222 と同じ後始末。
-        self.platform.output.confirm_gate_deadline_override_ms.set(0);
+        self.platform
+            .output
+            .confirm_gate_deadline_override_ms
+            .set(0);
         self.platform.output.bump_shift_conv_guard_gen();
         tracing::info!(
             "[shift-conv-guard] mozc-shm の観測でかなへの追随を確認 → 半角英数トグルを手放す (OS 書き込みなし、ADR-290)"

@@ -1339,7 +1339,10 @@ mod tests {
     /// Held/lost-write fallback を経由して受け入れられたものを含む)で即座に手放す誤判定を防ぐ。
     #[test]
     fn mozc_shm_kana_follow_requires_an_eisu_read_after_entry_before_abandoning() {
-        use super::{plan_mozc_shm_follow as f, MozcShmFollowPlan::{Abandon, MarkEisuSeen, None as NoPlan}};
+        use super::{
+            plan_mozc_shm_follow as f,
+            MozcShmFollowPlan::{Abandon, MarkEisuSeen, None as NoPlan},
+        };
         // エントリ(tick=1000)より前のupdate_tick_ms(=900、エントリ前からshmに残っていた古いhiragana)
         // では、かな読みでも何もしない(round1 F2)。
         assert_eq!(f(Some(1000), false, Some(false), 900), NoPlan);
