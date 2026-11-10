@@ -2406,7 +2406,14 @@ impl ImeStateHub {
     /// 観測の記録（上）→ 対象の明示意図（`IntentStore`）を削除 → `ModeKeyPassedThrough{align_desired, demote_applied}`
     /// （`last_intent` を捨て、`desired_open` を観測へ揃え、食い違う `applied` を未確認へ落とす）。
     /// 意図が残ると、観測より優先されて belief が直らない（ADR-268 D3、`resolve_open_at` の優先順）。
-    /// 戻り値は判断（診断の記録用）。
+    /// `half_width_alnum_toggle_active`（ADR-290/BUG-230）: 呼び出し元(`GateStore::half_width_alnum`へ
+    /// アクセスできる側、`ImeStateHub`は届かない)が渡す、半角英数トグルが今アクティブかどうか。偽のときは
+    /// `effective_mode`からのinput_mode観測を一切行わない——`ObservationSource::MozcShm`を input_mode 軸へ
+    /// 使うのはこの一時的な確認のためだけで、常時の観測源にはしない(通常時のbeliefへの余計な干渉を避ける)。
+    ///
+    /// 戻り値は（開閉の判断（診断の記録用）、`effective_mode`の観測から半角英数トグルを手放すべきと
+    /// 判断したか）。後者が真でも、ここではトグルを実際には手放さない(`GateStore`はこの構造体の兄弟
+    /// フィールドで、`ImeStateHub`から届かない)。呼び出し元が実際に手放す。
     pub(crate) fn report_mozc_shm(
         &mut self,
         shm: crate::state::mozc_shm::ShmState,
@@ -2414,7 +2421,8 @@ impl ImeStateHub {
         now_ms: u64,
         baseline_ms: u64,
         tick_ms: TickMs,
-    ) -> crate::state::mozc_shm::ShmUse {
+        half_width_alnum_toggle_active: bool,
+    ) -> (crate::state::mozc_shm::ShmUse, bool) {
         use crate::state::mozc_shm::{decide_use, ShmUse};
         let effective = self.effective_open_at(tick_ms);
         let desired = self.shadow_model.desired_open();
@@ -2430,8 +2438,10 @@ impl ImeStateHub {
         if decision == ShmUse::Split {
             self.demote_applied_for_mozc_shm_split(tick_ms);
         }
+        let should_abandon_half_width_alnum = half_width_alnum_toggle_active
+            && self.observe_mozc_shm_mode_for_half_width_alnum(shm.effective_mode, tick_ms);
         let ShmUse::Use { open, disagrees } = decision else {
-            return decision;
+            return (decision, should_abandon_half_width_alnum);
         };
         let fence = self.shadow_model.observations.current_fence();
         self.dispatch_event(
@@ -2450,7 +2460,55 @@ impl ImeStateHub {
                 "[mozc-shm] follow external change open={open} effective_was={effective} desired_was={desired}"
             );
         }
-        decision
+        (decision, should_abandon_half_width_alnum)
+    }
+
+    /// ADR-290/BUG-230: mozc-readable の共有メモリの`effective_mode`から、半角英数トグル
+    /// (`GateStore::half_width_alnum`、GJI/Mozc系)を観測ベースで手放すべきか(ADR-244 D3と同じ
+    /// 基準、`mozc_shm_sourced=true`)を判断する。`effective_mode`が読めない・直接入力(`Direct`)
+    /// のときは判断しない(`None`)。composing側(ひらがな等)・英数側のどちらかが読めたら
+    /// `InputModeObserved{source: MozcShm}`をbeliefへ記録する——`ObservationSource::MozcShm`を
+    /// input_mode軸に使う最初の経路(既存は開閉軸専用だった)。
+    ///
+    /// `report_mozc_shm`から、トグルが実際にアクティブなときだけ呼ばれる(`GateStore`へ届かないため
+    /// ここでは確認できず、呼び出し元の`half_width_alnum_toggle_active`引数で絞り込み済み)。
+    fn observe_mozc_shm_mode_for_half_width_alnum(
+        &mut self,
+        effective_mode: Option<crate::state::mozc_shm::CompositionMode>,
+        tick_ms: TickMs,
+    ) -> bool {
+        use crate::state::mozc_shm::CompositionMode;
+        let eisu = match effective_mode {
+            Some(
+                CompositionMode::Hiragana
+                | CompositionMode::FullKatakana
+                | CompositionMode::HalfKatakana,
+            ) => Some(false),
+            Some(CompositionMode::HalfAscii | CompositionMode::FullAscii) => Some(true),
+            Some(CompositionMode::Direct) | None => None,
+        };
+        let Some(eisu_value) = eisu else {
+            return false;
+        };
+        self.dispatch_event(
+            ImeEvent::InputModeObserved {
+                mode: if eisu_value {
+                    InputModeState::ObservedEisu
+                } else {
+                    InputModeState::ObservedKana
+                },
+                source: ObservationSource::MozcShm,
+                confidence: ObservationConfidence::High,
+            },
+            tick_ms,
+        );
+        let belief_left_eisu = self.input_mode() != InputModeState::ObservedEisu;
+        crate::state::half_width_alnum::should_abandon_on_observed_follow(
+            crate::state::ime_kind::ImeKindId::Gji,
+            Some(eisu_value),
+            belief_left_eisu,
+            true,
+        )
     }
 
     /// belief の根拠の解決（副作用なし）: `shadow_model` の解決と、`IntentStore` の上書き。`effective_open_at`（診断のログを出す）と
@@ -4190,9 +4248,9 @@ mod tests {
         use crate::state::mozc_shm::ShmUse;
         let mut ps = ps_with_open_intent_and_applied();
         // 基準（awase の最後の操作）= 100。update_tick 5000 > 100 → 操作より後に変わった事実。
-        let used = ps
+        let (used, _) = ps
             .ime
-            .report_mozc_shm(mozc_shm_state(false), 5000, 5100, 100, TickMs(5100));
+            .report_mozc_shm(mozc_shm_state(false), 5000, 5100, 100, TickMs(5100), false);
         assert_eq!(
             used,
             ShmUse::Use {
@@ -4218,9 +4276,9 @@ mod tests {
     fn report_mozc_shm_holds_a_read_right_after_an_operation() {
         use crate::state::mozc_shm::ShmUse;
         let mut ps = ps_with_open_intent_and_applied();
-        let used = ps
+        let (used, _) = ps
             .ime
-            .report_mozc_shm(mozc_shm_state(false), 100, 110, 100, TickMs(110));
+            .report_mozc_shm(mozc_shm_state(false), 100, 110, 100, TickMs(110), false);
         assert_eq!(used, ShmUse::Held);
         assert_eq!(ps.ime.explicit_intent(), Some(true));
         assert!(ps.ime.effective_open_at(TickMs(110)));
@@ -4234,7 +4292,7 @@ mod tests {
         let mut ps = ps_with_open_intent_and_applied();
         let mut split = mozc_shm_state(false);
         split.effective_open = true;
-        let used = ps.ime.report_mozc_shm(split, 5000, 5100, 100, TickMs(5100));
+        let (used, _) = ps.ime.report_mozc_shm(split, 5000, 5100, 100, TickMs(5100), false);
         assert_eq!(used, ShmUse::Split);
         assert_eq!(ps.ime.explicit_intent(), Some(true), "明示意図は残る");
         assert!(
@@ -4254,7 +4312,7 @@ mod tests {
         let mut ps = ps_with_open_intent_and_applied();
         let mut split = mozc_shm_state(false);
         split.effective_open = true;
-        let _ = ps.ime.report_mozc_shm(split, 5000, 5100, 100, TickMs(5100));
+        let _ = ps.ime.report_mozc_shm(split, 5000, 5100, 100, TickMs(5100), false);
         let first = ps
             .ime
             .journal
@@ -4262,7 +4320,7 @@ mod tests {
             .expect("journal")
             .matches("AppliedDemoted")
             .count();
-        let _ = ps.ime.report_mozc_shm(split, 5000, 5600, 100, TickMs(5600));
+        let _ = ps.ime.report_mozc_shm(split, 5000, 5600, 100, TickMs(5600), false);
         let second = ps
             .ime
             .journal
@@ -4291,12 +4349,12 @@ mod tests {
         for i in 0..5u64 {
             let _ =
                 ps.ime
-                    .report_mozc_shm(mozc_shm_state(true), 5000, 5100 + i, 100, TickMs(5100 + i));
+                    .report_mozc_shm(mozc_shm_state(true), 5000, 5100 + i, 100, TickMs(5100 + i), false);
         }
         assert_eq!(count(&ps) - before, 1, "同じ報告は 1 件だけ journal に書く");
         let _ = ps
             .ime
-            .report_mozc_shm(mozc_shm_state(false), 6000, 6100, 100, TickMs(6100));
+            .report_mozc_shm(mozc_shm_state(false), 6000, 6100, 100, TickMs(6100), false);
         assert_eq!(count(&ps) - before, 2, "値が変われば書く");
     }
 
@@ -4305,9 +4363,9 @@ mod tests {
     fn report_mozc_shm_agreeing_read_keeps_the_explicit_intent() {
         use crate::state::mozc_shm::ShmUse;
         let mut ps = ps_with_open_intent_and_applied();
-        let used = ps
+        let (used, _) = ps
             .ime
-            .report_mozc_shm(mozc_shm_state(true), 5000, 5100, 100, TickMs(5100));
+            .report_mozc_shm(mozc_shm_state(true), 5000, 5100, 100, TickMs(5100), false);
         assert_eq!(
             used,
             ShmUse::Use {
@@ -4328,21 +4386,23 @@ mod tests {
         let settle = crate::tuning::KEY_EFFECT_SETTLE_MS;
         let baseline = 1000;
         // update_tick 900 < baseline 1000。now が baseline + settle - 1 の間は Held、settle で追随。
-        let held = ps.ime.report_mozc_shm(
+        let (held, _) = ps.ime.report_mozc_shm(
             mozc_shm_state(false),
             900,
             baseline + settle - 1,
             baseline,
             TickMs(baseline + settle - 1),
+            false,
         );
         assert_eq!(held, ShmUse::Held);
         assert_eq!(ps.ime.explicit_intent(), Some(true));
-        let used = ps.ime.report_mozc_shm(
+        let (used, _) = ps.ime.report_mozc_shm(
             mozc_shm_state(false),
             900,
             baseline + settle,
             baseline,
             TickMs(baseline + settle),
+            false,
         );
         assert_eq!(
             used,
@@ -4353,6 +4413,89 @@ mod tests {
         );
         assert_eq!(ps.ime.explicit_intent(), None);
         assert!(!ps.ime.effective_open_at(TickMs(baseline + settle)));
+    }
+
+    /// ADR-290/BUG-230: `report_mozc_shm` の `effective_mode` 観測が半角英数トグルを手放すべきと
+    /// 判断するのは、トグルが実際にアクティブで、かつ `effective_mode` がかな側へ追随したときだけ。
+    /// トグルが非アクティブなら（通常時）、観測・dispatch を一切行わず常に偽を返す
+    /// （`report_mozc_shm_repeated_reports_are_journaled_once` の回帰の再発防止）。
+    #[test]
+    fn report_mozc_shm_abandons_half_width_alnum_only_when_toggle_active_and_mode_follows_kana() {
+        use crate::state::mozc_shm::{CompositionMode, ShmState};
+
+        fn shm_with_mode(mode: CompositionMode) -> ShmState {
+            ShmState {
+                version: 2,
+                tsf_open: true,
+                tsf_mode: Some(mode),
+                effective_open: true,
+                effective_mode: Some(mode),
+            }
+        }
+
+        // belief が ObservedEisu（トグルの見立て）から始まる、BUG-230 の実際の場面を模す。
+        fn ps_believing_eisu() -> PlatformState {
+            let mut ps = ps_for_test();
+            ps.ime.dispatch_event(
+                ImeEvent::InputModeObserved {
+                    mode: InputModeState::ObservedEisu,
+                    source: ObservationSource::ConvBitsInference,
+                    confidence: ObservationConfidence::Medium,
+                },
+                TickMs(0),
+            );
+            assert_eq!(ps.ime.input_mode(), InputModeState::ObservedEisu);
+            ps
+        }
+
+        // トグル非アクティブなら、かなへの追随が見えても手放さない（常時の干渉を避ける、ADR-290）。
+        let mut ps = ps_believing_eisu();
+        let (_, abandon) = ps.ime.report_mozc_shm(
+            shm_with_mode(CompositionMode::Hiragana),
+            0,
+            1000,
+            0,
+            TickMs(1000),
+            false,
+        );
+        assert!(!abandon, "トグル非アクティブでは observe_mozc_shm_mode_for_half_width_alnum を呼ばないこと");
+        assert_eq!(
+            ps.ime.input_mode(),
+            InputModeState::ObservedEisu,
+            "トグル非アクティブでは belief も変えない"
+        );
+
+        // トグルアクティブ・effective_mode が英数側のままなら、まだ手放さない。
+        let mut ps = ps_believing_eisu();
+        let (_, abandon) = ps.ime.report_mozc_shm(
+            shm_with_mode(CompositionMode::HalfAscii),
+            0,
+            1000,
+            0,
+            TickMs(1000),
+            true,
+        );
+        assert!(!abandon, "effective_mode が英数のままでは手放さないこと");
+
+        // トグルアクティブ・effective_mode がかなへ追随したら、手放すべきと判断する。
+        let mut ps = ps_believing_eisu();
+        let (_, abandon) = ps.ime.report_mozc_shm(
+            shm_with_mode(CompositionMode::Hiragana),
+            0,
+            1000,
+            0,
+            TickMs(1000),
+            true,
+        );
+        assert!(
+            abandon,
+            "トグルアクティブ中に mozc-shm がかなへの追随を観測したら手放すべきと判断すること"
+        );
+        assert_eq!(
+            ps.ime.input_mode(),
+            InputModeState::ObservedKana,
+            "観測の dispatch 自体は belief をかなへ更新すること"
+        );
     }
 
     fn follow_fence() -> crate::state::probe_admission::AcceptedObservation {

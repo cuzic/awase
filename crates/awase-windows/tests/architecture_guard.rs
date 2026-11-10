@@ -695,7 +695,14 @@ fn input_mode_observed_construction_sites_are_accounted_for() {
         // +1 (ADR-188、2026-10-06) = `follow_direct_read_in_scope`(ConvBitsInference, Medium)。物理のモードキー通過／FSM 再送出の
         // 直接観測の窓の中で、prefetch が実際に `IMC_GETCONVERSIONMODE` で読んだ conv の NATIVE ビットから英数かどうかを決める
         // 真正の観測（偽装ではない）。設計は docs/adr/188 追記4（R2）。
-        ("src/state/platform_state.rs", 3),
+        // +1 (ADR-290、2026-11-10) = `observe_mozc_shm_mode_for_half_width_alnum`(MozcShm, High)。
+        // mozc-readable の共有メモリが実際に読んだ `effective_mode` から英数/かなを決める真正の観測
+        // （偽装ではない）。`ObservationSource::MozcShm` を input_mode 軸へ初めて使う経路で、半角英数
+        // トグルを観測ベースで手放す判断（BUG-230）の入力になる。
+        // +1 (ADR-290、2026-11-10) = `#[cfg(test)] mod tests`内の
+        // `report_mozc_shm_abandons_half_width_alnum_only_when_toggle_active_and_mode_follows_kana`の
+        // `ps_believing_eisu`（上と同じ理由でテストフィクスチャ、本番の偽装ではない）。
+        ("src/state/platform_state.rs", 5),
         // idle-conv-check / ImmCrossProbe。focus-conv-check は ALT+TAB 直後の conv 値で
         // belief を書き換えるバグの温床だったため撤去済み（フォーカス変更直後の読み取りは
         // ユーザー意図の signal ではない。conv_mode/prev_conversion_mode の追跡のみ残す）。
@@ -8744,8 +8751,8 @@ fn mozc_shm_reader_touches_belief_only_through_report_mozc_shm() {
         .find("ifself.platform_state.focus.app_disabled{return;}")
         .expect("ir_execute は app_disabled で打ち切ること");
     let call = refresh
-        .find("self.mozc_shm_on_tick(focus.focus_changed)")
-        .expect("ir_execute は mozc_shm_on_tick を呼ぶこと");
+        .find("self.mozc_shm_on_tick(focus.focus_changed,toggle_active)")
+        .expect("ir_execute は mozc_shm_on_tick を呼ぶこと（ADR-290/BUG-230: 半角英数トグルの活性を第2引数で渡す）");
     assert!(
         disabled < call,
         "mozc_shm_on_tick は app_disabled の打ち切りの後に呼ぶ（無効アプリにフォーカス中は読まない）"

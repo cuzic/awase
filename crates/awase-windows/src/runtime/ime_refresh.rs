@@ -82,7 +82,33 @@ impl Runtime {
         // ADR-265 段階 1: mozc-readable の共有メモリの影の読み（記録のみ。無効なら何もしない）。
         // この tick の観測・通知が終わった後に置く: 記録に添える belief に、同じ tick の更新が入るようにするため
         // （前に置くと、同じ tick の観測で belief が動いても 1 tick 遅れた値が記録に残り、測定に偏りが出る）。
-        self.mozc_shm_on_tick(focus.focus_changed);
+        let toggle_active = self.platform_state.gate.half_width_alnum.is_toggle_active();
+        let should_abandon = self.mozc_shm_on_tick(focus.focus_changed, toggle_active);
+        self.ir_abandon_half_width_alnum_from_mozc_shm_if(should_abandon);
+    }
+
+    /// ADR-290/BUG-230: `mozc_shm_on_tick`/`mozc_shm_on_timer` が「`effective_mode` の観測から半角英数
+    /// トグルを手放すべき」と判断した（`should_abandon`）とき、実際に手放す（OS 書き込みなし、ADR-244 D3
+    /// と同じ形）。`report_mozc_shm`（`ImeStateHub`側）は`gate.half_width_alnum`に届かないため判断だけを返し、
+    /// ここ（`gate`に届く側）が`is_toggle_active()`を確認してから実行する——`mozc_shm_shadow.rs`からは
+    /// `gate`に一切触れない（`mozc_shm_reader_touches_belief_only_through_report_mozc_shm`）設計を保つ。
+    pub(super) fn ir_abandon_half_width_alnum_from_mozc_shm_if(&mut self, should_abandon: bool) {
+        if !should_abandon || !self.platform_state.gate.half_width_alnum.is_toggle_active() {
+            return;
+        }
+        if self
+            .platform_state
+            .gate
+            .half_width_alnum
+            .abandon_on_observed_follow()
+        {
+            // ADR-244 D3 の既存のカウンターパート（`ir_follow_direct_mode_key_read`）と同じ後始末。
+            self.platform.output.confirm_gate_deadline_override_ms.set(0);
+            self.platform.output.bump_shift_conv_guard_gen();
+            tracing::info!(
+                "[shift-conv-guard] mozc-shm の観測でかなへの追随を確認 → 半角英数トグルを手放す (OS 書き込みなし、ADR-290)"
+            );
+        }
     }
 
     // ── Stage 1: フォーカス検出 ──

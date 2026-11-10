@@ -58,13 +58,28 @@ impl super::Runtime {
         };
     }
 
-    /// IME リフレッシュの 1 tick から呼ぶ（`ir_execute`、`app_disabled` の打ち切りの後）。何も変えない。
+    /// IME リフレッシュの 1 tick から呼ぶ（`ir_execute`、`app_disabled` の打ち切りの後）。IME へは何も書かない。
     ///
     /// 対象は、現在のフォーカス（`platform.focus.current`）の窓のスレッド。読む手順と受け入れ条件は
     /// `observer::mozc_shm::read` と `state::mozc_shm::outcome_of`。
-    pub(super) fn mozc_shm_on_tick(&mut self, focus_changed: bool) {
-        self.mozc_shm_read_once(focus_changed);
+    ///
+    /// `half_width_alnum_toggle_active`（ADR-290/BUG-230）: 呼び出し元（`gate.half_width_alnum`へ届く側）が
+    /// 渡す、半角英数トグルが今アクティブかどうか。このファイルは`gate`に一切触れない
+    /// （`mozc_shm_reader_touches_belief_only_through_report_mozc_shm`）ため、`report_mozc_shm`へそのまま
+    /// 中継するだけ。
+    ///
+    /// 戻り値（ADR-290/BUG-230）: 半角英数トグルを観測ベースで手放すべきと `report_mozc_shm` が判断したら
+    /// 真。トグルの実際の状態を変える権限はこのファイルに無いため、呼び出し元が実際に手放すこと。
+    #[must_use]
+    pub(super) fn mozc_shm_on_tick(
+        &mut self,
+        focus_changed: bool,
+        half_width_alnum_toggle_active: bool,
+    ) -> bool {
+        let should_abandon =
+            self.mozc_shm_read_once(focus_changed, half_width_alnum_toggle_active);
         self.mozc_shm_ensure_timer();
+        should_abandon
     }
 
     /// 専用のタイマー（`TIMER_MOZC_SHM`、ADR-268 D5）の満了。ハンドラ冒頭で kill 済み。
@@ -72,13 +87,17 @@ impl super::Runtime {
     /// refresh の tick は、明示意図があるとき・効果的に TSF ネイティブなときに止まる（他の stage を走らせないため）。
     /// 共有メモリの読み・追随だけを切り離して、ブロックがある間、約 `MOZC_SHM_TIMER_MS` ごとに回す。無効アプリに
     /// フォーカスがあるときは読まない（refresh の tick と同じ）。
-    pub(super) fn mozc_shm_on_timer(&mut self) {
+    ///
+    /// 引数・戻り値は `mozc_shm_on_tick` と同じ（ADR-290/BUG-230）。
+    #[must_use]
+    pub(super) fn mozc_shm_on_timer(&mut self, half_width_alnum_toggle_active: bool) -> bool {
         if self.platform_state.focus.app_disabled {
             self.mozc_shm.polling = false;
-            return;
+            return false;
         }
-        self.mozc_shm_read_once(false);
+        let should_abandon = self.mozc_shm_read_once(false, half_width_alnum_toggle_active);
         self.mozc_shm_ensure_timer();
+        should_abandon
     }
 
     /// ブロックがある間は専用のタイマーを張る（既に張ってあれば触らない）。
@@ -92,21 +111,23 @@ impl super::Runtime {
     }
 
     /// 現在のフォーカスの窓のスレッドの共有メモリを 1 回読んで、belief に使う（診断の記録を含む）。
-    fn mozc_shm_read_once(&mut self, focus_changed: bool) {
+    ///
+    /// 引数・戻り値は `mozc_shm_on_tick` と同じ（ADR-290/BUG-230、戻り値の既定は偽）。
+    fn mozc_shm_read_once(&mut self, focus_changed: bool, half_width_alnum_toggle_active: bool) -> bool {
         self.mozc_shm.polling = false;
         let hwnd_addr = self.platform.focus.current.hwnd;
         let pid = self.platform.focus.current.pid;
         if hwnd_addr == 0 || pid == 0 {
-            return;
+            return false;
         }
         let tid = crate::observer::mozc_shm::thread_of_window(hwnd_addr);
         if tid == 0 {
-            return;
+            return false;
         }
 
         // 開けなかった窓は、フォーカスが変わるまで読まない（ADR-268 D1）。
         if !focus_changed && self.mozc_shm.absent_for == Some((tid, pid)) {
-            return;
+            return false;
         }
         let (reading, read_us) = crate::observer::mozc_shm::read(tid, pid);
         let outcome = outcome_of(&reading, pid);
@@ -126,26 +147,32 @@ impl super::Runtime {
         // ADR-268: 受け入れた読みを belief に使う（IME へは何も書かない）。1 tick に 1 回、変化の有無によらず
         // 報告する（`MozcShm` の観測は TTL を持ち、報告が止まると失効するため）。基準の時刻は、awase の最後の操作
         // （全キー + ImmCross の発行）。`now_ms`・`update_tick_ms` は共に `GetTickCount64`。
+        //
+        // ADR-290/BUG-230: 戻り値の2番目(半角英数トグルを手放すべきか)は、ここでは消費せず最後まで持ち出す
+        // (`gate.half_width_alnum`はこのファイルから触れない。`should_abandon`は読むだけで真偽は変えない)。
+        let mut should_abandon = false;
         if let (Outcome::Accepted(shm), Ok(raw)) = (&outcome, &reading.block) {
             let now_ms = crate::hook::current_tick_ms();
             let baseline_ms = crate::hook::last_operation_tick_ms();
-            self.platform_state.ime.report_mozc_shm(
+            let (_, abandon) = self.platform_state.ime.report_mozc_shm(
                 *shm,
                 raw.update_tick_ms,
                 now_ms,
                 baseline_ms,
                 crate::state::TickMs(now_ms),
+                half_width_alnum_toggle_active,
             );
+            should_abandon = abandon;
         }
 
         // 以降は診断の記録（`[diagnostics] mozc_shm_shadow = true` のときだけ）。
         if !self.mozc_shm.enabled {
-            return;
+            return should_abandon;
         }
         let key = (tid, pid, outcome);
         let changed = self.mozc_shm.last != Some(key);
         if !focus_changed && !changed {
-            return;
+            return should_abandon;
         }
         self.mozc_shm.last = Some(key);
 
@@ -185,5 +212,6 @@ impl super::Runtime {
             .ime
             .journal
             .record(crate::journal::JournalEntry::MozcShm { record });
+        should_abandon
     }
 }

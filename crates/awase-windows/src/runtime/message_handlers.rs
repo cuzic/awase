@@ -542,7 +542,9 @@ pub(crate) unsafe fn handle_wm_timer(
         Some(id) if id == crate::TIMER_MOZC_SHM => {
             // 一発タイマー（ADR-268 D5）。冒頭で自ら kill する。張り直しは `mozc_shm_on_timer` が決める。
             app.platform.timer.kill(crate::TIMER_MOZC_SHM);
-            app.mozc_shm_on_timer();
+            let toggle_active = app.platform_state.gate.half_width_alnum.is_toggle_active();
+            let should_abandon = app.mozc_shm_on_timer(toggle_active);
+            app.ir_abandon_half_width_alnum_from_mozc_shm_if(should_abandon);
         }
         Some(id) if id == crate::TIMER_DRIFT_FOLLOW_WOULD => {
             // 一発タイマー（ADR-279 P0）。冒頭で自ら kill する。張り直しは `drift_follow_would_on_timer` が決める。
