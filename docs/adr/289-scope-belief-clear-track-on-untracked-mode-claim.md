@@ -22,9 +22,9 @@ summary: |-
   分割し、D5として`[focus-conv-check]`の書き込みに「探査開始後に明示操作が起きていないか」のガードを追加する。
 status: |-
   起草(2026-11-09)。Opus round1〜4レビュー(4ラウンドで収束、round4は「ブロッキングな指摘なし」)を反映。
-  D4をD4a/D4bに分割・D5〈focus-conv-checkのガード、値スナップショット方式〉追加・D4bのPanicReset対象外化・
-  限界のテスト記述を精緻化。設計(D1/D4a/D4b/D5、古いeisu再構成経路(a)〜(d)への対応)は確定。
-  実装・実機確認は未着手。
+  D1/D4a/D4b/D5を実装済み(2026-11-10、commit `b384f3698`)。compile・architecture_guard(175件)・
+  golden_scenarios(24件)・layer_boundary_guard・awase-windows全テストで確認済み。D4b/D5は
+  対になる既存のapply_idle_conv_check同様、直接ユニットテストは追加していない。実機確認は未実施。
 related_adr:
   - "ADR-282"
   - "ADR-245"
