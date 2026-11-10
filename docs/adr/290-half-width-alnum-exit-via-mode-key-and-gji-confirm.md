@@ -27,8 +27,9 @@ summary: |-
 status: |-
   D1″(edge-triggeredの2段ラッチによるtoggle_held解除、Opusレビューround1〈F1/F2〉・round2〈R2-1〉で
   指摘された欠陥を修正した版)を`docs/bug230-adr290-half-width-f2-exit-race`ブランチに実装・コミット済み
-  (2026-11-10、developへは未マージ)。D1′はOpus敵対的レビューround1で指摘され却下済み(下記却下した案
-  参照)。round2の残りの軽微な指摘(R2-2・R2-4)はADR本文の限界に記録。実機確認は未着手。D2(GJI抜け出し
+  (2026-11-10、developへは未マージ)。round3レビューで「コードはマージ可能」と判定(残りはround2の
+  記述の訂正〈R2-2・R2-4〉とround3の軽微な指摘〈R3-1・R3-3〉のみ、いずれもADR本文の限界に記録済み)。
+  D1′はOpus敵対的レビューround1で指摘され却下済み(下記却下した案参照)。実機確認は未着手。D2(GJI抜け出し
   のMozc確認・回収)・D3は未着手。
 related_adr:
   - "ADR-270"
@@ -198,24 +199,32 @@ IME種別に関わらず共通の問題だが、MS-IME本体は既にADR-244 D3(
   まま出力される」症状そのものは別問題として残る。
 - 「約2秒」というMozc側の切替所要時間は未確認(上記「原因2」注記参照)。D2の実装時にこの前提を
   再検証すること。
-- **(round2 R2-2)** 手放した後のbeliefの訂正に`InputModeApplyStrategy::UserTurnOnEisuReset`を使っている
-  (BUG-222の既存の呼び出し元`kp_exit_lang_detect_toggle_on_hiragana`と同じラベル付け)。この変体名は
-  「ユーザーがTurnOn系キーを押した」を意味し、「観測ベースでトグルを手放した」という実際の事象と
-  厳密には食い違う。実害は、ADR-289(BUG-229、別ブランチ`docs/bug229-adr289-belief-v2-stale-track`)が
-  追跡中conv(belief-v2の`track.conv`・旧beliefの`key_track.conv`・殻側の`prev_conversion_mode`)の
-  クリアを`UserHalfWidthAlnumToggle`(と`PanicReset`)にだけ対で配線していること——`UserTurnOnEisuReset`
-  はこの対象に入らないため、手放し後に古い追跡中convが残る(BUG-229と同型の)可能性がある。この問題は
-  BUG-222・ADR-244 D3の既存の呼び出し元にも**既に存在する**(本ADRが新規に持ち込んだものではない)。
-  2つのブランチが合流する時点で、`UserHalfWidthAlnumToggle`を再利用するか、ADR-289のクリア対象に
-  新しいvariantを加えるかを決めること。
+- **(round2 R2-2、round3で訂正)** 手放した後のbeliefの訂正に`InputModeApplyStrategy::
+  UserTurnOnEisuReset`を使っている(BUG-222の既存の呼び出し元`kp_exit_lang_detect_toggle_on_hiragana`
+  と同じラベル付け)。当初「strategyのラベルを変える」対応を想定したが、round3レビューでその対応は
+  **効果が無い**と訂正された: 通常のBUG-230経路ではF2の`KeyEffectPredicted`が既にbeliefをromaji
+  (`AssumedRomaji`)にしているため、`eisu_reset_on_turn_on_while_open`は`None`を返し
+  `apply_input_mode_correction`自体が呼ばれない(ラベルを変えても何も起きない)。マージ時に本当に
+  決めるべきことは、**トグルを手放した際にADR-289のクリア(`track.conv`・`key_track.conv`・
+  `prev_conversion_mode`)を、`InputModeApplyStrategy`のラベルに関わらず無条件で呼ぶべきかどうか**
+  (手放し自体が「実convを確定させる」行為である点はBUG-222・UserHalfWidthAlnumToggle・PanicResetと
+  同じ性質を持つため)。この問題はBUG-222・ADR-244 D3の既存の呼び出し元にも**既に存在する**
+  (本ADRが新規に持ち込んだものではない)。
 - **(round2 R2-3の残課題)** `rearm_after_failed_gji_exit`/`rebuild_toggle_from_entry`は現在の tick を
   新しいエントリ点として扱う(上記D1″参照)。これは「巻き戻し/立て直しの時点でMozcが実際にどちらの
   モードだったか」を見ていない、保守的な近似(エントリ以降に英数の読みを1回観測してからのかな読みしか
   手放しの根拠にしない2段ラッチが、この近似の誤りを吸収する設計)。実機での頻度・挙動は未確認。
-- **(round2 R2-4)** `entered_at_tick_ms`・`update_tick_ms`は双方`GetTickCount64`(分解度 約15.6ms)。
-  エントリと同じ分解度単位内に書かれた読みは`update_tick_ms <= entered_at`で「エントリ以前」と判定され
-  うる(安全側の誤り)。2段ラッチにより、この回のかな読みを取りこぼしても次の読みで追随できるため、
-  実害は無いと考えている。
+- **(round2 R2-4、round3で訂正)** `entered_at_tick_ms`・`update_tick_ms`は双方`GetTickCount64`
+  (分解度 約15.6ms)。エントリと同じ分解度単位内に書かれた読みは`update_tick_ms <= entered_at`で
+  「エントリ以前」と判定されうる(安全側の誤り)。当初「2段ラッチにより次の読みで追随できる」と書いたが
+  楽観的すぎると訂正された: もしユーザーがエントリ直後、`HalfAscii`の読みが一度も観測される前に
+  すぐF2を押してしまうと、ラッチが一度も立たないため**その回のトグルは手放されず**、旧来の挙動
+  (ひらがなキーではtoggle_heldが解除されない)のまま残る。これはフェイルセーフ(分からないときは
+  手放さない)として意図どおりであり、コード変更は不要——「次の読みで追随できる」という楽観的な表現を
+  修正しただけ。
+- **(round3 R3-3、低・未確認)** ラッチ(`eisu_seen_since_entry`)はどのスレッドの読みで立ったかを記録
+  しない。同一プロセス内でフォーカスが別スレッドへ移った場合、その別スレッドの読みが(本来無関係な)
+  ラッチ/手放し判定に使われる可能性がある。実機での発生可否・頻度は未確認。
 
 ## 却下した案
 

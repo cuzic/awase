@@ -662,7 +662,7 @@ fn is_composing_mode(mode: u32) -> bool {
 
 /// `effective_mode`から英数(true)/かな系(false)を判定する。
 ///
-/// ADR-290、半角英数トグルの観測ベースの手放し判定`should_abandon_on_mozc_shm_kana_follow`の入力。
+/// ADR-290、半角英数トグルの観測ベースの手放し判定`plan_mozc_shm_follow`の入力。
 /// 「かな系」の定義は`is_composing_mode`と同じ(Hiragana/FullKatakana/HalfKatakana)。`Direct`
 /// (直接入力・IMEが閉じているときの値)・`None`は判定できない(`None`)——`Direct`を安易に
 /// 「英数でも仮名でもない」と決め打たず、呼び出し元に「分からない」を伝える。
