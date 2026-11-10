@@ -393,6 +393,9 @@ impl Runtime {
                 kind,
                 follow.eisu,
                 belief_left_eisu,
+                // この呼び出し元（ADR-188 直接観測）はIMM/TSFの読みが出所で、mozc-shmではない。
+                // mozc-shmのeffective_modeを出所にする呼び出しはADR-290/BUG-230で別途配線する(未着手)。
+                false,
             ) && self
                 .platform_state
                 .gate

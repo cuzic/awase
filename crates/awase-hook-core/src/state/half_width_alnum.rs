@@ -537,23 +537,29 @@ impl HalfWidthAlnumState {
     }
 }
 
-/// 直接観測の追随の結果から、持続トグルを手放すべきか（ADR-244 D3・D4）。
+/// 直接観測の追随の結果から、持続トグルを手放すべきか（ADR-244 D3・D4。GJI/Mozc の `mozc_shm_sourced` はADR-290・BUG-230）。
 ///
 /// - 手放すのは **Microsoft IME 本体で、観測された読みが NATIVE（`eisu == Some(false)`）で、追随の後に belief が
-///   英数でなくなっているとき**だけ。`belief_left_eisu` は追随（`InputModeObserved`）が reducer の予測の fence
-///   （`KEY_EFFECT_SETTLE_MS` 以内の予測が優先）に捨てられなかったか。捨てられて belief が英数のまま残ったのに
-///   トグルだけ手放すと、「belief は英数・トグルは無し」になり、次の Shift タップが「開始」になる。
+///   英数でなくなっているとき**、または**`eisu` の出所が mozc-readable の共有メモリ（`mozc_shm_sourced`）で、
+///   読みが composing 側（`eisu == Some(false)`）で、追随の後に belief が英数でなくなっているとき**だけ。
+///   `belief_left_eisu` は追随（`InputModeObserved`）が reducer の予測の fence（`KEY_EFFECT_SETTLE_MS` 以内の予測が
+///   優先）に捨てられなかったか。捨てられて belief が英数のまま残ったのにトグルだけ手放すと、「belief は英数・
+///   トグルは無し」になり、次の Shift タップが「開始」になる。
 /// - キー押下を根拠にはしない（`024ca336`〜`6b1e91b8` の「素通しのキーが来たら無条件に手放す」案は、読みが届かず
 ///   `か` のままで、GJI の MS-IME プリセットに `ro` を出して戻した）。
-/// - GJI は手放さない（挙動を変えない。GJI の追随で `toggle_held` が残る潜在課題は BUG-186 の範囲外）。
+/// - `mozc_shm_sourced` でない GJI は手放さない（挙動を変えない。実 GJI 公式版には mozc-readable の共有メモリに
+///   相当する信頼できる観測源が無いため。元は「GJI の追随で `toggle_held` が残る潜在課題は BUG-186 の範囲外」として
+///   先送りしていたが、Mozc(mozc-readable)は共有メモリで `effective_mode` を安く確実に読めるため、`mozc_shm_sourced`
+///   を立てて呼べばこの経路に乗れる、BUG-230）。
 /// - 英数の読み（`Some(true)`）や追随なしでは手放さない（全角英数 `conv=0x18` は NATIVE が無く英数のまま）。
 #[must_use]
 pub fn should_abandon_on_observed_follow(
     kind: crate::state::ime_kind::ImeKindId,
     eisu: Option<bool>,
     belief_left_eisu: bool,
+    mozc_shm_sourced: bool,
 ) -> bool {
-    matches!(kind, crate::state::ime_kind::ImeKindId::MsIme)
+    (matches!(kind, crate::state::ime_kind::ImeKindId::MsIme) || mozc_shm_sourced)
         && eisu == Some(false)
         && belief_left_eisu
 }
@@ -1205,16 +1211,36 @@ mod tests {
     fn abandon_only_for_ms_ime_native_read_that_took_effect() {
         use super::should_abandon_on_observed_follow as f;
         use crate::state::ime_kind::ImeKindId::{Gji, MsIme};
-        assert!(f(MsIme, Some(false), true));
+        assert!(f(MsIme, Some(false), true, false));
         // 予測の fence に追随を捨てられ、belief が英数のまま残ったときは手放さない（belief は英数・トグルは無し、を作らない）。
-        assert!(!f(MsIme, Some(false), false));
+        assert!(!f(MsIme, Some(false), false, false));
         // 英数の読み・追随なしでは手放さない(全角英数 conv=0x18 は eisu=Some(true) のまま)。
-        assert!(!f(MsIme, Some(true), true));
-        assert!(!f(MsIme, None, true));
-        // GJI は従来どおり手放さない。
-        assert!(!f(Gji, Some(false), true));
-        assert!(!f(Gji, Some(true), true));
-        assert!(!f(Gji, None, true));
+        assert!(!f(MsIme, Some(true), true, false));
+        assert!(!f(MsIme, None, true, false));
+        // GJI は mozc_shm_sourced が立っていない限り従来どおり手放さない(実GJI公式版には信頼できる観測源が無い)。
+        assert!(!f(Gji, Some(false), true, false));
+        assert!(!f(Gji, Some(true), true, false));
+        assert!(!f(Gji, None, true, false));
+    }
+
+    /// ADR-290 / BUG-230: mozc-readable の共有メモリ(`effective_mode`)が出所のときだけ、GJI(Mozc 系)でも
+    /// MS-IME 本体と同じ基準(composing 側の読み・belief が英数でない)で手放す。`mozc_shm_sourced=false` の
+    /// GJI(実GJI公式版、信頼できる観測源が無い)は従来どおり変えない——この拡張が無かった2026-11-10時点では
+    /// GJI 側に手放す経路が一切無く、半角英数トグルを抜けるつもりの物理キー(ひらがなキー等)の後も
+    /// `toggle_held` が残り続けた(BUG-230)。
+    #[test]
+    fn mozc_shm_sourced_gji_abandons_like_ms_ime_but_only_when_sourced() {
+        use super::should_abandon_on_observed_follow as f;
+        use crate::state::ime_kind::ImeKindId::Gji;
+        // mozc-shm の effective_mode が composing 側(= eisu == Some(false))へ移ったと観測し、belief も
+        // 追随して英数でなくなっていれば手放す(BUG-230 が直る中核の分岐)。
+        assert!(f(Gji, Some(false), true, true));
+        // 予測の fence に追随を捨てられ belief が英数のまま残っていれば、GJI/Mozc でも手放さない
+        // (MS-IME と同じ安全条件、「belief は英数・トグルは無し」を作らない)。
+        assert!(!f(Gji, Some(false), false, true));
+        // mozc-shm 由来でも、読みが英数側(Some(true))・追随なし(None)では手放さない。
+        assert!(!f(Gji, Some(true), true, true));
+        assert!(!f(Gji, None, true, true));
     }
 
     /// ADR-244 D3: 手放しは OS 書き込みを伴わず、直前の toggle_held を返す。手放した後の復元(begin_restore_kana)は不要。
