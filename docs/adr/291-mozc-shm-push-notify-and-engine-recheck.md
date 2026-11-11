@@ -29,10 +29,13 @@ summary: |-
   下方修正し、実測してから着手を判断する保留(D2)とした。D3(かなキー押下時のbelief即時楽観補正)は
   却下、D4(確定まで打鍵を保持)はADR-290自身の既存の見送り(D2依存)と同じ理由で見送り。
 status: |-
-  起草(2026-11-11)。Opus敵対的レビューround1(原因診断の誤り、F1)・round2(修正案(a)がADR-290の
+  設計確定(2026-11-11)。Opus敵対的レビューround1(原因診断の誤り、F1)・round2(修正案(a)がADR-290の
   既に却下済みの設計を再現する指摘、G1/G2)・round3((a)固有の別の欠陥〈170ms柵による書き込み
-  拒否〉を指摘され(b)へ設計変更、H1〜H3)を反映して訂正済み。round4確認待ち、実装・実機確認とも
-  未着手。
+  拒否〉を指摘され(b)へ設計変更、H1〜H3)を経て、round4で「ゲート除去は他の2つのトグル抜け口
+  (`key_pipeline.rs`・`ime_refresh.rs`のfocus-suspend)と揃えるだけで新しいリスクではない」と
+  確認され収束(これ以上のレビューラウンドは不要と判定)。実装PRで直す3件のコメント同期
+  (`half_width_alnum.rs`・`architecture_guard.rs`docstring・`mode_state.rs`)を残し、
+  実装・実機確認とも未着手。
 related_adr:
   - "ADR-290"
   - "ADR-282"
@@ -199,7 +202,11 @@ read_started_ms, …)`(`scope_belief.rs:533-545`)を通ってからでないと�
    AssumedRomajiへのトグルOFF自体の能動的遷移という**全く同じ形**であり、このdocの想定に
    そのまま収まる(現状は`UserTurnOnEisuReset`+`eisu_reset_on_turn_on_while_open`という、
    本来別の目的(「IMEが開いたままturn-onする」救済専用、対応表の別の行)の関数を間借りして
-   いたほうが、むしろこのdocの整理と噛み合っていなかった)。
+   いたほうが、むしろこのdocの整理と噛み合っていなかった)。round4で確認: この節の文面は
+   `kp_stage_shift_conv_guard`(key_pipeline.rs側のトグルエントリ)だけを念頭に書かれており、
+   focus-suspend抜け口(`ime_refresh.rs:715-723`)も明示されていない(既存の記述漏れ)。
+   ガード自体には影響しないため必須ではないが、実装PRで「同じ理屈が`ime_refresh.rs`の
+   focus-suspend抜け口と、本ADRのmozc-shm手放し抜け口にも当たる」の1行を追加するとよい。
 5. `tests/architecture_guard.rs::user_ime_on_paths_are_paired_with_eisu_reset`の
    `UserTurnOnEisuReset`関連のチェック(`:918-919`)は`read_crate_file("src/runtime/
    key_pipeline.rs")`の内容のみを走査し、`ime_refresh.rs`は対象外であることを確認済み——
@@ -226,14 +233,28 @@ self.apply_input_mode_correction(
 (`scope_event_of`が`UserHalfWidthAlnumToggle`を`ScopeEvent::Explicit`として受理)の
 **両方**に届く。
 
-**ゲートを外すことの小さなトレードオフ(意識的に許容する)**: ゲート(`eisu_reset_on_turn_on_while_open`)
-は「旧モデルが実際に`ObservedEisu`のときだけ補正する」という条件だった。無条件化すると、
-旧モデルが既に(mozc-shm以外の経路で)`ObservedRomaji`(実観測)だった場合でも
-`AssumedRomaji`(推測)で上書きする——両方とも`is_romaji_capable()`が`true`なので
-Engineの活性判定への影響は無いが、journal上の証拠の精度が観測から推測へわずかに下がる。
-この代償は、Zが取り残されたまま戻らないBUG-231の再発(ゲートを維持する場合、旧モデルの
-ゲートが閉じているときZだけが英数のまま取り残される可能性を消せない、G2の本質的な懸念)を
-確実に塞ぐために許容する。
+**ゲートを外すことは安全(round4で確認): 他の2つのトグル抜け口と揃えるだけ**: 半角英数トグルの
+抜け口は実は3箇所あり、残り2箇所は**すでにゲート無しで無条件に**`AssumedRomaji
+{UserHalfWidthAlnumToggleOff}`+`UserHalfWidthAlnumToggle`を書いている
+——`kp_restore_kana_from_half_width`(`key_pipeline.rs:3117-3123`)と、フォーカス変更時の
+強制抜け(`ime_refresh.rs:715-723`)。ゲート付きだったmozc-shm経由の手放しが唯一の例外
+(BUG-222の`UserTurnOnEisuReset`の形を間借りしていた名残)であり、ゲートを外すことは
+**新しい挙動の導入ではなく、3箇所を同じ形に揃える**ことに相当する。どちらのreasonの値
+(`AppKindExcluded`→`UserHalfWidthAlnumToggleOff`)にも分岐するロジックは存在しない
+(`grep`で`AppKindExcluded`への`matches!`/`==`が本番コードに0件、確認済み)。strategyの値も
+旧`ImeModel::reduce`は見ない(無条件適用、`ime_model.rs:1014-1019`)——strategyに反応するのは
+Zの`scope_event_of`だけで、それこそが本ADRの変更点。
+
+**ゲートが守っていた唯一の縁(既に他の2箇所も受け入れている、新しいクラスのリスクではない)**:
+トグル中に本当に`ObservedKana`(JISかな直接入力、ADR-091非対応)へ観測/予測が動いていた場合、
+無条件化によってそれをromaji-capableへ上書きし、JISかな入力のIMEに対してEngineを活性化
+してしまう。この状態に至るには、トグルエントリが`ObservedEisu`を書いた**後**に、JISかな入力
+モードの観測/予測が別途入る必要があり、shift-conv-guardが有効な間はObserverの書き込み自体が
+抑止されている(`ReadReason::ShiftConvGuard`、`ir_decide_read_strategy`)ため、相当まれ。
+かつ、`kp_restore_kana_from_half_width`と focus-suspend の既存2箇所は既にこのリスクを
+無条件で受け入れている——mozc-shm経由の手放しだけがこれを気にするのは非対称。将来の精密化
+(v5の`prefer_kana_input`フィールドを読んで判別する、上記のF1対策の節で触れた拡張)は
+3箇所共通の改善として別途検討する。
 
 **`notify_engine_refresh()`も必要(変わらず)**: `ir_execute`の実行順は`ir_stage_notify()`
 (`ir_notify_engine_refresh`を呼ぶ)→`mozc_shm_on_tick`→`ir_abandon_half_width_alnum_from_mozc_shm_if`
@@ -379,6 +400,22 @@ qwertyローマ字でOSへ素通りしている(BUG-230タイムライン項目4
   想定されているが、mozc-shm経由の2つ目の呼び出し元が増えたことを一文追記するとよい(必須ではない)。
 - **変わらないもの**: IMEへの能動的な送信(D1′はbeliefの正確さと再評価のタイミングだけを変え、
   OSへの新しい書き込みを増やさない)。
+- **実装PRで直すべき、今は本ADRの変更と整合しなくなるコメント3件(round4で洗い出し済み、
+  いずれもコメントのみでロジックは変わらない)**:
+  1. `crates/awase-hook-core/src/state/half_width_alnum.rs:648-650`(`plan_mozc_shm_follow`の
+     doc)が「呼び出し元がBUG-222と同じ経路(`eisu_reset_on_turn_on_while_open`→
+     `InputModeApplied`)でromaji-capableへ戻すこと」と**旧い形を指示している**。新しい形
+     (`UserHalfWidthAlnumToggle`、無条件)を指すように書き換える。この3件の中で最も重要
+     (この判定関数のすぐ隣にあり、実装者が最初に読む場所)。
+  2. `architecture_guard.rs:775-791`(`input_mode_applied_construction_sites_are_accounted_for`の
+     docstring)の呼び出し元一覧に`ime_refresh.rs`側の`UserHalfWidthAlnumToggle`呼び出しが
+     (focus-suspend分も含めて)列挙されていない(既存の記述漏れ)。両方を追記する
+     (件数自体は変わらない、`apply_input_mode_correction`に集約されているため)。
+  3. `src/engine/mode_state.rs:34-36`の`UserHalfWidthAlnumToggleOff`のdocが「awase自身が
+     `VK_DBE_HIRAGANA`注入+conv復元writeでかな入力へ戻した直後」と書いており、OSへの書き込みを
+     伴わないfocus-suspend抜け口にも本ADRのmozc-shm抜け口にも既に当てはまらない。「半角英数
+     トグルが手放された直後の仮定値(awase自身の書き込み・フォーカス変更・観測への追随のいずれでも)」
+     へ広げる。
 
 ## 未解決
 
@@ -394,12 +431,18 @@ qwertyローマ字でOSへ素通りしている(BUG-230タイムライン項目4
    (ii) 旧モデルで「手放し後、常にromaji-capableへ終わる」こと、(iii) 書き込むモードが常に
    romaji-capableで`ObservedKana`/`ModeClass::KanaInputMethod`にならないこと(ADR-290 F1回帰の
    固定、H3の命名の罠を踏まえて明示的に`ModeClass::Kana`であることを assert する)、の3つを
-   追加する。
+   追加する。(i)は`ImeModel::input_mode()`ではなく`engine_belief()`経由(またはEngineの活性
+   そのもの)をassertすること——Z自体を確かめないと、このADRが直す反映欠落を素通りしてしまう
+   (round4確認)。
 3. **[BUG-222](../known-bugs/BUG-222.md)の`kp_exit_lang_detect_toggle_on_hiragana`も同じ
    `UserTurnOnEisuReset`を書くため、belief_v2有効時は同じ穴を持つ可能性が高い**(未検証、
    BUG-231の該当F2の`[key-effect-predict]`が`mode=None`だったのと同じ着眼点でBUG-222自身の
    ログから確認可能)。本ADRでは手放し経路(BUG-231の直接原因)のみ修正し、BUG-222側は別途確認・
-   必要なら追随修正する。
+   必要なら追随修正する。**BUG-222側で同じ引数スワップ(本ADRと同型)を行う場合**、
+   `architecture_guard.rs`の`lang_detect_toggle_is_exited_by_hiragana_key_only_when_marked`
+   (`:~9612-9645`)が`key_pipeline.rs`内の`InputModeApplyStrategy::UserTurnOnEisuReset`を
+   固定しているため、そのガードの更新も必要になる(round4確認。本ADR自身の変更は
+   `ime_refresh.rs`側のみなので、このガードには触れない)。
 4. `{UserHalfWidthAlnumToggle, PanicReset}`以外の`InputModeApplyStrategy`がすべてZ配下で
    Engineに無視されるという一般化した穴(ADR-282自身の設計)は、本ADRの範囲外として
    ADR-282の追補課題に記録することを推奨する。
