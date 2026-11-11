@@ -5,22 +5,27 @@ title: |-
 summary: |-
   ADR-290/BUG-230適用後のdragonflyg4実機(2026-11-11)で、ひらがなキー押下からEngine活性(Active)まで
   最大約5.3秒ローマ字がリテラルで漏れる新しい遅延([BUG-231](../known-bugs/BUG-231.md))を観測した。
-  当初「Engineの活性再評価が物理キーで走らない」と誤診したが、Opus敵対的レビューで訂正: 実際には
-  毎物理キーが`Engine::on_input`→`check_active_transition`を再実行していた。本当の原因は
+  当初「Engineの活性再評価が物理キーで走らない」と誤診したが、Opus敵対的レビューround1で訂正:
+  実際には毎物理キーが`Engine::on_input`→`check_active_transition`を再実行していた。本当の原因は
   `general.belief_v2`(既定true、ADR-282)下でEngineが読む候補Z(`scope_shadow`)の変換表
   (`scope_belief.rs::scope_event_of`)が、`ir_do_abandon_half_width_alnum_from_mozc_shm`が書く
   `InputModeApplied{UserTurnOnEisuReset}`を`_ => None`として無視し、Zが英数(Eisu)の主張のまま
-  取り残されること(反映の欠落、観測で約3.7秒)。もう1つの原因は、mozc-shmの2段ラッチが
-  `TIMER_MOZC_SHM`(500ms)ポーリングのみに依存すること(検知遅延、観測で約1.6秒。ただし大半は
-  Mozc自身の切替時間でawase側の遅延ではない)。
-  決定: (1)手放し処理でZが受理する形(`InputModeObserved`等)でモード軸を書き、かつ既存の
-  `notify_engine_refresh()`を呼ぶ(D1′、両方必須)。(2)mozc-readableの既存Pulseイベントでの
-  即時通知(D2)は、ポーリング由来の遅延の実測(大半がMozc自身の時間なら価値が低い)を先に取ってから
-  着手を判断する(保留)。(3)かなキー押下時のbelief即時楽観補正(D3)はBUG-192/ADR-290 round1と
-  同型のリスクで却下。(4)確定まで打鍵を保持する案(D4)を新たに検討対象として追加、今回は見送り。
+  取り残されること(反映の欠落、観測で約3.7秒。ログの`[belief-v2]`食い違い行が直接の証拠)。
+  round2レビューで、最初の修正案(mozc-shmの観測を素朴に`InputModeObserved{mode, MozcShm}`として
+  Zへ書く)が**ADR-290自身が最初の実装で試して致命的と判定し却下した設計(D1′ F1: `Hiragana`を
+  `ObservedKana`として書くとEngineが永久に`Inactive(NotRomajiInput)`のまま戻らない)をそのまま
+  再現する**ことが発覚し、設計を訂正: モードの値を必ずromaji-capableな`AssumedRomaji
+  {UserHalfWidthAlnumToggleOff}`に固定し、既存の`InputModeApplied{UserTurnOnEisuReset}`書き込み
+  (旧モデル向け、置き換えずに維持——`belief_v2=false`環境の回帰を防ぐ)と**両方**を新設の専用
+  メソッドから無条件にdispatchし、直後に`notify_engine_refresh()`を呼ぶ(D1′)。
+  もう1つの原因(mozc-shmの2段ラッチが`TIMER_MOZC_SHM`500msポーリングのみに依存、検知遅延
+  約1.6秒)については、round2で効果を「大半がMozc自身の切替時間でD2では縮まらない」と
+  下方修正し、実測してから着手を判断する保留(D2)とした。D3(かなキー押下時のbelief即時楽観補正)は
+  却下、D4(確定まで打鍵を保持)はADR-290自身の既存の見送り(D2依存)と同じ理由で見送り。
 status: |-
-  起草(2026-11-11)。Opus敵対的レビューround1で原因診断の誤り(F1)を指摘され訂正。round2レビュー
-  予定、実装・実機確認とも未着手。
+  起草(2026-11-11)。Opus敵対的レビューround1(原因診断の誤り、F1)・round2(修正案自体がADR-290の
+  既に却下済みの設計を再現する指摘、G1/G2)を反映して訂正済み。round3確認待ち、実装・実機確認とも
+  未着手。
 related_adr:
   - "ADR-290"
   - "ADR-282"
@@ -97,23 +102,70 @@ Z配下でEngineに無視される**。これはADR-282自身の設計上の既�
 ため、ADR-282の追補課題として別途記録することを推奨する(本ADRでは直接の修正対象(手放し経路)
 のみ扱う)。
 
-**修正の方向(2案、優先順)**:
-- (a, 推奨) `ir_do_abandon_half_width_alnum_from_mozc_shm`が、mozc-shmで実際に読んだ
-  `effective_mode = Hiragana`の高信頼度観測として`ImeEvent::InputModeObserved { mode, source:
-  ObservationSource::MozcShm, confidence: High }`を書く。これは観測の偽装ではない
-  (`.claude/rules/ime-belief-architecture.md`の禁止パターン2に当たらない) ——
-  この手放し自体が実際にmozc-shmから読んだ`effective_mode`に基づいて発火しているため、
-  「観測した」という表現は事実と一致する。`ObservationSource::MozcShm`はADR-268でopen軸の
-  観測源として既に確立済みで、mode軸への拡張は同じ信頼度区分の自然な拡張。コスト:
-  `architecture_guard`の`InputModeObserved`構築箇所数の固定テストの更新、ADR-268本文
-  (「mode軸は意図的に繋がない」としていた記述)の訂正。
-- (b) `InputModeApplyStrategy::UserHalfWidthAlnumToggle`を(`UserTurnOnEisuReset`の代わりに)
-  使う。ただし`eisu_reset_on_turn_on_while_open(true, self.platform_state.ime.input_mode())`
-  による現在のゲート(旧beliefを読む)はZと食い違いうるため、ゲートを外して無条件に書く必要が
-  あり、「観測に基づく追随」を「Explicit(確定的な主張)」としてZに記録するという意味の変化を伴う。
-- どちらを選んでも、**この書き込みの直後に`notify_engine_refresh()`を呼ぶ(D1の元の提案は
-  この部分だけ正しかった、下記案A元の後半を参照)**。モード軸がZに届いても、Engineの再評価
-  自体は引き続きEngineCommand経由でしか起きないため、この呼び出しは依然必要(下記参照)。
+**修正の方向、round2レビューでさらに訂正(重要: 単純に`InputModeObserved{mode, MozcShm}`を
+書くだけでは、ADR-290が既に試して致命的と判定した設計をそのまま再現する)**:
+
+`architecture_guard.rs::input_mode_observed_construction_sites_are_accounted_for`のコメントに
+「ADR-290(BUG-230)はこの軸にInputModeObservedを構築しない設計(D1″、Opusレビュー後)に
+落ち着いた」と明記されているとおり、**ADR-290自身が最初の実装(D1′、「第1版」)でまさに
+`InputModeObserved{source: MozcShm}`をbeliefへdispatchする設計を試し、Opus敵対的レビューで
+2件の欠陥により却下している**(`docs/adr/290-*.md`「却下した案」節):
+
+- **ADR-290 D1′ F1(致命的)**: Mozcの`CompositionMode::Hiragana`を、素朴に
+  `InputModeState::ObservedKana`(「JISかな直接入力と確認できた」、`is_romaji_capable()`が
+  `false`、ADR-091決定2でサポート対象外)として書いていた。`Hiragana`はローマ字テーブル入力
+  (NICOLAの前提)とJISかな入力を区別できないため、手放しに成功するたびにbeliefが
+  `ObservedKana`になり`engine.rs::compute_state`が`Inactive(NotRomajiInput)`を返し続け、
+  **BUG-230を直すはずの変更がむしろ恒久的に悪化させていた**。
+- **ADR-290 D1′ F2(高)**: この観測が`report_mozc_shm`内の`decide_use`のHeld/Split判定を
+  素通りしていたため、トグルに入った直後、共有メモリにまだ残っているエントリ**前**の古い
+  `hiragana`値を「かなへの追随」と誤認し、入った直後にトグルを即座に手放す経路があった。
+
+**本ADRが提案する書き込みがこの2件に当たらない理由(必ず明記すること)**:
+- F1対策: モードの値を`ObservedKana`では**なく**、[ADR-244](244-bug186-msime-chrome-persistent-toggle-follow.md)
+  D3の前例(`follow_direct_read_in_scope`、`platform_state.rs:904-918`、非英数側で
+  `InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken }`を書く)と同じ形で、
+  **`InputModeState::AssumedRomaji { reason: AssumedReason::UserHalfWidthAlnumToggleOff }`
+  (既存のreason、`src/engine/mode_state.rs:37`)に固定する**。これはromaji-capable(`is_romaji_capable()`
+  が`true`)なので、Zの`mode_class_of`は`RomajiInputMethod`系になり、Engineが
+  `Inactive(NotRomajiInput)`に落ち込まない。「Mozcが実際にかな入力方式(ローマ字でなくJISかな)
+  だったらどうするか」は、v5共有メモリブロックの`prefer_kana_input`フィールド
+  (`crates/awase-ime-core/src/state/mozc_shm.rs:197,209`)を読めば区別できるが、現在
+  `mode_read`は`(CompositionMode, update_tick_ms)`しか運んでいない(`mozc_shm_shadow.rs:89-90,160`)
+  ため、安い拡張でなければ今回は見送り、常に保守的な`AssumedRomaji`を書く。
+- F2対策: 本ADRの書き込みは`report_mozc_shm`の毎tickの`decide_use`には一切相乗りせず、
+  既に実装済みの2段ラッチ(`plan_mozc_shm_follow`が`Abandon`を返した、そのtickのみ)でしか
+  発火しない。したがってエントリ前の古い`hiragana`値を誤認するF2の経路は生じない。
+
+**G2(新規): (a)がInputModeApplied書き込みを置き換えると`belief_v2=false`環境を壊す**:
+現在の`InputModeApplied{UserTurnOnEisuReset}`は旧`ImeModel::reduce`が**無条件**に適用する
+(`crates/awase-ime-core/src/state/ime_model.rs:1014-1019`)。これを`InputModeObserved`で
+**置き換える**と、旧モデルは`reconcile_key_effect_mode`(ADR-191決定3の柵、
+`KEY_EFFECT_SETTLE_MS = 170ms`、`tuning.rs:479`)を通るため、直近170ms以内に打鍵の予測が
+あると観測が**拒否される**。BUG-231は連続して打鍵していた場面であり、手放しが170ms以内の
+打鍵とかち合うことは珍しくない。その場合、`belief_v2=false`(旧モデルのみを読む)利用者の
+Engineは英数のまま固定され、drift correctionも古いeisuを根拠に動き続ける——**新しい回帰**。
+したがって**既存の`InputModeApplied{UserTurnOnEisuReset}`書き込みは維持し、Zのための
+`InputModeObserved`書き込みを追加する(置き換えではない)**。旧モデルを`eisu_reset_on_turn_on_while_open`
+でゲートしている現在の条件は、Zとの食い違いを考慮していないため、**Z向けの書き込みは
+このゲートの外で、手放し(Abandon)自体を条件に無条件で行う**。
+
+**(a)と(b)のどちらを使うか(G4で再確認): 既存の再利用先は無く、両方とも新しい書き込み口が必要**。
+`follow_direct_read_in_scope`(ADR-244、`ConvBitsInference`専用、dylintで制限)を転用すると
+mozc-shm由来の値をIMM観測のふりで書くことになり偽装(禁止パターン2)に当たる。`report_mozc_shm`
+に相乗りするとF2がそのまま再現する。したがって、`platform_state.rs`の`follow_direct_read_in_scope`
+の隣に**新しい専用メソッド**(例: `follow_mozc_shm_mode_on_abandon(tick_ms)`)を追加し、
+`ir_do_abandon_half_width_alnum_from_mozc_shm`からそこだけを呼ぶ形にする。このメソッドが:
+1. `InputModeObserved { mode: AssumedRomaji{UserHalfWidthAlnumToggleOff}, source: MozcShm,
+   confidence: High }`をdispatch(Zへ)、
+2. `InputModeApplied { 同じmode, UserTurnOnEisuReset, Applied }`をdispatch(旧モデルへ、無条件)、
+3. 呼び出し元向けに、Z/旧モデルがromaji-capableへ終わったかを返す(ログ用)。
+
+(a)を(b)(`UserHalfWidthAlnumToggle`、ゲート無しで無条件に書く案)より推奨する追加の理由:
+(b)はZの変換表で`ScopeEvent::Explicit`になり、`Basis::Explicit`は`read_started_ms >=
+entry + settle_ms`の柵を経てからでないと後続の観測に上書きされない(`scope_belief.rs:367,786-793`)。
+つまり(b)を選ぶと、手放し直後のしばらくの間、mozc-shmからの食い違う実観測が無視される
+settle窓ができる。(a)(`ScopeEvent::Observed`)はこの柵を持たず、次の実観測を即座に反映できる。
 
 **`notify_engine_refresh()`自体は必要(元のD1の後半は正しい)**: `ir_execute`の実行順は
 `ir_stage_notify()`(`ir_notify_engine_refresh`を呼ぶ)→`mozc_shm_on_tick`→
@@ -192,51 +244,81 @@ qwertyローマ字でOSへ素通りしている(BUG-230タイムライン項目4
 (既存の`INPUT_DEFER.replay_later`・`focus_switch_hold`・`resume_hold`・ADR-263のepisode hold
 と同系統の機構で)保持し、確認が出たら保持列をEngine活性状態で再生する。タイムアウトで
 素通りへフォールバックする安全弁付き。これはD1′/D2と違い、**確認が出るまでの区間自体の
-誤出力(現状のローマ字漏れ)も無くせる唯一の案**。今回は、D1′(belief_v2の穴)を先に塞ぐ方が
-優先度が高く、保持機構の追加はタイムアウト定数の実測や既存の保持機構との競合確認など
-スコープが大きいため見送るが、`.claude/rules/fix-requires-evidence.md`のdefer/replay系
-ファミリーの延長として今後の選択肢に残す。
+誤出力(現状のローマ字漏れ)も無くせる唯一の案**。
+
+**ADR-290自身が同じ案を既に検討・却下している**(`docs/adr/290-*.md`却下した案「半角英数トグルを
+抜けるまでNICOLAの送信自体を保留する(holdキュー)」): 実装コストが高く、ADR-290のD2
+(GJI脱出直後のMozc確認・回収への相乗り)で同じ結果(最終的に正しい文字が残る)が得られる見込み、
+という理由で見送られている。**この見送りはADR-290 D2の実装を前提にしており、D2は現在も
+未着手のまま残る**([未解決]参照)。したがって本ADRのD4見送りと、ADR-290の過去の見送りは
+**同じ未実装の前提(ADR-290 D2)に依存している**——D4を今回も見送るなら、D2が未着手である限り
+「確認までの区間の誤出力」自体への対策は依然どこにも存在しないことを、両ADRのどちらかが
+明記しておく必要がある。本ADRでは、D1′(belief_v2の穴)を先に塞ぐ方が優先度が高く、保持機構の
+追加はタイムアウト定数の実測や既存の保持機構との競合確認などスコープが大きいため見送るが、
+`.claude/rules/fix-requires-evidence.md`のdefer/replay系ファミリーの延長として今後の選択肢に残す。
 
 ## 決定
 
-- **D1′(採用)**: `ir_do_abandon_half_width_alnum_from_mozc_shm`で、(a推奨)`InputModeObserved
-  { mode, source: ObservationSource::MozcShm, confidence: High }`、または(b)ゲートを外した
-  `UserHalfWidthAlnumToggle`のいずれかでZが受理する形にモード軸を書き、**かつ**その直後に
-  `self.notify_engine_refresh()`を呼ぶ(両方必須、片方だけでは直らない)。
+- **D1′(採用、round2で設計を訂正)**: `ir_do_abandon_half_width_alnum_from_mozc_shm`から、
+  `platform_state.rs`に新設する専用メソッド(`follow_mozc_shm_mode_on_abandon`等、
+  `follow_direct_read_in_scope`の隣)を呼ぶ。このメソッドは
+  (1)`InputModeObserved { mode: AssumedRomaji{UserHalfWidthAlnumToggleOff}, source: MozcShm,
+  confidence: High }`をZへ、(2)`InputModeApplied { 同じmode, UserTurnOnEisuReset, Applied }`を
+  旧`ImeModel`へ**両方・無条件に**dispatchする(置き換えではなく追加。旧モデル向けの書き込みを
+  やめると`belief_v2=false`環境が壊れる、G2参照)。モードの値は**常に`AssumedRomaji`に固定し、
+  `ObservedKana`は書かない**(ADR-290 D1′ F1が実証した致命的回帰の再現を防ぐ)。この書き込みの
+  直後に`self.notify_engine_refresh()`を呼ぶ(両方必須、片方だけでは直らない)。
 - **D2(保留)**: mozc-readableのPulseイベントによる即時通知は、まず`update_tick_ms`との差で
   ポーリング由来の遅延を実機で複数回測定し、実益が投資に値するか確認してから着手を判断する。
 - **D3(却下)**: かなキー押下時のbelief/Engineの即時楽観補正。理由は「訂正不能な無期限の
   誤送信を作る」こと(BUG-192/ADR-290 round1と同種のリスク)。
-- **D4(見送り)**: 確定まで打鍵を保持する案。今回はD1′を優先し、scope超過のため見送るが、
-  選択肢として記録する。
+- **D4(見送り)**: 確定まで打鍵を保持する案。ADR-290自身が同じ案を既に見送っており、その見送りは
+  ADR-290 D2(未着手)の実装を前提にしている。本ADRでもD1′を優先し見送るが、D2(本ADRのD2・
+  ADR-290のD2のどちらも)が未着手である限り、確認が出るまでの区間自体の誤出力への対策は
+  依然存在しないことを記録する。
 
 ## 影響
 
 - **変わる挙動**: belief_v2(既定true)環境で、半角英数トグルの手放し検知からEngine活性までの
-  約3.65秒の反映欠落がD1′で解消される見込み(実機確認後に確定)。D2は保留のため、mozc-shm
-  自体の検知遅延(最大500ms程度+Mozc自身の切替時間)は本ADRの範囲では変わらない。
-- **新しいコード(D1′のみ、今回実装する分)**: `ir_do_abandon_half_width_alnum_from_mozc_shm`
-  内の書き込みの変更1箇所+`notify_engine_refresh()`呼び出し1行。新しい`EngineCommand` variantは
-  不要。(a)を選ぶ場合、`InputModeObserved`構築箇所数を固定している`architecture_guard`のテストと
-  ADR-268本文(open軸のみ接続としていた記述)の更新が必要。
+  約3.65秒の反映欠落がD1′で解消される見込み(実機確認後に確定)。`belief_v2=false`環境の挙動は
+  変わらない(旧モデル向けの書き込みは従来どおり維持)。D2は保留のため、mozc-shm自体の検知遅延
+  (最大500ms程度+Mozc自身の切替時間)は本ADRの範囲では変わらない。
+- **新しいコード**: `platform_state.rs`に新規メソッド1つ(`InputModeObserved`構築箇所が
+  同ファイルで3→4)、`ir_do_abandon_half_width_alnum_from_mozc_shm`からの呼び出し1箇所+
+  `notify_engine_refresh()`呼び出し1行。新しい`EngineCommand` variant・新しい`ImeEvent` variantは
+  不要。
+- **更新が必要な既存のガード/文書**: `architecture_guard.rs::input_mode_observed_construction_sites_are_accounted_for`
+  の`platform_state.rs`期待値(3→4)と`:695-699`のコメント(「ADR-290はこの軸に構築しない設計」
+  という記述を本ADRでの変更とあわせて訂正)。`mozc_shm_reader_touches_belief_only_through_report_mozc_shm`
+  のdocコメント(「beliefへの入口は`report_mozc_shm`の1つだけ」という記述。このガード自体は
+  `mozc_shm_shadow.rs`/`observer/mozc_shm.rs`しか走査しないため新メソッドでは落ちないが、
+  文書としての不変条件は変わるので明記する)。ADR-268本文(D1/D3、「mode軸は意図的に繋がない」
+  としていた記述)。dylint `observation_source_guard`の`RESTRICTED_SOURCES`に`MozcShm`は現在
+  含まれないため変更不要だが、将来の自由な拡散を防ぐため新メソッドへの限定を追加するのは任意。
 - **変わらないもの**: IMEへの能動的な送信(D1′はbeliefの正確さと再評価のタイミングだけを変え、
   OSへの新しい書き込みを増やさない)。
 
 ## 未解決
 
-1. **dragonflyg4の`belief_v2`設定値の確認が必要**: 既定は`true`だが、BUG-231の実機が実際に
-   この設定だったかをconfig.tomlで確認していない(ログの`[belief-v2]`食い違い行の存在自体が
-   有効だった強い手がかりだが、設定ファイルでの直接確認が望ましい)。
+1. **dragonflyg4の`belief_v2`設定値の確認が望ましい**: 既定は`true`だが、config.tomlでの直接
+   確認はしていない。ただし、BUG-231のタイムラインで`[belief-v2] 食い違い開始`/`食い違い終了`の
+   ログ行が実際に出力されており(`platform_state.rs:481`の`scope_shadow_compare`が有効である
+   証拠)、設定が`true`だったことの直接証拠として既に確認済みと言える。
 2. **回帰テストはbelief_v2有効のハーネスで書く**: 既存の`UserTurnOnEisuReset`のgoldenは旧
    `ImeModel`のreducerのみを通す(`run_reducer`)ため、このバグがあっても通ってしまう
    (`fix-requires-evidence.md`の(a)要件を満たすには、`tests/support/harness.rs`の
-   `set_engine_belief_z(true)`を使う構成が必須)。
+   `set_engine_belief_z(true)`を使う構成が必須)。最低限、(i) Z有効ハーネスで「手放し後、
+   追加のキー無しでEngineが活性化する」こと、(ii) 旧モデルで「打鍵直後170ms以内の手放しでも
+   romaji-capableへ終わる」こと(G2回帰の固定)、(iii) 書き込むモードが常にromaji-capableで
+   `ObservedKana`にならないこと(ADR-290 F1回帰の固定)、の3つを追加する。
 3. **[BUG-222](../known-bugs/BUG-222.md)の`kp_exit_lang_detect_toggle_on_hiragana`も同じ
-   `UserTurnOnEisuReset`を書くため、belief_v2有効時は同じ穴を持つ可能性が高い**(未検証)。
-   本ADRでは手放し経路(BUG-231の直接原因)のみ修正し、BUG-222側は別途確認・必要なら追随修正する。
+   `UserTurnOnEisuReset`を書くため、belief_v2有効時は同じ穴を持つ可能性が高い**(未検証、
+   BUG-231の該当F2の`[key-effect-predict]`が`mode=None`だったのと同じ着眼点でBUG-222自身の
+   ログから確認可能)。本ADRでは手放し経路(BUG-231の直接原因)のみ修正し、BUG-222側は別途確認・
+   必要なら追随修正する。
 4. `{UserHalfWidthAlnumToggle, PanicReset}`以外の`InputModeApplyStrategy`がすべてZ配下で
    Engineに無視されるという一般化した穴(ADR-282自身の設計)は、本ADRの範囲外として
    ADR-282の追補課題に記録することを推奨する。
 5. 本ADRはBUG-231(手放し後の遅延)のみを対象とし、[BUG-230](../known-bugs/BUG-230.md)のD2
    (GJI側の抜け出し送信にMozcの実際の切替完了の確認を足す、ADR-290で未着手のまま残る項目)には
-   踏み込まない。両者は別の未解決項目として残す。
+   踏み込まない。両者は別の未解決項目として残す。D4(本ADR)もADR-290のD2に依存する(上記決定参照)。
