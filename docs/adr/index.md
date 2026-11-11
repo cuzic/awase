@@ -294,7 +294,8 @@
 | [285](285-mozc-first-key-per-vk-and-wider-check-windows.md) | Mozc の cold の最初の送信を最初の 1 キーと残りに分け(per-VK)、確認を Chrome 系と空以外のすべての窓に張る | 起草・実装(2026-10-28)、実機未確認 |
 | [287](287-mozc-input-style-signal.md) | mozc-readable の共有メモリに「ローマ字入力/かな入力」の方式そのものを足し、OS のかなロックビット直読み(ADR-118)を置き換える | 起草(2026-11-04)。未実装(mozc-readable 側のフィールド追加が前提) |
 | [288](288-mozc-compose-check-chrome-exclusion-disproven.md) | Mozc の compose-check が Chrome を除外する前提(期限超過後の Backspace が確定済み文字を壊しうる)を、mozc-readable の CI 専用フックで症状を再現し、実機 TIP + 実際の Mozc サーバーで反証する | 提案・検証済み(2026-11-06)。本番コード(Chrome 除外を外す変更)は未実装 |
-| [290](290-half-width-alnum-exit-via-mode-key-and-gji-confirm.md) | 半角英数トグルをモードキー(ひらがなキー等)で抜けたときも toggle_held を正しく解除し、GJI 側の抜け出し送信にも Mozc の実際の切替完了の確認を足す(BUG-230) | 起草(2026-11-10)。Opus レビュー前、実装・実機確認とも未着手 |
+| [290](290-half-width-alnum-exit-via-mode-key-and-gji-confirm.md) | 半角英数トグルをモードキー(ひらがなキー等)で抜けたときも toggle_held を正しく解除し、GJI 側の抜け出し送信にも Mozc の実際の切替完了の確認を足す(BUG-230) | D1″実装済み・Opusレビューround1〜3通過・developマージ済み(2026-11-10、#933)。D2(GJI確認)は未着手、実機確認は未着手(新しい遅延をBUG-231で観測) |
+| [291](291-mozc-shm-push-notify-and-engine-recheck.md) | mozc-shm観測をPulseイベントで即時化し、半角英数トグルを手放した後のEngineの活性再評価を明示的に呼ぶ(BUG-231) | 起草(2026-11-11)。Opusレビュー予定、実装・実機確認とも未着手 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
