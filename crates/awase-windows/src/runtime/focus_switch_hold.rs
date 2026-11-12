@@ -71,7 +71,8 @@ impl Runtime {
     /// `deliver_key_event` の先頭の保持の判定。`true` = どちらかが保持した(呼び出し側は `Consumed`)。
     ///
     /// 窓切替直後の保持を先に見る: 窓切替の後に届いた打鍵を、前の窓で始まった戻り待ちの保持(ADR-245 追補 2 R2。
-    /// フォーカス変化で解放され、窓が違えば中身を捨てる)に足さない。
+    /// フォーカス変化で解放され、窓が違えば中身を捨てる)に足さない。モードキー予測の未照合の間の保持(ADR-292 P)は
+    /// 最後: 窓・フォーカスに紐づく前の 2 つが手放した打鍵が Engine に入る直前に掛かる(`runtime/key_effect_open_hold.rs`)。
     pub(crate) fn hold_on_delivery(
         &mut self,
         event: &RawKeyEvent,
@@ -79,6 +80,7 @@ impl Runtime {
     ) -> bool {
         self.focus_switch_hold_on_delivery(event, origin)
             || self.resume_hold_on_delivery(event, origin)
+            || self.key_effect_open_hold_on_delivery(event, origin)
     }
 
     /// 窓切替直後の保持の判定。`true` = 保持した(呼び出し側は `Consumed`)。

@@ -10,8 +10,11 @@
 //!   一致率・ずれを実ジャーナルで測るため。反映は再起動後（`app/bootstrap.rs` が起動時に 1 度だけ渡す）。
 
 use crate::state::mozc_shm::{
-    outcome_of, to_record, wants_timer, Outcome, ReadFailure, RecordContext, Trigger,
+    outcome_of, to_record, wants_timer, Outcome, ReadFailure, RecordContext, ShmUse, Trigger,
 };
+
+/// 受け入れた読みの生の値(`effective_mode`, `update_tick_ms`)。`mozc_shm_on_tick` の戻り値と同じ形。
+type ModeRead = Option<(crate::state::mozc_shm::CompositionMode, u64)>;
 
 /// 影の読みの状態。無効のときは何もしない。
 pub(super) struct MozcShmShadow {
@@ -27,12 +30,20 @@ pub(super) struct MozcShmShadow {
     polling: bool,
     /// 直前の読みの時刻（`GetTickCount64`）。間隔が TTL を超えたことを診断のログに出すため。
     last_read_ms: Option<u64>,
+    /// 直前の読みが受け入れ（`Outcome::Accepted`、`active == 1` を含む）だった（スレッド、プロセス）。それ以外の読みで
+    /// 消える。ADR-292 P の始める条件 (b)（round4 U5: `polling` は `Rejected` でも真なので使わない）。
+    accepted_for: Option<(u32, u32)>,
 }
 
 impl MozcShmShadow {
     /// 直前の読みで、この窓のスレッドに共有メモリのブロックがあったか（字形を belief に使わない窓の判定。ADR-273 R1）。
     pub(super) const fn block_present(&self) -> bool {
         self.polling
+    }
+
+    /// 直前の読みが、このスレッド・プロセスで受け入れだったか（ADR-292 P の始める条件 (b)）。
+    pub(super) fn accepted_for(&self, tid: u32, pid: u32) -> bool {
+        self.accepted_for == Some((tid, pid))
     }
 
     pub(super) const fn disabled() -> Self {
@@ -42,6 +53,7 @@ impl MozcShmShadow {
             absent_for: None,
             polling: false,
             last_read_ms: None,
+            accepted_for: None,
         }
     }
 }
@@ -55,6 +67,7 @@ impl super::Runtime {
             absent_for: None,
             polling: false,
             last_read_ms: None,
+            accepted_for: None,
         };
     }
 
@@ -73,7 +86,7 @@ impl super::Runtime {
         &mut self,
         focus_changed: bool,
     ) -> Option<(crate::state::mozc_shm::CompositionMode, u64)> {
-        let mode_read = self.mozc_shm_read_once(focus_changed);
+        let (mode_read, _) = self.mozc_shm_read_once(focus_changed, None);
         self.mozc_shm_ensure_timer();
         mode_read
     }
@@ -93,9 +106,33 @@ impl super::Runtime {
             self.mozc_shm.polling = false;
             return None;
         }
-        let mode_read = self.mozc_shm_read_once(false);
+        let (mode_read, _) = self.mozc_shm_read_once(false, None);
         self.mozc_shm_ensure_timer();
         mode_read
+    }
+
+    /// ADR-292 P(BUG-233): 打鍵の保持の解放判定のための読み（短い周期、`runtime/key_effect_open_hold.rs` から）。
+    ///
+    /// 読み方・belief への入口（`report_mozc_shm`）は通常の読みと同じ 1 か所で、違うのは `decide_use` の一致する読みの
+    /// 起点（`baseline_ms`）だけ: 保持（抑止）した打鍵でも進むローリング値（`last_operation_tick_ms`）ではなく、呼び出し側が
+    /// 作った `hold_baseline_ms`（予測の時刻と S1 の送信打刻の大きい方、ADR-292 round3 T1）を使う。食い違う読みの起点は
+    /// 通常どおり `report_mozc_shm` が合成する（G3）。戻り値は受け入れた読みの判断（`None` = 読めなかった・受け入れなかった）。
+    /// 無効アプリの判定は呼び出し側が行う（ここは `platform_state` に触れる箇所を増やさない）。
+    pub(super) fn mozc_shm_read_for_hold(&mut self, hold_baseline_ms: u64) -> Option<ShmUse> {
+        let (_, used) = self.mozc_shm_read_once(false, Some(hold_baseline_ms));
+        self.mozc_shm_ensure_timer();
+        used
+    }
+
+    /// 現在のフォーカスの窓のスレッドで、直前の読みが受け入れだったか（ADR-292 P の始める条件 (b)）。
+    pub(super) fn mozc_shm_accepted_for_focus(&self) -> bool {
+        let hwnd_addr = self.platform.focus.current.hwnd;
+        let pid = self.platform.focus.current.pid;
+        if hwnd_addr == 0 || pid == 0 {
+            return false;
+        }
+        let tid = crate::observer::mozc_shm::thread_of_window(hwnd_addr);
+        tid != 0 && self.mozc_shm.accepted_for(tid, pid)
     }
 
     /// ブロックがある間は専用のタイマーを張る（既に張ってあれば触らない）。
@@ -110,30 +147,35 @@ impl super::Runtime {
 
     /// 現在のフォーカスの窓のスレッドの共有メモリを 1 回読んで、belief に使う（診断の記録を含む）。
     ///
-    /// 引数・戻り値は `mozc_shm_on_tick` と同じ。
+    /// `focus_changed` と 1 つ目の戻り値は `mozc_shm_on_tick` と同じ。`hold_baseline_ms` が `Some` なら、`decide_use` の
+    /// 一致する読みの起点をローリング値の代わりにそれにする（ADR-292 P、`mozc_shm_read_for_hold`）。2 つ目の戻り値は
+    /// 受け入れた読みの判断（`report_mozc_shm` の戻り値。読めなかった・受け入れなかったなら `None`）。
     fn mozc_shm_read_once(
         &mut self,
         focus_changed: bool,
-    ) -> Option<(crate::state::mozc_shm::CompositionMode, u64)> {
+        hold_baseline_ms: Option<u64>,
+    ) -> (ModeRead, Option<ShmUse>) {
         self.mozc_shm.polling = false;
+        self.mozc_shm.accepted_for = None;
         let hwnd_addr = self.platform.focus.current.hwnd;
         let pid = self.platform.focus.current.pid;
         if hwnd_addr == 0 || pid == 0 {
-            return None;
+            return (None, None);
         }
         let tid = crate::observer::mozc_shm::thread_of_window(hwnd_addr);
         if tid == 0 {
-            return None;
+            return (None, None);
         }
 
         // 開けなかった窓は、フォーカスが変わるまで読まない（ADR-268 D1）。
         if !focus_changed && self.mozc_shm.absent_for == Some((tid, pid)) {
-            return None;
+            return (None, None);
         }
         let (reading, read_us) = crate::observer::mozc_shm::read(tid, pid);
         let outcome = outcome_of(&reading, pid);
         self.mozc_shm.absent_for =
             matches!(outcome, Outcome::Failed(ReadFailure::NotFound)).then_some((tid, pid));
+        self.mozc_shm.accepted_for = matches!(outcome, Outcome::Accepted(_)).then_some((tid, pid));
         self.mozc_shm.polling = wants_timer(&outcome);
         // 読みの間隔が TTL（`MOZC_SHM_OBSERVATION_TTL_MS`）を超えたら記録する（TTL の見直しの材料。ADR-268）。
         let stamp_ms = crate::hook::current_tick_ms();
@@ -152,16 +194,19 @@ impl super::Runtime {
         // ADR-290/BUG-230(D1″): `effective_mode`・`update_tick_ms`はbeliefを経由せず、ここで読んだ
         // 生の値をそのまま呼び出し元まで持ち出す(`mode_read`)。トグルを手放すべきかの判断
         // (edge-trigger、エントリ tick との比較)は`gate`に届く呼び出し元の仕事。
-        let mode_read = if let (Outcome::Accepted(shm), Ok(raw)) = (&outcome, &reading.block) {
+        let (mode_read, used) = if let (Outcome::Accepted(shm), Ok(raw)) =
+            (&outcome, &reading.block)
+        {
             let now_ms = crate::hook::current_tick_ms();
-            let baseline_ms = crate::hook::last_operation_tick_ms();
+            // ADR-292 P(round3 T1): 打鍵の保持の解放判定の読みでは、保持した打鍵でも進むローリング値を使わない。
+            let baseline_ms = hold_baseline_ms.unwrap_or_else(crate::hook::last_operation_tick_ms);
             // ADR-292 D1b/G3(BUG-233): belief と食い違う読みのsettle起点は、全フックコールバックで
             // 進む baseline_ms ではなく、IMEの開閉/モードを動かす目的の送信だけに限定する
             // (platform_state.rs::report_mozc_shmのdocコメント参照。計算自体はそちら側で行う、
             // ここでは生の時刻だけを渡す)。
             let ime_actuation_baseline_ms = crate::hook::imm_cross_write_tick_ms()
                 .max(crate::hook::ime_actuation_send_tick_ms());
-            let _used = self.platform_state.ime.report_mozc_shm(
+            let used = self.platform_state.ime.report_mozc_shm(
                 *shm,
                 raw.update_tick_ms,
                 now_ms,
@@ -169,19 +214,22 @@ impl super::Runtime {
                 ime_actuation_baseline_ms,
                 crate::state::TickMs(now_ms),
             );
-            shm.effective_mode.map(|mode| (mode, raw.update_tick_ms))
+            (
+                shm.effective_mode.map(|mode| (mode, raw.update_tick_ms)),
+                Some(used),
+            )
         } else {
-            None
+            (None, None)
         };
 
         // 以降は診断の記録（`[diagnostics] mozc_shm_shadow = true` のときだけ）。
         if !self.mozc_shm.enabled {
-            return mode_read;
+            return (mode_read, used);
         }
         let key = (tid, pid, outcome);
         let changed = self.mozc_shm.last != Some(key);
         if !focus_changed && !changed {
-            return mode_read;
+            return (mode_read, used);
         }
         self.mozc_shm.last = Some(key);
 
@@ -221,6 +269,6 @@ impl super::Runtime {
             .ime
             .journal
             .record(crate::journal::JournalEntry::MozcShm { record });
-        mode_read
+        (mode_read, used)
     }
 }

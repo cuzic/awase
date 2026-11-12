@@ -103,6 +103,10 @@ impl Runtime {
         if self.resume_hold_on_key(&event) {
             return CallbackResult::Consumed;
         }
+        // ADR-292 P: Phase A の入れ子で予測の開が立って武装したなら、今の打鍵から保持を始める(追い越さない)。
+        if self.key_effect_open_hold_on_key(&event) {
+            return CallbackResult::Consumed;
+        }
 
         self.kp_stage_focus_probe();
         // ADR-245: 戻り待ちの窓に戻って最初の打鍵の手前で、半角英数トグルを復元する（idle-conv-check の読みより先）。
@@ -2087,6 +2091,9 @@ impl Runtime {
         // ADR-203 (ii): 予測で ON になったら GjiFsm を開き直す（BUG-170）。
         if prediction.effect.open == Some(true) {
             self.kp_reopen_gji_fsm(crate::state::gji_direct_mechanism::ReopenSource::Predict);
+            // ADR-292 P(BUG-233): 予測の開を mozc-shm で確かめるまで、次の打鍵から Engine に入る前で保持する(武装だけ。
+            // この打鍵自身は通常どおり処理済み)。条件の判断は純粋側の `KeyEffectOpenHold::arm`。
+            self.key_effect_open_hold_arm();
         }
         // 予測をEngineへ即反映する（active遷移の検知）。
         if !prediction.effect.is_noop() {

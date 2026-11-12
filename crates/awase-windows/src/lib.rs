@@ -309,6 +309,12 @@ pub const TIMER_DRIFT_FOLLOW_WOULD: usize = 114;
 /// PR #809 の M1: 窓切替直後の打鍵の保持の期限タイマー ID(`tuning::FOCUS_SWITCH_HOLD_MAX_MS`)。一発タイマーで、ハンドラ冒頭で
 /// 自ら `kill` する。保持の解放(refresh の完了・上限・panic・設定再読み込み)でも必ず kill される(`runtime/focus_switch_hold.rs`)。
 pub const TIMER_FOCUS_SWITCH_HOLD: usize = 115;
+/// ADR-292 P(BUG-233): 打鍵の保持の間に mozc-shm を短い周期で読み直すタイマー ID。
+///
+/// 周期は `tuning::KEY_EFFECT_OPEN_HOLD_POLL_MS`。一発タイマーで、ハンドラ冒頭で自ら `kill` し、保持を続けるときだけ
+/// 張り直す。保持の解放(確定・期限・上限・フォーカス変化・panic・設定再読み込み)でも必ず kill される
+/// (`runtime/key_effect_open_hold.rs`)。
+pub const TIMER_KEY_EFFECT_OPEN_HOLD: usize = 116;
 
 // ── Windows メッセージ定数 ──────────────────────────────────────────────────────
 

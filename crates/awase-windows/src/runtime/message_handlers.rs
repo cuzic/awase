@@ -539,6 +539,11 @@ pub(crate) unsafe fn handle_wm_timer(
             app.platform.timer.kill(crate::TIMER_RESUME_HOLD);
             app.resume_hold_on_timer();
         }
+        Some(id) if id == crate::TIMER_KEY_EFFECT_OPEN_HOLD => {
+            // 一発タイマー(ADR-292 P)。冒頭で自ら kill する。張り直しは `key_effect_open_hold_on_timer` が決める。
+            app.platform.timer.kill(crate::TIMER_KEY_EFFECT_OPEN_HOLD);
+            app.key_effect_open_hold_on_timer();
+        }
         Some(id) if id == crate::TIMER_MOZC_SHM => {
             // 一発タイマー（ADR-268 D5）。冒頭で自ら kill する。張り直しは `mozc_shm_on_timer` が決める。
             app.platform.timer.kill(crate::TIMER_MOZC_SHM);
@@ -954,6 +959,11 @@ pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
         crate::state::half_width_resume_hold::ReleaseReason::PanicReset,
     );
     app.focus_switch_hold_release_all("PanicReset");
+    // ADR-292 P: モードキー予測の未照合の間の保持も再生する(窓が違えば捨てて warn を残す)。
+    app.key_effect_open_hold_release(
+        None,
+        crate::state::key_effect_open_hold::ReleaseReason::PanicReset,
+    );
     // ADR-263: 入力言語判定の保持も、リセットの前に解放する（期限のタイマーがリセット後に発火しないように）。
     app.lang_detect_release_for_panic_reset();
     app.panic_reset();

@@ -683,6 +683,11 @@ impl Runtime {
             None,
             crate::state::half_width_resume_hold::ReleaseReason::FocusChanged,
         );
+        // ADR-292 P(T3): モードキー予測の未照合の間の保持も解放する。窓が違えば捨てるが、黙って捨てず warn を残す。
+        self.key_effect_open_hold_release(
+            None,
+            crate::state::key_effect_open_hold::ReleaseReason::FocusChanged,
+        );
         // 別アプリ/ウィンドウへ遷移したら進行中の actuation 試行を破棄する
         // （ADR-080 破棄条件2）。新しいフォーカス先では desired/観測前提が変わる
         // ため、attempts を持ち越さず次の tick で作り直す。
