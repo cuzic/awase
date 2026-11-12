@@ -4,6 +4,9 @@ name: mozc-shm-e2e
 # 実機の測定が測っていない「危ない場面」(フォーカス移動の直後、同じプロセスの別スレッド、AppContainer、
 # IME を切り替えたあとの古い共有メモリ)を GitHub Actions の Windows で測る。
 # 真値は操作から決め(窓ごとの IME 状態は設定した値)、awase.log の `[mozc-shm]` の記録を突き合わせる。
+# [BUG-232/ADR-291 D5] tickchurn は awase を使わず、mozc-readable 自体の update_tick_ms が
+# tsf_open/tsf_mode の変化無しでも進むこと(ブロック全体の dirty タイムスタンプであること)を
+# 実機で確認する(docs/known-bugs/BUG-232.md 参照)。
 # 道具: tools/mozc_shm_ci/(shmci.py と run_scenario.ps1)。mozc-readable 側の MSI と AppContainer 用の部品は、
 # cuzic/mozc-readable の readable ブランチから取る(最新の成功した readable-build の MSI)。
 #
@@ -85,6 +88,8 @@ jobs:
             tag: load
           # スレッド ID の再利用(awase なし)
           - scenario: tidreuse
+          # [BUG-232] update_tick_ms がブロック全体の dirty タイムスタンプであること(awase なし)
+          - scenario: tickchurn
     steps:
       - uses: actions/checkout@v4
       - name: mozc-readable の CI の部品(AppContainer 用)
