@@ -881,7 +881,7 @@ def cmd_tidreuse(args):
 
 
 def cmd_tickchurn(args):
-    """[BUG-232] 実際にインストールした Mozc Readable で、`update_tick_ms` がブロック全体の dirty
+    """[BUG-232/BUG-233] 実際にインストールした Mozc Readable で、`update_tick_ms` がブロック全体の dirty
     タイムスタンプであること(`tsf_open`/`tsf_mode` 自体が変わらない打鍵でも進むこと)を確認する。
 
     `crates/awase-ime-core/src/state/mozc_shm.rs::decide_use` の修正(D5)は、mozc-readable フォークの
@@ -889,12 +889,19 @@ def cmd_tickchurn(args):
     どれかが変われば `update_tick_ms` が進む。`tsf_open`/`tsf_mode` 自体の変化は不要)に依拠している。
     この関数は、その事実をソースの確認だけでなく実際にインストールした Mozc Readable の挙動として
     実機(GitHub Actions の Windows ランナー)で確かめる。awase は使わない(観測のみ、読み取り専用)。
+
+    `--closed`(ADR-292 D1b, BUG-233): IME を ON にせず、既定の OFF(閉)状態のまま同じ打鍵を送る変種。
+    Mozc が閉のままでも `update_tick_ms` が進むかどうかで、ADR-292 D1b が指摘した遅延の帰属
+    (ADR-291 D5 固有の問題か、D5 以前から存在する ADR-268 D3 R3' 自体の性質か)を切り分ける材料にする。
+    advanced/did-not-advance のどちらも有効な観測結果であり、この変種自体にどちらが正しいかという
+    pass/fail の決め打ちは無い(setup/sanity のチェックだけが pass/fail になる)。
     """
     w = win32()
     win = Window(w, "TC", "TC")
     win.create()
-    if not win.set_open(1):
-        print("::error::could not set IME to ON (setup failed)")
+    want_open = 0 if args.closed else 1
+    if not win.set_open(want_open):
+        print(f"::error::could not set IME to {'OFF (closed)' if args.closed else 'ON'} (setup failed)")
         return 1
     win.focus()
     w.pump(0.3)
@@ -915,7 +922,7 @@ def cmd_tickchurn(args):
     idle_ticked = idle_after["update_tick_ms"] != idle_before["update_tick_ms"]
     print(f"idle ({args.idle_seconds}s): before={idle_before} after={idle_after} ticked={idle_ticked}")
 
-    # 本題: tsf_open/tsf_mode を変えない打鍵(ひらがな入力中の文字を追加するだけ)でも、
+    # 本題: tsf_open/tsf_mode を変えない打鍵(--closed なら閉のまま、既定は開いたまま)でも、
     # update_tick_ms だけが進むか。
     before = block()
     for vk in args.vks:
@@ -928,6 +935,19 @@ def cmd_tickchurn(args):
     state_unchanged = (before["tsf_open"] == after["tsf_open"] and before["tsf_mode"] == after["tsf_mode"])
     tick_advanced = after["update_tick_ms"] > before["update_tick_ms"]
     print(f"state_unchanged={state_unchanged} tick_advanced={tick_advanced}")
+
+    if args.closed:
+        closed_actually = before["tsf_open"] == 0 and after["tsf_open"] == 0
+        if not closed_actually:
+            print("::error::tsf_open was not 0 (IME was not actually closed, check setup)")
+        if idle_ticked:
+            print("::warning::update_tick_ms advanced while idle (an unrelated timer may also bump it)")
+        ok = closed_actually and not idle_ticked
+        verdict = "advanced" if tick_advanced else "did NOT advance"
+        print(f"=> closed-IME probe (ADR-292 D1b, BUG-233): update_tick_ms {verdict} while Mozc stayed "
+              f"closed (tsf_open=0) through typing. setup/sanity {'OK' if ok else 'NG'} "
+              "(the advanced/did-not-advance answer above is the observation this run makes, not a failure by itself)")
+        return 0 if ok else 1
 
     ok = state_unchanged and tick_advanced and not idle_ticked
     if not state_unchanged:
@@ -1116,6 +1136,8 @@ def main(argv=None):
     tc.add_argument("--idle-seconds", type=float, default=3.0, help="対照: 何もしない間 update_tick_ms が進まないことを確かめる秒数")
     tc.add_argument("--vks", type=lambda s: [int(x, 0) for x in s.split(",")], default=[0x41, 0x42, 0x43],
                     help="tsf_open/tsf_mode を変えずに打つ VK のカンマ区切り(既定: A,B,C。かな変換される文字キー)")
+    tc.add_argument("--closed", action="store_true",
+                    help="ADR-292 D1b/BUG-233: IME を ON にせず閉(OFF)のまま打鍵し、update_tick_ms が進むか観測する")
 
     args = ap.parse_args(argv)
     return {"host": cmd_host, "drive": cmd_drive, "analyze": cmd_analyze, "selftest": cmd_selftest,

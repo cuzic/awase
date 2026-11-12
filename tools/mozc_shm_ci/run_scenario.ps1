@@ -13,7 +13,8 @@ param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'st
       [double]$FocusGrace = 0.9,
       [int]$Load = 0,
       [string]$OutDir = 'out',
-      [switch]$NoAwase)
+      [switch]$NoAwase,
+      [switch]$Closed)
 $ErrorActionPreference = 'Stop'
 $Clsid   = '{AFC94560-63DA-488E-9227-B04F3EF34B5B}'
 $Profile = '{7D7B9A38-A0A4-4390-9706-509E98A8C791}'
@@ -37,9 +38,15 @@ if ($Scenario -eq 'tidreuse') {
   exit $LASTEXITCODE
 }
 if ($Scenario -eq 'tickchurn') {
-  # [BUG-232] mozc-readable 自体の update_tick_ms の挙動を見るだけで、awase は使わない。
-  Write-Host '== tickchurn (no awase, BUG-232)'
-  python "$here\shmci.py" tickchurn
+  # [BUG-232/BUG-233] mozc-readable 自体の update_tick_ms の挙動を見るだけで、awase は使わない。
+  # -Closed(ADR-292 D1b): IME を ON にせず閉のままにする変種。
+  if ($Closed) {
+    Write-Host '== tickchurn --closed (no awase, ADR-292 D1b / BUG-233)'
+    python "$here\shmci.py" tickchurn --closed
+  } else {
+    Write-Host '== tickchurn (no awase, BUG-232)'
+    python "$here\shmci.py" tickchurn
+  }
   exit $LASTEXITCODE
 }
 

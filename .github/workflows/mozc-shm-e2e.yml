@@ -14,7 +14,7 @@ name: mozc-shm-e2e
 
 on:
   push:
-    branches: [ci/mozc-shm-e2e, ci/mozc-shm-e2e2]
+    branches: [ci/mozc-shm-e2e, ci/mozc-shm-e2e2, ci/bug233-tickchurn-closed]
   workflow_dispatch:
 
 permissions:
@@ -90,6 +90,9 @@ jobs:
           - scenario: tidreuse
           # [BUG-232] update_tick_ms がブロック全体の dirty タイムスタンプであること(awase なし)
           - scenario: tickchurn
+          # [BUG-233/ADR-292 D1b] Mozc が閉(OFF)のままの打鍵で update_tick_ms が進むか(awase なし)
+          - scenario: tickchurn
+            closed: '-Closed'
     steps:
       - uses: actions/checkout@v4
       - name: mozc-readable の CI の部品(AppContainer 用)
@@ -113,12 +116,12 @@ jobs:
           Get-ChildItem msi | Out-Host
       - name: 場面を測る (${{ matrix.scenario }})
         shell: pwsh
-        run: ./tools/mozc_shm_ci/run_scenario.ps1 -Scenario ${{ matrix.scenario }} -Msi "${{ github.workspace }}\msi\Mozc64.msi" -Dist dist -OutDir out ${{ matrix.noawase }} ${{ matrix.fast }}
+        run: ./tools/mozc_shm_ci/run_scenario.ps1 -Scenario ${{ matrix.scenario }} -Msi "${{ github.workspace }}\msi\Mozc64.msi" -Dist dist -OutDir out ${{ matrix.noawase }} ${{ matrix.fast }} ${{ matrix.closed }}
       - name: 結果を残す
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mozc-shm-${{ matrix.scenario }}${{ matrix.noawase && '-control' || '' }}${{ matrix.fast && '-fast' || '' }}${{ matrix.tag && format('-{0}', matrix.tag) || '' }}
+          name: mozc-shm-${{ matrix.scenario }}${{ matrix.noawase && '-control' || '' }}${{ matrix.fast && '-fast' || '' }}${{ matrix.tag && format('-{0}', matrix.tag) || '' }}${{ matrix.closed && '-closed' || '' }}
           path: out
           if-no-files-found: ignore
           retention-days: 7
