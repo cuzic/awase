@@ -15,11 +15,14 @@
 //! 1. **始める条件**(ADR-292 T4・U2・U5): [`KeyEffectOpenHold::arm`] が (a) GJI の証拠が無い、
 //!    (b) 前面窓のスレッドの直前の mozc-shm の読みが受け入れ(`Outcome::Accepted`、`active`込み)、
 //!    (c) 予測が「開」で、その予測(`pred.at_ms`で識別)についてまだ保持していない、を確かめて**武装**する。
-//!    保持そのものは、武装の後に来る**次の**非リピートの KeyDown から始まる(予測を立てた打鍵自身は
-//!    通常どおり処理済み)。予測ごとに 1 回だけ(U2: 解放の理由を問わず、同じ予測で掛け直さない)。
+//!    保持そのものは、武装の後に来る**次の** KeyDown(OS の自動リピートを含む)から始まる(予測を立てた
+//!    打鍵自身は通常どおり処理済み)。予測ごとに 1 回だけ(U2: 解放の理由を問わず、同じ予測で掛け直さない)。
+//!    武装には期限(`arm_ttl_ms`)がある: 期限を過ぎて来た打鍵では始めず武装を解く(P 導入前の挙動に戻る)。
+//!    リピートからも始めるのは、押しっぱなしのキーの自動リピートが武装のまま Engine に流れ続けないため
+//!    (コードレビュー指摘 1)。
 //! 2. **保持・解放・窓の照合**: 保持の中の Down に対応する Up・リピートは足す。保持の外で既に処理された
-//!    Down の Up は足さず通す(`half_width_resume_hold` と同じ契機の表)。上限に達したらその打鍵を末尾に
-//!    含めて解放する。前面窓が保持の開始時と違えば `Discard`。
+//!    Down の Up は足さず通す(`half_width_resume_hold` と同じ契機の表)。上限に達したら(新しい Down でも、
+//!    保持の中の Down の Up・リピートでも)その打鍵を末尾に含めて解放する。前面窓が保持の開始時と違えば `Discard`。
 //! 3. **解放の判定**([`judge`]): mozc-shm の読み(`decide_use` の結果)・予測がまだ未照合か・保持の
 //!    経過時間から、保持を続けるか・どの理由で解放するかを決める。`decide_use` の判定そのもの
 //!    (G3 の baseline を含む)はここに持たない——呼び出し側が [`hold_baseline_ms`] で起点を作って
@@ -76,6 +79,8 @@ pub struct ArmFacts {
 struct Armed {
     scope: ForegroundScope,
     pred_at_ms: TickMs,
+    /// 武装した時刻(武装の期限の起点)。
+    since: TickMs,
 }
 
 #[derive(Debug)]
@@ -96,22 +101,20 @@ pub struct KeyEffectOpenHold<T> {
     armed: Option<Armed>,
     /// 最後に保持を始めた予測の時刻(U2「予測ごとに1回」)。
     last_held_pred: Option<TickMs>,
+    /// 武装の期限 (ms)。武装からこれ以上経って来た打鍵では保持を始めない(殻は
+    /// `tuning::KEY_EFFECT_OPEN_HOLD_ARM_TTL_MS` を渡す)。
+    arm_ttl_ms: u64,
     next_id: u64,
-}
-
-impl<T> Default for KeyEffectOpenHold<T> {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl<T> KeyEffectOpenHold<T> {
     #[must_use]
-    pub const fn new() -> Self {
+    pub const fn new(arm_ttl_ms: u64) -> Self {
         Self {
             active: None,
             armed: None,
             last_held_pred: None,
+            arm_ttl_ms,
             next_id: 1,
         }
     }
@@ -155,9 +158,9 @@ impl<T> KeyEffectOpenHold<T> {
     }
 
     /// 予測が「開」に倒れた直後(`apply_key_effect_prediction` の後)に呼ぶ。条件 (a)(b)(c) が全て揃えば
-    /// 武装して `true`(次の非リピートの KeyDown から保持を始める)。既に保持中なら武装しない(保持中の
+    /// 武装して `true`(次の KeyDown から保持を始める)。既に保持中なら武装しない(保持中の
     /// モードキーの再押下は保持の中にあり、再生の時点で改めて予測・武装される。ADR-292 round3 T2)。
-    pub fn arm(&mut self, facts: ArmFacts, scope: ForegroundScope) -> bool {
+    pub fn arm(&mut self, facts: ArmFacts, scope: ForegroundScope, now: TickMs) -> bool {
         if self.active.is_some() {
             return false;
         }
@@ -171,7 +174,11 @@ impl<T> KeyEffectOpenHold<T> {
             self.armed = None;
             return false;
         }
-        self.armed = Some(Armed { scope, pred_at_ms });
+        self.armed = Some(Armed {
+            scope,
+            pred_at_ms,
+            since: now,
+        });
         true
     }
 
@@ -183,11 +190,11 @@ impl<T> KeyEffectOpenHold<T> {
     /// 打鍵が来た。
     ///
     /// - 保持中: 保持の中の Down に対応する Up・リピートは足す。保持の外の Down の Up・リピートは `Pass`。
-    ///   新しい Down は足し、上限を超えたらこの打鍵を末尾に含めて解放する(追い越させない)。
-    ///   モードキーの再押下(ADR-292 round3 T2)も区別せず保持される。
-    /// - 武装中: 予測がまだ同じ時刻で「開」(`pending_open_pred_at`)かつ前面窓が武装時と同じなら、非リピートの
-    ///   KeyDown から保持を始める(`Started`)。予測が照合済み・別の予測に替わった・窓が変わったなら武装を解いて
-    ///   `Pass`。Up・リピートは `Pass`(武装は残す)。
+    ///   新しい Down も足す。どちらの経路でも上限を超えたらこの打鍵を末尾に含めて解放する(追い越させない。
+    ///   自動リピートで上限を超えて積み続けない)。モードキーの再押下(ADR-292 round3 T2)も区別せず保持される。
+    /// - 武装中: 武装の期限内で、予測がまだ同じ時刻で「開」(`pending_open_pred_at`)かつ前面窓が武装時と同じなら、
+    ///   KeyDown(自動リピートを含む)から保持を始める(`Started`)。期限切れ・予測が照合済み・別の予測に替わった・
+    ///   窓が変わったなら武装を解いて `Pass`。Up は `Pass`(武装は残す)。
     /// - それ以外: `Pass`。
     pub fn on_key(
         &mut self,
@@ -202,12 +209,7 @@ impl<T> KeyEffectOpenHold<T> {
                 .items
                 .iter()
                 .any(|(f, _)| f.is_down && f.identity == facts.identity);
-            if !facts.is_down || facts.is_repeat {
-                if has_down_of_same_key {
-                    active.items.push((facts, item));
-                    self.active = Some(active);
-                    return OnKey::Held;
-                }
+            if (!facts.is_down || facts.is_repeat) && !has_down_of_same_key {
                 self.active = Some(active);
                 return OnKey::Pass(item);
             }
@@ -221,11 +223,12 @@ impl<T> KeyEffectOpenHold<T> {
         let Some(armed) = self.armed else {
             return OnKey::Pass(item);
         };
-        if pending_open_pred_at != Some(armed.pred_at_ms) || armed.scope != current {
+        let expired = now.0.saturating_sub(armed.since.0) >= self.arm_ttl_ms;
+        if expired || pending_open_pred_at != Some(armed.pred_at_ms) || armed.scope != current {
             self.armed = None;
             return OnKey::Pass(item);
         }
-        if !facts.is_down || facts.is_repeat {
+        if !facts.is_down {
             return OnKey::Pass(item);
         }
         self.armed = None;
@@ -376,6 +379,8 @@ pub const fn hold_baseline_ms(pred_at_ms: TickMs, ime_actuation_baseline_ms: u64
 mod tests {
     use super::*;
 
+    const TTL: u64 = 1_000;
+
     fn scope(pid: u32, hwnd: isize) -> ForegroundScope {
         ForegroundScope { pid, hwnd }
     }
@@ -414,8 +419,8 @@ mod tests {
 
     /// 武装して、次の Down `k` から保持を始めた状態。
     fn started() -> (KeyEffectOpenHold<&'static str>, u64) {
-        let mut h = KeyEffectOpenHold::new();
-        assert!(h.arm(arm_facts(100), scope(1, 10)));
+        let mut h = KeyEffectOpenHold::new(TTL);
+        assert!(h.arm(arm_facts(100), scope(1, 10), TickMs(0)));
         let OnKey::Started(id) =
             h.on_key(down(1), "k", scope(1, 10), Some(TickMs(100)), TickMs(120))
         else {
@@ -427,7 +432,7 @@ mod tests {
     /// 保持も武装も無いとき、打鍵はそのまま返る(通常どおり処理する)。
     #[test]
     fn idle_passes_everything_through() {
-        let mut h: KeyEffectOpenHold<&str> = KeyEffectOpenHold::new();
+        let mut h: KeyEffectOpenHold<&str> = KeyEffectOpenHold::new(TTL);
         assert_eq!(
             h.on_key(down(1), "k", scope(1, 10), Some(TickMs(100)), TickMs(1)),
             OnKey::Pass("k")
@@ -439,7 +444,7 @@ mod tests {
     /// 始める条件 (a)(b)(c) のどれかが欠ければ武装しない(T4・U5)。
     #[test]
     fn arm_requires_all_start_conditions() {
-        let mut h: KeyEffectOpenHold<&str> = KeyEffectOpenHold::new();
+        let mut h: KeyEffectOpenHold<&str> = KeyEffectOpenHold::new(TTL);
         let base = arm_facts(100);
         for facts in [
             ArmFacts {
@@ -455,18 +460,18 @@ mod tests {
                 ..base
             },
         ] {
-            assert!(!h.arm(facts, scope(1, 10)), "{facts:?}");
+            assert!(!h.arm(facts, scope(1, 10), TickMs(0)), "{facts:?}");
             assert!(!h.is_armed());
         }
-        assert!(h.arm(base, scope(1, 10)));
+        assert!(h.arm(base, scope(1, 10), TickMs(0)));
         assert!(h.is_armed());
     }
 
-    /// 武装の後、Up(予測を立てたモードキー自身の Up 等)・リピートでは始めず、次の Down から始める。
+    /// 武装の後、Up(予測を立てたモードキー自身の Up 等)では始めず、次の Down から始める。
     #[test]
     fn hold_starts_at_the_next_key_down_not_at_an_up() {
-        let mut h = KeyEffectOpenHold::new();
-        assert!(h.arm(arm_facts(100), scope(1, 10)));
+        let mut h = KeyEffectOpenHold::new(TTL);
+        assert!(h.arm(arm_facts(100), scope(1, 10), TickMs(0)));
         assert_eq!(
             h.on_key(
                 up(9),
@@ -477,16 +482,6 @@ mod tests {
             ),
             OnKey::Pass("mode-up")
         );
-        assert_eq!(
-            h.on_key(
-                repeat(9),
-                "mode-rep",
-                scope(1, 10),
-                Some(TickMs(100)),
-                TickMs(111)
-            ),
-            OnKey::Pass("mode-rep")
-        );
         assert!(h.is_armed());
         assert!(matches!(
             h.on_key(down(1), "k", scope(1, 10), Some(TickMs(100)), TickMs(120)),
@@ -496,25 +491,120 @@ mod tests {
         assert_eq!(h.pred_at_ms(), Some(TickMs(100)));
     }
 
+    /// コードレビュー指摘 1: 予測の前から押しっぱなしのキーの自動リピートは、武装のまま Engine へ流さず、
+    /// その時点で保持を始める。以後のリピートと Up も同じ保持に入る。
+    #[test]
+    fn auto_repeat_of_a_key_held_before_the_prediction_starts_the_hold() {
+        let mut h = KeyEffectOpenHold::new(TTL);
+        assert!(h.arm(arm_facts(100), scope(1, 10), TickMs(100)));
+        assert!(matches!(
+            h.on_key(
+                repeat(5),
+                "rep1",
+                scope(1, 10),
+                Some(TickMs(100)),
+                TickMs(130)
+            ),
+            OnKey::Started(_)
+        ));
+        assert_eq!(
+            h.on_key(
+                repeat(5),
+                "rep2",
+                scope(1, 10),
+                Some(TickMs(100)),
+                TickMs(160)
+            ),
+            OnKey::Held
+        );
+        assert_eq!(
+            h.on_key(up(5), "up", scope(1, 10), Some(TickMs(100)), TickMs(170)),
+            OnKey::Held
+        );
+        assert_eq!(
+            h.release(None, scope(1, 10)),
+            Released::Replay(vec!["rep1", "rep2", "up"])
+        );
+    }
+
+    /// コードレビュー指摘 1: 武装には期限がある。期限を過ぎて来た打鍵では始めず武装を解く(P 導入前と同じ)。
+    #[test]
+    fn arm_expires_after_ttl() {
+        let mut h = KeyEffectOpenHold::new(TTL);
+        assert!(h.arm(arm_facts(100), scope(1, 10), TickMs(100)));
+        assert_eq!(
+            h.on_key(
+                down(1),
+                "k",
+                scope(1, 10),
+                Some(TickMs(100)),
+                TickMs(100 + TTL)
+            ),
+            OnKey::Pass("k")
+        );
+        assert!(!h.is_armed());
+        assert!(!h.is_holding());
+        // 期限の直前なら始める。
+        assert!(h.arm(arm_facts(200), scope(1, 10), TickMs(200)));
+        assert!(matches!(
+            h.on_key(
+                down(1),
+                "k",
+                scope(1, 10),
+                Some(TickMs(200)),
+                TickMs(200 + TTL - 1)
+            ),
+            OnKey::Started(_)
+        ));
+    }
+
+    /// コードレビュー指摘 2: 保持の中の Down のリピートでも上限を超えたら、その打鍵を末尾に含めて解放する
+    /// (自動リピートで上限を超えて積み続けない)。
+    #[test]
+    fn cap_applies_to_repeats_of_a_held_key() {
+        let (mut h, _) = started();
+        for i in 0..(KEY_EFFECT_OPEN_HOLD_CAP - 1) {
+            assert_eq!(
+                h.on_key(
+                    repeat(1),
+                    "rep",
+                    scope(1, 10),
+                    Some(TickMs(100)),
+                    TickMs(130 + i as u64)
+                ),
+                OnKey::Held
+            );
+        }
+        assert_eq!(h.len(), KEY_EFFECT_OPEN_HOLD_CAP);
+        let OnKey::Release(Released::Replay(items)) =
+            h.on_key(up(1), "up", scope(1, 10), Some(TickMs(100)), TickMs(200))
+        else {
+            panic!("cap");
+        };
+        assert_eq!(items.len(), KEY_EFFECT_OPEN_HOLD_CAP + 1);
+        assert_eq!(items.last(), Some(&"up"));
+        assert!(!h.is_holding());
+    }
+
     /// 次の打鍵までに予測が照合済み(または別の予測に置き換わった)・窓が変わったなら、始めずに武装を解く。
     #[test]
     fn stale_arm_is_dropped_without_holding() {
-        let mut h = KeyEffectOpenHold::new();
-        assert!(h.arm(arm_facts(100), scope(1, 10)));
+        let mut h = KeyEffectOpenHold::new(TTL);
+        assert!(h.arm(arm_facts(100), scope(1, 10), TickMs(0)));
         assert_eq!(
             h.on_key(down(1), "k", scope(1, 10), None, TickMs(120)),
             OnKey::Pass("k")
         );
         assert!(!h.is_armed());
 
-        assert!(h.arm(arm_facts(200), scope(1, 10)));
+        assert!(h.arm(arm_facts(200), scope(1, 10), TickMs(0)));
         assert_eq!(
             h.on_key(down(1), "k", scope(1, 10), Some(TickMs(250)), TickMs(260)),
             OnKey::Pass("k")
         );
         assert!(!h.is_armed());
 
-        assert!(h.arm(arm_facts(300), scope(1, 10)));
+        assert!(h.arm(arm_facts(300), scope(1, 10), TickMs(0)));
         assert_eq!(
             h.on_key(down(1), "k", scope(2, 20), Some(TickMs(300)), TickMs(310)),
             OnKey::Pass("k")
@@ -530,19 +620,19 @@ mod tests {
             h.release(Some(id), scope(1, 10)),
             Released::Replay(_)
         ));
-        assert!(!h.arm(arm_facts(100), scope(1, 10)));
+        assert!(!h.arm(arm_facts(100), scope(1, 10), TickMs(0)));
         assert_eq!(
             h.on_key(down(2), "o", scope(1, 10), Some(TickMs(100)), TickMs(150)),
             OnKey::Pass("o")
         );
-        assert!(h.arm(arm_facts(400), scope(1, 10)));
+        assert!(h.arm(arm_facts(400), scope(1, 10), TickMs(0)));
     }
 
     /// 保持中は武装しない(再押下したモードキーは保持の中。再生の時点で改めて予測・武装される、T2)。
     #[test]
     fn cannot_arm_while_holding() {
         let (mut h, _) = started();
-        assert!(!h.arm(arm_facts(130), scope(1, 10)));
+        assert!(!h.arm(arm_facts(130), scope(1, 10), TickMs(0)));
         assert_eq!(h.len(), 1);
     }
 
@@ -632,7 +722,7 @@ mod tests {
             h.release(Some(old_id), scope(1, 10)),
             Released::Replay(_)
         ));
-        assert!(h.arm(arm_facts(200), scope(1, 10)));
+        assert!(h.arm(arm_facts(200), scope(1, 10), TickMs(0)));
         let OnKey::Started(new_id) =
             h.on_key(down(3), "r", scope(1, 10), Some(TickMs(200)), TickMs(210))
         else {
@@ -744,10 +834,10 @@ mod tests {
     /// 世代は増え、0 にならない。
     #[test]
     fn hold_ids_are_monotonic_and_nonzero() {
-        let mut h: KeyEffectOpenHold<u8> = KeyEffectOpenHold::new();
+        let mut h: KeyEffectOpenHold<u8> = KeyEffectOpenHold::new(TTL);
         let mut last = 0;
         for i in 0..5_u64 {
-            assert!(h.arm(arm_facts(100 + i), scope(1, 1)));
+            assert!(h.arm(arm_facts(100 + i), scope(1, 1), TickMs(0)));
             let OnKey::Started(id) =
                 h.on_key(down(1), 0, scope(1, 1), Some(TickMs(100 + i)), TickMs(i))
             else {

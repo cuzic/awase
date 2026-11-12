@@ -58,10 +58,11 @@ impl Runtime {
             shm_accepted_for_focus: self.mozc_shm_accepted_for_focus(),
             predicted_open_at: self.key_effect_open_pending_at(),
         };
-        if self
-            .key_effect_open_hold
-            .arm(facts, crate::win32::foreground_scope())
-        {
+        if self.key_effect_open_hold.arm(
+            facts,
+            crate::win32::foreground_scope(),
+            TickMs(crate::hook::current_tick_ms()),
+        ) {
             tracing::info!(
                 "[key-effect-open-hold] 武装: 予測の開が mozc-shm で未照合 pred_at={:?}",
                 facts.predicted_open_at
@@ -83,6 +84,8 @@ impl Runtime {
     }
 
     /// 保持中・武装中なら打鍵を純粋側へ渡す。`true` = 保持に足した・保持を始めた(呼び出し側は `Consumed`)。
+    /// ime-off-rescue の再生を対象外にするのは呼び出し側(`key_effect_open_hold_on_delivery` は origin で、
+    /// `kp_run_inner` は `skip_rescue_defer` で見る)。
     pub(super) fn key_effect_open_hold_on_key(&mut self, event: &RawKeyEvent) -> bool {
         if !self.key_effect_open_hold.is_holding() && !self.key_effect_open_hold.is_armed() {
             return false;
@@ -99,6 +102,8 @@ impl Runtime {
         {
             OnKey::Pass(_) => false,
             OnKey::Started(hold_id) => {
+                // 保持中は短周期の読みだけにし、通常の 500ms の読みのタイマーを止める(同じ読みを二重に判定しない)。
+                self.mozc_shm_suspend_timer(true);
                 self.platform.timer.set(
                     crate::TIMER_KEY_EFFECT_OPEN_HOLD,
                     Duration::from_millis(crate::tuning::KEY_EFFECT_OPEN_HOLD_POLL_MS),
@@ -202,6 +207,7 @@ impl Runtime {
             Released::Nothing => {}
             Released::Replay(events) => {
                 self.platform.timer.kill(crate::TIMER_KEY_EFFECT_OPEN_HOLD);
+                self.mozc_shm_suspend_timer(false);
                 if reason.needs_notice() {
                     // ADR-292 R6(iv): 利用者に知らせる。既存の通知手段のうち、毎回出ると邪魔になるバルーン(round3 T6)は
                     // 使わず、今はログだけ(窓クラスごとの学習・初回だけの通知は未決定)。
@@ -220,6 +226,7 @@ impl Runtime {
             }
             Released::Discard(events) => {
                 self.platform.timer.kill(crate::TIMER_KEY_EFFECT_OPEN_HOLD);
+                self.mozc_shm_suspend_timer(false);
                 // ADR-292 T3: 黙って捨てない(別窓へ誤配送しないために捨てるが、ログに残す)。
                 tracing::warn!(
                     "[key-effect-open-hold] 保持の解放: reason={} held={held} hold_ms={hold_ms} → 前面窓が保持の開始時と違うので {} 打鍵を捨てた",

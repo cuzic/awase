@@ -1455,7 +1455,9 @@ impl Runtime {
             focus_switch_hold: crate::state::focus_switch_hold::FocusSwitchHold::new(
                 crate::tuning::FOCUS_SWITCH_HOLD_MAX_MS,
             ),
-            key_effect_open_hold: crate::state::key_effect_open_hold::KeyEffectOpenHold::new(),
+            key_effect_open_hold: crate::state::key_effect_open_hold::KeyEffectOpenHold::new(
+                crate::tuning::KEY_EFFECT_OPEN_HOLD_ARM_TTL_MS,
+            ),
             focus_event_seq: 0,
             pending_resume_r1: None,
             platform_state,

@@ -33,6 +33,8 @@ pub(super) struct MozcShmShadow {
     /// 直前の読みが受け入れ（`Outcome::Accepted`、`active == 1` を含む）だった（スレッド、プロセス）。それ以外の読みで
     /// 消える。ADR-292 P の始める条件 (b)（round4 U5: `polling` は `Rejected` でも真なので使わない）。
     accepted_for: Option<(u32, u32)>,
+    /// ADR-292 P の打鍵の保持中(短周期の読みが代わりに読む)は、通常の専用タイマーを張らない。
+    timer_suspended: bool,
 }
 
 impl MozcShmShadow {
@@ -54,6 +56,7 @@ impl MozcShmShadow {
             polling: false,
             last_read_ms: None,
             accepted_for: None,
+            timer_suspended: false,
         }
     }
 }
@@ -68,6 +71,7 @@ impl super::Runtime {
             polling: false,
             last_read_ms: None,
             accepted_for: None,
+            timer_suspended: false,
         };
     }
 
@@ -120,8 +124,19 @@ impl super::Runtime {
     /// 無効アプリの判定は呼び出し側が行う（ここは `platform_state` に触れる箇所を増やさない）。
     pub(super) fn mozc_shm_read_for_hold(&mut self, hold_baseline_ms: u64) -> Option<ShmUse> {
         let (_, used) = self.mozc_shm_read_once(false, Some(hold_baseline_ms));
-        self.mozc_shm_ensure_timer();
         used
+    }
+
+    /// ADR-292 P の打鍵の保持の間、通常の専用タイマー(`TIMER_MOZC_SHM`、500ms)を止める(`true`)・戻す(`false`)。
+    /// 保持中は短周期の読み(`mozc_shm_read_for_hold`)が代わりに読むので、同じ窓を二重に読んで判定しない。戻すときは
+    /// ブロックがあれば(`polling`)すぐ張り直す。refresh の tick の読み(`mozc_shm_on_tick`)は止めない。
+    pub(super) fn mozc_shm_suspend_timer(&mut self, suspend: bool) {
+        self.mozc_shm.timer_suspended = suspend;
+        if suspend {
+            self.platform.timer.kill(crate::TIMER_MOZC_SHM);
+        } else {
+            self.mozc_shm_ensure_timer();
+        }
     }
 
     /// 現在のフォーカスの窓のスレッドで、直前の読みが受け入れだったか（ADR-292 P の始める条件 (b)）。
@@ -137,7 +152,10 @@ impl super::Runtime {
 
     /// ブロックがある間は専用のタイマーを張る（既に張ってあれば触らない）。
     fn mozc_shm_ensure_timer(&mut self) {
-        if self.mozc_shm.polling && !self.platform.timer.is_active(crate::TIMER_MOZC_SHM) {
+        if self.mozc_shm.polling
+            && !self.mozc_shm.timer_suspended
+            && !self.platform.timer.is_active(crate::TIMER_MOZC_SHM)
+        {
             self.platform.timer.set(
                 crate::TIMER_MOZC_SHM,
                 std::time::Duration::from_millis(crate::tuning::MOZC_SHM_TIMER_MS),

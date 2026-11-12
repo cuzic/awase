@@ -104,7 +104,9 @@ impl Runtime {
             return CallbackResult::Consumed;
         }
         // ADR-292 P: Phase A の入れ子で予測の開が立って武装したなら、今の打鍵から保持を始める(追い越さない)。
-        if self.key_effect_open_hold_on_key(&event) {
+        // ime-off-rescue の再生(`skip_rescue_defer == true`: タイマーの `replay_ime_off_rescue_event` と Phase A の
+        // 入れ子の `kp_run_inner(pending_event, true)`)は対象外(`key_effect_open_hold_on_delivery` と同じ)。
+        if !skip_rescue_defer && self.key_effect_open_hold_on_key(&event) {
             return CallbackResult::Consumed;
         }
 

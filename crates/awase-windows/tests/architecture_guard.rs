@@ -9344,6 +9344,10 @@ fn key_effect_open_hold_wiring_adr292_p() {
         .map(|i| phase_a + i)
         .expect("kp_stage_focus_probe");
     assert!(nested < focus_probe);
+    assert!(
+        kp.contains("if!skip_rescue_defer&&self.key_effect_open_hold_on_key(&event)"),
+        "Phase A の直後の判定も ime-off-rescue の再生(skip_rescue_defer)を対象外にする(コードレビュー指摘 3)"
+    );
 
     // hold_on_delivery の順序
     assert!(

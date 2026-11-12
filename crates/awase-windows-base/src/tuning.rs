@@ -553,6 +553,17 @@ pub const KEY_EFFECT_OPEN_HOLD_POLL_MS: u64 = 20;
 #[measured_macro::measured(pending = true)]
 pub const KEY_EFFECT_OPEN_HOLD_MAX_MS: u64 = 300;
 
+/// ADR-292 P(BUG-233): 予測の開で武装してから、保持を始める打鍵が来るまでの期限 (ms)。期限を過ぎて来た打鍵では
+/// 保持を始めず武装を解く(P 導入前の挙動に戻るだけ。コードレビュー指摘 1)。
+///
+/// **導出(実測ではなく既存の値からの組み立て)**: 短すぎると BUG-233 そのもの(モードキーから最初のローマ字の送信まで
+/// **実測 318ms**、awase.log 2026-11-12 20:24:20.671→20.989)を取り逃す(`KEY_EFFECT_OPEN_HOLD_MAX_MS` の 300ms では
+/// 足りない)。武装が要らなくなるのは、通常の読み(`MOZC_SHM_TIMER_MS` 500ms 周期)が予測を照合したとき(照合すると
+/// `pending_open_pred_at` が外れて武装は自然に解ける)で、その最悪は周期 500ms + 食い違いの settle
+/// `KEY_EFFECT_SETTLE_MS` 170ms = 670ms。マージン 30ms を足して 700ms。実機の分布は未測定なので pending。
+#[measured_macro::measured(pending = true)]
+pub const KEY_EFFECT_OPEN_HOLD_ARM_TTL_MS: u64 = 700;
+
 /// Zoom のチャット窓で、注入するキーの「↓から↑まで」に空ける時間 (ms)。
 ///
 /// `class_names::needs_key_hold_window` の窓だけに使う。実測(dragonflyg4、GJI、Zoom のメイン会議ウィンドウ内のチャット、
