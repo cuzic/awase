@@ -26,17 +26,19 @@ summary: |-
   D3(MS-IME側の対象確認)は未着手のまま残る。
 status: |-
   D1″(edge-triggeredの2段ラッチによるtoggle_held解除、Opusレビューround1〈F1/F2〉・round2〈R2-1〉で
-  指摘された欠陥を修正した版)を`docs/bug230-adr290-half-width-f2-exit-race`ブランチに実装・コミット済み
-  (2026-11-10、developへは未マージ)。round3レビューで「コードはマージ可能」と判定(残りはround2の
-  記述の訂正〈R2-2・R2-4〉とround3の軽微な指摘〈R3-1・R3-3〉のみ、いずれもADR本文の限界に記録済み)。
-  D1′はOpus敵対的レビューround1で指摘され却下済み(下記却下した案参照)。実機確認は未着手。D2(GJI抜け出し
-  のMozc確認・回収)・D3は未着手。
+  指摘された欠陥を修正した版)はround3レビューで「コードはマージ可能」と判定され、developへマージ済み
+  (2026-11-10、PR #933、commit `e2f438871`)。dragonflyg4へ投入済み。D1′はOpus敵対的レビューround1で
+  指摘され却下済み(下記却下した案参照)。マージ後の実機(2026-11-11)で、D1″の観測ベースの手放し自体が
+  最大約5.3秒の新しい遅延([BUG-231](../known-bugs/BUG-231.md))を持つことが分かり、
+  [ADR-291](291-mozc-shm-push-notify-and-engine-recheck.md)で対処を提案中。D2(GJI抜け出しのMozc確認・
+  回収)・D3は未着手。
 related_adr:
   - "ADR-270"
   - "ADR-289"
   - "ADR-245"
   - "ADR-244"
   - "ADR-107"
+  - "ADR-291"
 ---
 
 # ADR-290: 半角英数トグルのモードキー脱出とGJI確認の欠落(BUG-230)
