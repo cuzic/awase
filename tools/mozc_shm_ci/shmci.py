@@ -6,6 +6,9 @@
   threads      同じプロセスの別スレッドの窓の間のフォーカス移動(別スレッドの状態を採らないか)
   appcontainer AppContainer の窓と、通常の窓の間のフォーカス移動(NtOpenSection の経路)
   stale        IME を別のもの(TIP の無いレイアウト)へ切り替えたあとの古い共有メモリを採らないか(active=0)
+  tickchurn    [BUG-232] mozc-readable 実機の update_tick_ms が、tsf_open/tsf_mode が変わらない打鍵
+               (他の高頻度フィールドだけの変化)でも進むことを、実際にインストールした Mozc Readable で
+               確認する(awase は使わない。読み取り専用の観測のみ)。
 
 真値は操作から決める(窓ごとの IME 状態は、こちらが設定した値)。awase の `[mozc-shm]` の記録
 (awase.log の info 行、`thread_id` と `tsf_open`)を、窓ごとの真値とフォーカスの時系列に、時刻で突き合わせる。
@@ -877,6 +880,66 @@ def cmd_tidreuse(args):
     return 0
 
 
+def cmd_tickchurn(args):
+    """[BUG-232] 実際にインストールした Mozc Readable で、`update_tick_ms` がブロック全体の dirty
+    タイムスタンプであること(`tsf_open`/`tsf_mode` 自体が変わらない打鍵でも進むこと)を確認する。
+
+    `crates/awase-ime-core/src/state/mozc_shm.rs::decide_use` の修正(D5)は、mozc-readable フォークの
+    ソース(`tip_state_publisher.cc::ThreadSlot::Flush()`)を読んで確認した事実(高頻度フィールドの
+    どれかが変われば `update_tick_ms` が進む。`tsf_open`/`tsf_mode` 自体の変化は不要)に依拠している。
+    この関数は、その事実をソースの確認だけでなく実際にインストールした Mozc Readable の挙動として
+    実機(GitHub Actions の Windows ランナー)で確かめる。awase は使わない(観測のみ、読み取り専用)。
+    """
+    w = win32()
+    win = Window(w, "TC", "TC")
+    win.create()
+    if not win.set_open(1):
+        print("::error::could not set IME to ON (setup failed)")
+        return 1
+    win.focus()
+    w.pump(0.3)
+
+    def block():
+        a = w.read_block(win.tid)
+        if a is None:
+            return None
+        return {"tsf_open": a[5], "tsf_mode": a[6], "update_tick_ms": a[10]}
+
+    # 対照: 何もしない間は update_tick_ms が進まないこと(無関係なタイマーで常に進むのではないことの確認)。
+    idle_before = block()
+    w.pump(args.idle_seconds)
+    idle_after = block()
+    if idle_before is None or idle_after is None:
+        print("::error::could not read the shared memory block")
+        return 1
+    idle_ticked = idle_after["update_tick_ms"] != idle_before["update_tick_ms"]
+    print(f"idle ({args.idle_seconds}s): before={idle_before} after={idle_after} ticked={idle_ticked}")
+
+    # 本題: tsf_open/tsf_mode を変えない打鍵(ひらがな入力中の文字を追加するだけ)でも、
+    # update_tick_ms だけが進むか。
+    before = block()
+    for vk in args.vks:
+        w.send_vk(vk)
+        w.pump(0.05)
+    w.pump(0.2)
+    after = block()
+    print(f"typing: before={before} after={after}")
+
+    state_unchanged = (before["tsf_open"] == after["tsf_open"] and before["tsf_mode"] == after["tsf_mode"])
+    tick_advanced = after["update_tick_ms"] > before["update_tick_ms"]
+    print(f"state_unchanged={state_unchanged} tick_advanced={tick_advanced}")
+
+    ok = state_unchanged and tick_advanced and not idle_ticked
+    if not state_unchanged:
+        print("::warning::tsf_open/tsf_mode itself changed from typing (unexpected, check the input method default)")
+    if not tick_advanced:
+        print("::error::update_tick_ms did not advance from typing (BUG-232's mechanism did not reproduce this run)")
+    if idle_ticked:
+        print("::warning::update_tick_ms advanced while idle (an unrelated timer may also bump it)")
+    print(f"=> {'OK (reproduced BUG-232 mechanism on real Mozc: state stayed the same, only the tick advanced)' if ok else 'NG'}")
+    return 0 if ok else 1
+
+
 def cmd_drive(args):
     w = win32()
     here = os.path.dirname(os.path.abspath(__file__))
@@ -1049,9 +1112,14 @@ def main(argv=None):
     t.add_argument("--threads", type=int, default=60)
     sub.add_parser("selftest")
 
+    tc = sub.add_parser("tickchurn")
+    tc.add_argument("--idle-seconds", type=float, default=3.0, help="対照: 何もしない間 update_tick_ms が進まないことを確かめる秒数")
+    tc.add_argument("--vks", type=lambda s: [int(x, 0) for x in s.split(",")], default=[0x41, 0x42, 0x43],
+                    help="tsf_open/tsf_mode を変えずに打つ VK のカンマ区切り(既定: A,B,C。かな変換される文字キー)")
+
     args = ap.parse_args(argv)
     return {"host": cmd_host, "drive": cmd_drive, "analyze": cmd_analyze, "selftest": cmd_selftest,
-            "burn": cmd_burn, "tidreuse": cmd_tidreuse}[args.cmd](args)
+            "burn": cmd_burn, "tidreuse": cmd_tidreuse, "tickchurn": cmd_tickchurn}[args.cmd](args)
 
 
 if __name__ == "__main__":

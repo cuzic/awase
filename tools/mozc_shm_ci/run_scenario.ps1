@@ -3,7 +3,7 @@
 # 窓にキーを送るので、コンソール窓を作るプロセスを並行して起動しない(窓が前面を奪って、キーが別の窓に行く)。
 # python のヘルパーは shmci.py の中で CREATE_NO_WINDOW で起動する。ここでは Start-Process -Wait を使わない
 # (TIP を読み込んだプロセスが起動する mozc_server が子孫として残り、-Wait が戻らない)。
-param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'stale', 'flip', 'tidreuse')][string]$Scenario,
+param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'stale', 'flip', 'tidreuse', 'tickchurn')][string]$Scenario,
       [Parameter(Mandatory)][string]$Msi,
       [string]$Dist = 'dist',
       [string]$MozcCiDir = 'mozc-readable\readable\ci',
@@ -34,6 +34,12 @@ if ($Scenario -eq 'tidreuse') {
   # スレッド ID の再利用は awase を使わず、共有メモリの残りだけを見る(測定のみ。判定はしない)
   Write-Host '== tidreuse (no awase)'
   python "$here\shmci.py" tidreuse --threads 60
+  exit $LASTEXITCODE
+}
+if ($Scenario -eq 'tickchurn') {
+  # [BUG-232] mozc-readable 自体の update_tick_ms の挙動を見るだけで、awase は使わない。
+  Write-Host '== tickchurn (no awase, BUG-232)'
+  python "$here\shmci.py" tickchurn
   exit $LASTEXITCODE
 }
 
