@@ -2406,22 +2406,41 @@ impl ImeStateHub {
     /// 観測の記録（上）→ 対象の明示意図（`IntentStore`）を削除 → `ModeKeyPassedThrough{align_desired, demote_applied}`
     /// （`last_intent` を捨て、`desired_open` を観測へ揃え、食い違う `applied` を未確認へ落とす）。
     /// 意図が残ると、観測より優先されて belief が直らない（ADR-268 D3、`resolve_open_at` の優先順）。
+    ///
+    /// ADR-292 D1b/G3（BUG-233）: `decide_use`へ渡す「食い違う読み用」のbaseline
+    /// (`disagree_baseline_ms`)の合成はここで行う（`mozc_shm_reader_touches_belief_only_through_
+    /// report_mozc_shm`の制約により、belief側=ここで行う必要があるが、`platform_state.rs`自体は
+    /// 非Windowsでも`dead_code`許容でコンパイルされるため`crate::hook`〈`#[cfg(windows)]`〉を
+    /// 直接呼べない。そのため呼び出し元〈`runtime/mozc_shm_shadow.rs`〉が`imm_cross_write_tick_ms`
+    /// と`ime_actuation_send_tick_ms`〈awase自身がIMEの開閉/モードを動かす目的で実際に送信した
+    /// 時刻〉の最大値を`ime_actuation_baseline_ms`として渡し、ここで`last_mode_key_tick_ms`
+    /// （モードキーの予測/通過/明示意図、`FocusChanged`で消える）と組み合わせる。
+    /// `last_mode_key_tick_ms`が無ければ(`FocusChanged`直後等)現状どおり`baseline_ms`
+    /// (全フックコールバックで進むローリング値)に戻す(安全側)。
     pub(crate) fn report_mozc_shm(
         &mut self,
         shm: crate::state::mozc_shm::ShmState,
         update_tick_ms: u64,
         now_ms: u64,
         baseline_ms: u64,
+        ime_actuation_baseline_ms: u64,
         tick_ms: TickMs,
     ) -> crate::state::mozc_shm::ShmUse {
         use crate::state::mozc_shm::{decide_use, ShmUse};
         let effective = self.effective_open_at(tick_ms);
         let desired = self.shadow_model.desired_open();
+        let disagree_baseline_ms = self
+            .shadow_model
+            .last_mode_key_tick_ms()
+            .map_or(baseline_ms, |mode_key_ms| {
+                mode_key_ms.max(ime_actuation_baseline_ms)
+            });
         let decision = decide_use(
             shm,
             update_tick_ms,
             now_ms,
             baseline_ms,
+            disagree_baseline_ms,
             crate::tuning::KEY_EFFECT_SETTLE_MS,
             effective,
             desired,
@@ -4191,7 +4210,7 @@ mod tests {
         // 基準（awase の最後の操作）= 100。update_tick 5000 > 100 → 操作より後に変わった事実。
         let used = ps
             .ime
-            .report_mozc_shm(mozc_shm_state(false), 5000, 5100, 100, TickMs(5100));
+            .report_mozc_shm(mozc_shm_state(false), 5000, 5100, 100, 0, TickMs(5100));
         assert_eq!(
             used,
             ShmUse::Use {
@@ -4219,7 +4238,7 @@ mod tests {
         let mut ps = ps_with_open_intent_and_applied();
         let used = ps
             .ime
-            .report_mozc_shm(mozc_shm_state(false), 100, 110, 100, TickMs(110));
+            .report_mozc_shm(mozc_shm_state(false), 100, 110, 100, 0, TickMs(110));
         assert_eq!(used, ShmUse::Held);
         assert_eq!(ps.ime.explicit_intent(), Some(true));
         assert!(ps.ime.effective_open_at(TickMs(110)));
@@ -4233,7 +4252,9 @@ mod tests {
         let mut ps = ps_with_open_intent_and_applied();
         let mut split = mozc_shm_state(false);
         split.effective_open = true;
-        let used = ps.ime.report_mozc_shm(split, 5000, 5100, 100, TickMs(5100));
+        let used = ps
+            .ime
+            .report_mozc_shm(split, 5000, 5100, 100, 0, TickMs(5100));
         assert_eq!(used, ShmUse::Split);
         assert_eq!(ps.ime.explicit_intent(), Some(true), "明示意図は残る");
         assert!(
@@ -4253,7 +4274,9 @@ mod tests {
         let mut ps = ps_with_open_intent_and_applied();
         let mut split = mozc_shm_state(false);
         split.effective_open = true;
-        let _ = ps.ime.report_mozc_shm(split, 5000, 5100, 100, TickMs(5100));
+        let _ = ps
+            .ime
+            .report_mozc_shm(split, 5000, 5100, 100, 0, TickMs(5100));
         let first = ps
             .ime
             .journal
@@ -4261,7 +4284,9 @@ mod tests {
             .expect("journal")
             .matches("AppliedDemoted")
             .count();
-        let _ = ps.ime.report_mozc_shm(split, 5000, 5600, 100, TickMs(5600));
+        let _ = ps
+            .ime
+            .report_mozc_shm(split, 5000, 5600, 100, 0, TickMs(5600));
         let second = ps
             .ime
             .journal
@@ -4288,14 +4313,19 @@ mod tests {
         };
         let before = count(&ps);
         for i in 0..5u64 {
-            let _ =
-                ps.ime
-                    .report_mozc_shm(mozc_shm_state(true), 5000, 5100 + i, 100, TickMs(5100 + i));
+            let _ = ps.ime.report_mozc_shm(
+                mozc_shm_state(true),
+                5000,
+                5100 + i,
+                100,
+                0,
+                TickMs(5100 + i),
+            );
         }
         assert_eq!(count(&ps) - before, 1, "同じ報告は 1 件だけ journal に書く");
         let _ = ps
             .ime
-            .report_mozc_shm(mozc_shm_state(false), 6000, 6100, 100, TickMs(6100));
+            .report_mozc_shm(mozc_shm_state(false), 6000, 6100, 100, 0, TickMs(6100));
         assert_eq!(count(&ps) - before, 2, "値が変われば書く");
     }
 
@@ -4306,7 +4336,7 @@ mod tests {
         let mut ps = ps_with_open_intent_and_applied();
         let used = ps
             .ime
-            .report_mozc_shm(mozc_shm_state(true), 5000, 5100, 100, TickMs(5100));
+            .report_mozc_shm(mozc_shm_state(true), 5000, 5100, 100, 0, TickMs(5100));
         assert_eq!(
             used,
             ShmUse::Use {
@@ -4327,10 +4357,14 @@ mod tests {
         let settle = crate::tuning::KEY_EFFECT_SETTLE_MS;
         let baseline = 1000;
         // update_tick 900 < baseline 1000。now が baseline + settle - 1 の間は Held、settle で追随。
+        // ime_actuation_baseline_ms(G3)もbaselineと同じ値を渡し、last_mode_key_tick_ms(=100、
+        // ps_with_open_intent_and_appliedが明示意図をtick=100で記録済み)より大きくして、
+        // disagree_baseline_msがこのテストの意図どおりbaseline(1000)になるようにする。
         let held = ps.ime.report_mozc_shm(
             mozc_shm_state(false),
             900,
             baseline + settle - 1,
+            baseline,
             baseline,
             TickMs(baseline + settle - 1),
         );
@@ -4340,6 +4374,7 @@ mod tests {
             mozc_shm_state(false),
             900,
             baseline + settle,
+            baseline,
             baseline,
             TickMs(baseline + settle),
         );

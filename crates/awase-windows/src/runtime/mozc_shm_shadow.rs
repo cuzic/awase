@@ -155,11 +155,18 @@ impl super::Runtime {
         let mode_read = if let (Outcome::Accepted(shm), Ok(raw)) = (&outcome, &reading.block) {
             let now_ms = crate::hook::current_tick_ms();
             let baseline_ms = crate::hook::last_operation_tick_ms();
+            // ADR-292 D1b/G3(BUG-233): belief と食い違う読みのsettle起点は、全フックコールバックで
+            // 進む baseline_ms ではなく、IMEの開閉/モードを動かす目的の送信だけに限定する
+            // (platform_state.rs::report_mozc_shmのdocコメント参照。計算自体はそちら側で行う、
+            // ここでは生の時刻だけを渡す)。
+            let ime_actuation_baseline_ms = crate::hook::imm_cross_write_tick_ms()
+                .max(crate::hook::ime_actuation_send_tick_ms());
             let _used = self.platform_state.ime.report_mozc_shm(
                 *shm,
                 raw.update_tick_ms,
                 now_ms,
                 baseline_ms,
+                ime_actuation_baseline_ms,
                 crate::state::TickMs(now_ms),
             );
             shm.effective_mode.map(|mode| (mode, raw.update_tick_ms))

@@ -69,6 +69,13 @@ struct HookState {
     /// ImmCross の書き込みはフックを通らない（`hook_alive_tick_ms` に入らない）ので、共有メモリの読みが
     /// 「awase の操作より後の事実か」を判定する基準（`max(hook_alive_tick_ms, この値)`）に別に足す。
     imm_cross_write_tick_ms: AtomicU64,
+    /// awase 自身が`SendInput`でIMEの開閉/モードを動かすキー（`ime::send_ime_mode_key`・
+    /// `ime::send_ime_mode_key_with_shift_release_prefix`）を実際に注入した時刻（`GetTickCount64`）。
+    /// 0 = 未発行。`hook_alive_tick_ms`は自己注入キーも含めて進むローリング値だが、ADR-292 D1b/G3の
+    /// 「belief食い違い時のsettle起点」は、全キーではなく「IMEの開閉/モードを動かす目的の送信」だけに
+    /// 限定する必要がある（BUG-233: KeyEffectPredictionだけで開を信じた直後、未確認の打鍵/Backspace自体が
+    /// settleの基準点を押し出し訂正が遅れる悪循環を避けるため）。
+    ime_actuation_send_tick_ms: AtomicU64,
     /// `install_hook` がフックスレッドからの TID 通知を待つスロット。
     /// 0 = 待機中、`u32::MAX` = `SetWindowsHookExW` 失敗、それ以外 = フックスレッド TID。
     hook_tid_init_slot: AtomicU32,
@@ -163,6 +170,7 @@ impl HookState {
             hook_alive_tick_ms: AtomicU64::new(0),
             hook_physical_key_tick_ms: AtomicU64::new(0),
             imm_cross_write_tick_ms: AtomicU64::new(0),
+            ime_actuation_send_tick_ms: AtomicU64::new(0),
             hook_tid_init_slot: AtomicU32::new(0),
             physical_key_state: [const { AtomicBool::new(false) }; 256],
             physical_key_down_at_ms: [const { AtomicU64::new(0) }; 256],
@@ -345,8 +353,31 @@ pub(crate) fn note_imm_cross_write() {
 /// 共有メモリの読みが「awase の最後の操作より後の事実か」を判定する基準の時刻（ms、`GetTickCount64`）。
 /// `max(hook_alive_tick_ms, 最後の ImmCross の書き込みの発行時刻)`。全キー（自分の SendInput と KeyUp を含む）と
 /// ImmCross の書き込みの、どちらか新しい方（ADR-268 D3 の R3'）。
+#[must_use]
 pub fn last_operation_tick_ms() -> u64 {
-    hook_alive_tick_ms().max(HOOK_STATE.imm_cross_write_tick_ms.load(Ordering::Relaxed))
+    hook_alive_tick_ms().max(imm_cross_write_tick_ms())
+}
+
+/// 最後に ImmCross で IME へ書き込みを発行した時刻（ms、`GetTickCount64`）。0 = 未発行。
+#[must_use]
+pub fn imm_cross_write_tick_ms() -> u64 {
+    HOOK_STATE.imm_cross_write_tick_ms.load(Ordering::Relaxed)
+}
+
+/// awase自身が`SendInput`でIMEの開閉/モードキーを実際に注入した時刻を記録する
+/// (`ime::send_ime_mode_key`・`ime::send_ime_mode_key_with_shift_release_prefix`の送信直後、ADR-292 D1b/G3)。
+pub(crate) fn note_ime_actuation_send() {
+    HOOK_STATE
+        .ime_actuation_send_tick_ms
+        .store(current_tick_ms(), Ordering::Relaxed);
+}
+
+/// 最後にIMEの開閉/モードキーを実際に注入した時刻（ms、`GetTickCount64`）。0 = 未発行(ADR-292 D1b/G3)。
+#[must_use]
+pub fn ime_actuation_send_tick_ms() -> u64 {
+    HOOK_STATE
+        .ime_actuation_send_tick_ms
+        .load(Ordering::Relaxed)
 }
 
 fn hook_tid_reset() {

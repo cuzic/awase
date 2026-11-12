@@ -168,6 +168,8 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) -> bool {
         inputs.len()
     );
     let sent = crate::win32::send_input_safe(&inputs);
+    // ADR-292 D1b/G3: belief食い違い時のsettle起点に使う、IMEの開閉/モードを動かす目的の送信の打刻。
+    crate::hook::note_ime_actuation_send();
     if sent as usize != inputs.len() {
         tracing::warn!(
             "[ime-mode] SendInput(vk=0x{vk:02X}) sent {sent}/{} events",
@@ -258,6 +260,8 @@ pub unsafe fn send_ime_mode_key_with_shift_release_prefix(
         inputs.len()
     );
     let sent = crate::win32::send_input_safe(&inputs);
+    // ADR-292 D1b/G3: belief食い違い時のsettle起点に使う、IMEの開閉/モードを動かす目的の送信の打刻。
+    crate::hook::note_ime_actuation_send();
     let all_sent = sent as usize == inputs.len();
     if !all_sent {
         // 呼び出し元（Output::send_gji_half_width_alnum_toggle）の戻り値契約
