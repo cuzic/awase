@@ -56,8 +56,10 @@ status: |-
 
   D5(BUG-232)はコード実装済み(`crates/awase-ime-core/src/state/mozc_shm.rs::decide_use`、
   Linux単体テスト2件追加、既存52件含め全774件グリーン、windows target check/clippy/fmtグリーン)。
-  GitHub Windows CI(実機mozc-readable)での再現・検証は実施中——結果はこのADRと
-  `docs/known-bugs/BUG-232.md`に追記する。
+  GitHub Windows CI(実機mozc-readable、新規`tickchurn`シナリオ)での外部事実(update_tick_msが
+  stateの変化無しに進む)の再現を2026-11-12に確認済み(run 43145173691、詳細は「未解決」6)。
+  `tickchurn`シナリオはPR #934(developへ、未マージ)として提出済み。D5の修正コード自体は
+  本ADRのブランチに残り、別途そちらのPRでdevelopへ提出する。
 related_adr:
   - "ADR-290"
   - "ADR-282"
@@ -537,12 +539,27 @@ Mozc側の`key_seq`を進め、`update_tick_ms`を再スタンプした)と整�
 5. 本ADRはBUG-231(手放し後の遅延)のみを対象とし、[BUG-230](../known-bugs/BUG-230.md)のD2
    (GJI側の抜け出し送信にMozcの実際の切替完了の確認を足す、ADR-290で未着手のまま残る項目)には
    踏み込まない。両者は別の未解決項目として残す。D4(本ADR)もADR-290のD2に依存する(上記決定参照)。
-6. **D5(BUG-232)のGitHub Windows CI検証が結果待ち**: `mozc-shm-e2e`ワークフロー(実機
-   mozc-readable)で、修正前(`decide_use`の食い違いgateを外した版)が実際にBUG-232を再現し、
-   修正後(本ADRのE1)が再現しないことを実機バイナリで確認中。結果(run ID・ログ抜粋)はこの節と
-   [BUG-232](../known-bugs/BUG-232.md)の両方に追記する。新設するCIシナリオを常設として
-   `.github/workflows/mozc-shm-e2e.yml`のmatrixに残すか、`.claude/rules/
-   one-off-verification-workflows.md`に従って一時ブランチ・スクリプトとして撤去するかは、
-   結果が出た時点で判断する。
+6. **D5(BUG-232)のGitHub Windows CI検証(2026-11-12、完了)**: `mozc-shm-e2e`ワークフローに新規
+   シナリオ`tickchurn`を追加し(実機mozc-readable、`.github/workflows/mozc-shm-e2e.yml`・
+   `tools/mozc_shm_ci/`)、「アイドル中は`update_tick_ms`が進まないが、入力中は`tsf_open`/
+   `tsf_mode`が変わらなくても`update_tick_ms`だけ進む」という、本ADRの原因診断が前提にしている
+   外部事実そのものを実機で直接確認した(ソース読みだけでなく実機再現):
+   run [43145173691](https://github.com/cuzic/awase/actions/runs/43145173691)、
+   `measure (tickchurn)` = success、ログ: `idle (3.0s): update_tick_ms: 146265 → 146265
+   ticked=False` / `typing: update_tick_ms: 146265 → 150078` / `state_unchanged=True
+   tick_advanced=True`。同runのフルmatrix(13ジョブ)は11件成功(`tickchurn`・`stale`・
+   `threads`×2・`flip`・`appcontainer`×2・`tidreuse`)、失敗2件(`focus`系、`mismatch (state)`は
+   0件で原因は別のフォーカス帰属タイミングの既知フレーク)はD5修正と無関係(退行ではない)。
+   `tickchurn`は`stale`/`tidreuse`と同種の常設シナリオとして`.github/workflows/mozc-shm-e2e.yml`
+   のmatrixに残す方針([one-off-verification-workflows.md](../../.claude/rules/
+   one-off-verification-workflows.md)の対象外、常設workflowが使う部品)。
+   このシナリオ自体はawaseの`decide_use`を一切呼ばない(実機Mozcの外部事実の観測のみ)ため、
+   D5の修正コード(本ファイル`mozc_shm.rs`)とは独立にPR化した: 検証中に一度`decide_use`の
+   修正コミットがCI検証ブランチ側にも重複して乗ってしまったため、リベースで取り除き
+   (`tickchurn`関連の2コミットのみに整理、`develop`比で`mozc_shm.rs`の差分ゼロを確認済み)、
+   PR [#934](https://github.com/cuzic/awase/pull/934)(`ci/mozc-shm-e2e2` → `develop`、
+   未マージ)として`tickchurn`シナリオ追加のみを提出した。D5の修正コード自体は本ADRのブランチ
+   (`docs/adr291-mozc-shm-push-notify-and-engine-recheck`)に残り、別途そちらのPRでdevelopへ
+   提出する。
 7. **案E4(mozc-readable側のstate専用タイムスタンプ)は未着手のまま**。本ADR(このリポジトリ)の
    範囲外として記録し、`cuzic/mozc-readable`側で将来のバージョンアップ機会があれば別途検討する。
