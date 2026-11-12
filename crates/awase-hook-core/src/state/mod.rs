@@ -34,4 +34,6 @@ pub mod win_key_guard;
 pub mod half_width_resume_hold;
 // PR #809 の M1: 窓切替直後、refresh が新しい窓を読み終える前の打鍵の保持(純粋な状態機械。殻は runtime/focus_switch_hold.rs)。
 pub mod focus_switch_hold;
+// ADR-292 P: KeyEffectPrediction未照合中の物理キーの保持(純粋な状態機械、第3のhold)。
+pub mod key_effect_open_hold;
 pub use hook_state::*;
