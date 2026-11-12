@@ -894,7 +894,7 @@ def cmd_tickchurn(args):
     win = Window(w, "TC", "TC")
     win.create()
     if not win.set_open(1):
-        print("::error::IME を ON にできなかった(セットアップ失敗)")
+        print("::error::could not set IME to ON (setup failed)")
         return 1
     win.focus()
     w.pump(0.3)
@@ -910,7 +910,7 @@ def cmd_tickchurn(args):
     w.pump(args.idle_seconds)
     idle_after = block()
     if idle_before is None or idle_after is None:
-        print("::error::共有メモリを読めなかった")
+        print("::error::could not read the shared memory block")
         return 1
     idle_ticked = idle_after["update_tick_ms"] != idle_before["update_tick_ms"]
     print(f"idle ({args.idle_seconds}s): before={idle_before} after={idle_after} ticked={idle_ticked}")
@@ -931,12 +931,12 @@ def cmd_tickchurn(args):
 
     ok = state_unchanged and tick_advanced and not idle_ticked
     if not state_unchanged:
-        print("::warning::打鍵で tsf_open/tsf_mode 自体が変わった(想定外。入力方式の既定を確認すること)")
+        print("::warning::tsf_open/tsf_mode itself changed from typing (unexpected, check the input method default)")
     if not tick_advanced:
-        print("::error::打鍵しても update_tick_ms が進まなかった(BUG-232の想定した機構が今回は再現しなかった)")
+        print("::error::update_tick_ms did not advance from typing (BUG-232's mechanism did not reproduce this run)")
     if idle_ticked:
-        print("::warning::アイドル中にも update_tick_ms が進んだ(無関係なタイマーが別に存在する可能性)")
-    print(f"=> {'OK (BUG-232 の機構を実機で再現: state 不変のまま tick だけ進んだ)' if ok else 'NG'}")
+        print("::warning::update_tick_ms advanced while idle (an unrelated timer may also bump it)")
+    print(f"=> {'OK (reproduced BUG-232 mechanism on real Mozc: state stayed the same, only the tick advanced)' if ok else 'NG'}")
     return 0 if ok else 1
 
 
