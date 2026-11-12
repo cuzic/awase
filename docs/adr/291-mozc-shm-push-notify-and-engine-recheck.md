@@ -1,7 +1,8 @@
 ---
 id: ADR-291
 title: |-
-  belief_v2(候補Z)にmozc-shm追随の手放しを反映させ、Engineの活性再評価を明示的に呼ぶ(BUG-231)
+  belief_v2(候補Z)にmozc-shm追随の手放しを反映させ、Engineの活性再評価を明示的に呼ぶ(BUG-231)。
+  mozc-shmのsettle機構が食い違う読みを誤って高速確認してしまう穴を塞ぐ(BUG-232)
 summary: |-
   ADR-290/BUG-230適用後のdragonflyg4実機(2026-11-11)で、ひらがなキー押下からEngine活性(Active)まで
   最大約5.3秒ローマ字がリテラルで漏れる新しい遅延([BUG-231](../known-bugs/BUG-231.md))を観測した。
@@ -28,6 +29,22 @@ summary: |-
   検知遅延約1.6秒)については、round2で効果を「大半がMozc自身の切替時間でD2では縮まらない」と
   下方修正し、実測してから着手を判断する保留(D2)とした。D3(かなキー押下時のbelief即時楽観補正)は
   却下、D4(確定まで打鍵を保持)はADR-290自身の既存の見送り(D2依存)と同じ理由で見送り。
+
+  2026-11-12、別の実機報告([BUG-232](../known-bugs/BUG-232.md)、ChromeでMozc shmの古い読みが
+  明示IME OFF直後にbeliefを再びONへ上書きし、「mermaid」の最初の"m"がローマ字変換された)を調査し、
+  本ADRのD1'とは別軸(open軸、`state::mozc_shm::decide_use`/`read_is_after_baseline`、ADR-268 D3の
+  既存settle機構自体)に、独立した欠陥があると確定した。mozc-readableフォーク実機ソース
+  (`tip_state_publisher.cc::ThreadSlot::Flush()`)を直接確認し、`update_tick_ms`がブロック全体の
+  dirtyタイムスタンプ(`key_seq`等の高頻度フィールドが変わるだけで更新される)であり、`tsf_open`/
+  `tsf_mode`自体の変化の証拠にはならないことを実証した(`read_is_after_baseline`のdocが前提にしていた
+  「変化が無ければ書かない」が実機で成立しない)。**D5(採用)**: `decide_use`で、読みがawaseの
+  belief(`effective_open`)と**食い違う**ときだけ`update_tick_ms`の高速路を使わず`settle_ms`の
+  無条件経過を要求する(belief と一致する読みは従来どおり高速路を残す、副作用ゼロ)。
+  Linux単体テスト(`crates/awase-ime-core/src/state/mozc_shm.rs`、実機ログの数値そのままの再現テスト
+  込み)で修正前後の挙動差を固定済み、774件全テスト・windows targetのcargo check/clippy/fmtとも
+  グリーン。比較検討した他案(OR条件を単純に外す案・`KEY_EFFECT_SETTLE_MS`を上げるだけの案・
+  mozc-readable側に専用タイムスタンプを追加する案)はD5節で後述。GitHub Windows CI
+  (`mozc-shm-e2e`ワークフロー、実機mozc-readable)での再現・確認は実施中/結果待ち。
 status: |-
   設計確定(2026-11-11)。Opus敵対的レビューround1(原因診断の誤り、F1)・round2(修正案(a)がADR-290の
   既に却下済みの設計を再現する指摘、G1/G2)・round3((a)固有の別の欠陥〈170ms柵による書き込み
@@ -36,6 +53,11 @@ status: |-
   確認され収束(これ以上のレビューラウンドは不要と判定)。実装PRで直す3件のコメント同期
   (`half_width_alnum.rs`・`architecture_guard.rs`docstring・`mode_state.rs`)を残し、
   実装・実機確認とも未着手。
+
+  D5(BUG-232)はコード実装済み(`crates/awase-ime-core/src/state/mozc_shm.rs::decide_use`、
+  Linux単体テスト2件追加、既存52件含め全774件グリーン、windows target check/clippy/fmtグリーン)。
+  GitHub Windows CI(実機mozc-readable)での再現・検証は実施中——結果はこのADRと
+  `docs/known-bugs/BUG-232.md`に追記する。
 related_adr:
   - "ADR-290"
   - "ADR-282"
@@ -43,6 +65,7 @@ related_adr:
   - "ADR-268"
   - "ADR-270"
   - "ADR-265"
+  - "BUG-232"
 ---
 
 # ADR-291: belief_v2(候補Z)にmozc-shm追随の手放しを反映させ、Engineの活性再評価を明示的に呼ぶ
@@ -355,6 +378,64 @@ qwertyローマ字でOSへ素通りしている(BUG-230タイムライン項目4
 追加はタイムアウト定数の実測や既存の保持機構との競合確認などスコープが大きいため見送るが、
 `.claude/rules/fix-requires-evidence.md`のdefer/replay系ファミリーの延長として今後の選択肢に残す。
 
+### 案E(採用・D5、2026-11-12追記): BUG-232 — open軸のmozc-shm settle機構自体の穴を塞ぐ
+
+[BUG-232](../known-bugs/BUG-232.md)(dragonflyg4、2026-11-12T01:40:37〜39Z、Chrome×GJI)で、
+D1′とは別軸(mode軸ではなくopen軸)の独立した欠陥を確認した。明示的にIME OFFキーを押した112ms後、
+`[mozc-shm] follow external change open=true`→`effective-open-flip → true decided_by=
+DeriveHigh(MozcShm)`が発火し、たった今自分で設定した明示OFFを古いmozc-shmの読みが上書きした
+(打鍵1個が誤ってローマ字変換された)。
+
+**原因の確定(mozc-readableフォーク実機ソースで直接確認)**: `state::mozc_shm::decide_use`/
+`read_is_after_baseline`(ADR-268 D3 R3'、本ファイル`crates/awase-ime-core/src/state/mozc_shm.rs`)は
+「`update_tick_ms > baseline_ms`なら、`tsf_open`/`tsf_mode`自体がawaseの操作より後に変化したことが
+確実」という前提で、settle_ms(170ms)未満でも高速に読みを信用する設計だった。しかし
+`~/mozc-readable-release/repo/src/win32/tip/tip_state_publisher.cc`の`ThreadSlot::Flush()`
+(`Snapshot::operator==`/`SameState()`)を直接確認したところ、`update_tick_ms`は**ブロック全体の
+dirtyタイムスタンプ**であり、`key_seq`・`preedit_cursor`・`composition_key_seq`等の高頻度フィールド
+(ほぼ毎打鍵で変わる)のどれかが変わるだけで更新される。`pulse`(実際に state が変わったかの内部信号、
+`!last_.SameState(pending_)`)はこれとは別に正しく判定されているが、別のタイムスタンプとして
+外部(共有メモリ)に公開されていない。つまり`tsf_open`が全く変わっていなくても、同じ窓で別の打鍵が
+あれば`update_tick_ms`だけ新しくなる——`read_is_after_baseline`の高速路はこの「見た目だけ新しい」
+読みと「本当にopen/modeが変わった」読みを区別できない。BUG-232の実機再現はこれ(「M」キー自体が
+Mozc側の`key_seq`を進め、`update_tick_ms`を再スタンプした)と整合する。
+
+検討した案:
+
+- **案E1(採用): `decide_use`で、belief(`effective_open`)と食い違う読みだけ高速路を外す**。
+  読みが`effective_open`と**一致**する(awase自身の操作の確認)ときは高速路をそのまま残す
+  (危険が無く、ADR-268 D3が意図した「速い確認」の利点を失わない)。**食い違う**ときは
+  `update_tick_ms`を一切信用せず、`settle_ms`の無条件経過のみを要求する(既存のN2「書き込みロスト」
+  救済と同じ扱いに統一する——書き込みが本当に失われた場面と、見た目だけ新しい食い違う読みの場面を、
+  awase側からは区別する手段が無い以上、両方を「settle経過まで待つ」に揃えるのが安全側)。
+  新しい型・パラメータは不要、既存の`effective_open`引数だけで判定できる。
+- **案E2(却下、効果が無いことを論証で確認): `KEY_EFFECT_SETTLE_MS`を上げるだけ**。
+  `update_tick_ms > baseline_ms`の高速路は`settle_ms`の値を一切参照しない(OR条件の左辺が真なら
+  右辺の値に関係なく成立する)ため、settle_msをどれだけ上げても、Mozcが打鍵のたびに
+  `update_tick_ms`を再スタンプする限り高速路は即座に(baseline+1ms程度で)成立し続ける。
+  `.claude/rules/tuning-constants.md`が求める実測をするまでもなく、ブール論理だけで効果ゼロと
+  確定できる。
+- **案E3(却下、別の実害を再現する): `update_tick_ms > baseline_ms`の高速路を単純に削除**
+  (常に`settle_ms`経過のみを要求する)。BUG-232は直るが、「awase自身の操作をMozcが実際に速く
+  反映した」場面でも一律`settle_ms`(170ms)を待つことになり、ADR-268 D3が獲得した高速確認の
+  利点を全て失う(E1はこの損失が無い)。
+- **案E4(見送り、本ADRの範囲外・別リポジトリ側の改善として記録): mozc-readable側にstate専用の
+  タイムスタンプを追加する**。`ThreadSlot::Flush()`の`if (!last_.SameState(pending_))`の分岐内
+  でのみ更新する`state_update_tick_ms`相当のフィールドを共有メモリブロックに追加すれば、awase側は
+  本来の意図どおり「状態が変わった時刻」を直接読める、最も筋の良い恒久対策。しかし
+  (a) mozc-readable(`cuzic/mozc-readable`)側のブロック形式変更・バージョンアップ・MSI再ビルドが
+  必要で本ADR(このリポジトリ)の範囲外、(b) E1だけで実害(BUG-232)は解消済みのため緊急性が無い。
+  将来mozc-readable側で version bump する機会があれば検討する、として記録のみ残す。
+
+**比較のまとめ**:
+
+| 案 | BUG-232を直すか | 高速確認の利点を保つか | 実装コスト |
+|---|---|---|---|
+| E1(採用) | 直る(Linux単体テストで確認) | 保つ(belief一致時は従来どおり) | 既存関数内の分岐追加のみ |
+| E2 | 直らない(論理的に無効) | — | tuning値変更のみだが無意味 |
+| E3 | 直る | 失う(常にsettle待ち) | 既存の高速路を削除 |
+| E4 | 直る(本来最も正確) | 保つ | 他リポジトリの変更が前提、未着手 |
+
 ## 決定
 
 - **D1′(採用、round3で(a)→(b)に設計を訂正)**: `ir_do_abandon_half_width_alnum_from_mozc_shm`の
@@ -377,6 +458,13 @@ qwertyローマ字でOSへ素通りしている(BUG-230タイムライン項目4
   ADR-290 D2(未着手)の実装を前提にしている。本ADRでもD1′を優先し見送るが、D2(本ADRのD2・
   ADR-290のD2のどちらも)が未着手である限り、確認が出るまでの区間自体の誤出力への対策は
   依然存在しないことを記録する。
+- **D5(採用、2026-11-12追記、BUG-232)**: `decide_use`(`crates/awase-ime-core/src/state/mozc_shm.rs`)
+  で、読みがbelief(`effective_open`)と食い違うときは`update_tick_ms`による高速路
+  (`read_is_after_baseline`)を使わず、`settle_ms`の無条件経過のみで判断する(belief と一致する
+  読みは高速路を維持)。実装済み・Linux単体テスト(`bug232_stale_update_tick_does_not_bypass_
+  settle_when_it_disagrees_with_belief`・`decide_use_still_fast_paths_a_read_that_agrees_
+  with_belief`を含む全774件)・windows target check/clippy/fmt、いずれもグリーン。却下した
+  E2〜E4は上記「案E」節参照。
 
 ## 影響
 
@@ -449,3 +537,12 @@ qwertyローマ字でOSへ素通りしている(BUG-230タイムライン項目4
 5. 本ADRはBUG-231(手放し後の遅延)のみを対象とし、[BUG-230](../known-bugs/BUG-230.md)のD2
    (GJI側の抜け出し送信にMozcの実際の切替完了の確認を足す、ADR-290で未着手のまま残る項目)には
    踏み込まない。両者は別の未解決項目として残す。D4(本ADR)もADR-290のD2に依存する(上記決定参照)。
+6. **D5(BUG-232)のGitHub Windows CI検証が結果待ち**: `mozc-shm-e2e`ワークフロー(実機
+   mozc-readable)で、修正前(`decide_use`の食い違いgateを外した版)が実際にBUG-232を再現し、
+   修正後(本ADRのE1)が再現しないことを実機バイナリで確認中。結果(run ID・ログ抜粋)はこの節と
+   [BUG-232](../known-bugs/BUG-232.md)の両方に追記する。新設するCIシナリオを常設として
+   `.github/workflows/mozc-shm-e2e.yml`のmatrixに残すか、`.claude/rules/
+   one-off-verification-workflows.md`に従って一時ブランチ・スクリプトとして撤去するかは、
+   結果が出た時点で判断する。
+7. **案E4(mozc-readable側のstate専用タイムスタンプ)は未着手のまま**。本ADR(このリポジトリ)の
+   範囲外として記録し、`cuzic/mozc-readable`側で将来のバージョンアップ機会があれば別途検討する。

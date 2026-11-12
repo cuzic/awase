@@ -421,6 +421,15 @@ pub fn classify(raw: &RawBlock, expected_pid: u32) -> Result<ShmState, Rejection
 /// （操作を処理し終えた後の安定した状態。変化したなら新しい値、変化しなかった・書き込みが失われたなら古い値で、
 /// どちらも事実）。`>=` にしない理由: `GetTickCount64` の分解能は約 15.6ms で、同じ目盛りの中の「直前の別の変化」と
 /// 「操作」を区別できず、IME が処理する前の古い読みを通してしまう。
+///
+/// **[BUG-232](../../../../docs/known-bugs/BUG-232.md)/[ADR-291](../../../../docs/adr/291-mozc-shm-push-notify-and-engine-recheck.md) D5
+/// で判明した限界**: `update_tick_ms > baseline_ms` は mozc-readable 実機ソース
+/// （`tip_state_publisher.cc::ThreadSlot::Flush()`）の確認で、ブロック全体のどの高頻度フィールド
+/// （`key_seq`・`preedit_cursor` 等、ほぼ毎打鍵で変わる）が変わっても更新される**ブロック全体の
+/// dirty タイムスタンプ**であり、`tsf_open`/`tsf_mode` 自体が変わった証拠にはならない（ドキュメントが
+/// 想定していた「変化が無ければ書かない」という前提は実機で成立しない）。したがって、この関数
+/// 単独では「belief（`effective_open`）と食い違う読み」を安全に高速確認できない——呼び出し元の
+/// [`decide_use`] 側で、食い違う読みには `settle_ms` 経過を無条件に要求する（下記 D5 参照）。
 #[must_use]
 pub const fn read_is_after_baseline(
     update_tick_ms: u64,
@@ -446,10 +455,22 @@ pub enum ShmUse {
 
 /// 受け入れた読み `shm` を、belief にどう使うかを決める。
 ///
-/// `update_tick_ms` は読んだブロックの `update_tick_ms`（最後に**変化**を書いた時刻）。`ShmState` には持たせない:
-/// 持たせると、時刻だけが違う読みが「別の結論」になり、診断の記録の重複除去（`Outcome` の等価比較）が崩れる。
-/// `baseline_ms` は `max(hook_alive_tick_ms, 最後の ImmCross の書き込みの発行時刻)`（awase の最後の操作の時刻、
-/// `GetTickCount64` の値）。`settle_ms` は `KEY_EFFECT_SETTLE_MS`。
+/// `update_tick_ms` は読んだブロックの `update_tick_ms`（最後に**変化**を書いた時刻、のつもりの値——
+/// 下記 BUG-232 の限界参照）。`ShmState` には持たせない: 持たせると、時刻だけが違う読みが「別の結論」になり、
+/// 診断の記録の重複除去（`Outcome` の等価比較）が崩れる。`baseline_ms` は `max(hook_alive_tick_ms,
+/// 最後の ImmCross の書き込みの発行時刻)`（awase の最後の操作の時刻、`GetTickCount64` の値）。
+/// `settle_ms` は `KEY_EFFECT_SETTLE_MS`。
+///
+/// **D5（[ADR-291](../../../../docs/adr/291-mozc-shm-push-notify-and-engine-recheck.md)、
+/// [BUG-232](../../../../docs/known-bugs/BUG-232.md)の修正）**: 読みが awase の belief（`effective_open`）と
+/// **食い違う**ときは、[`read_is_after_baseline`] の `update_tick_ms > baseline_ms` 高速路を使わず、
+/// `settle_ms` の無条件経過だけを要求する。実機確認済みのとおり `update_tick_ms` はブロック全体の
+/// dirty タイムスタンプであり、`tsf_open` 自体が変わらなくても他の高頻度フィールドの変化（ほぼ毎打鍵）で
+/// 更新されるため、「食い違う＝belief と逆の値を示す」読みに対して「tick が新しい」ことは何の証拠にもならない
+/// （BUG-232の実機再現: 明示 IME OFF から 112ms 後、`update_tick_ms` だけが新しい停滞値 `open=true` の
+/// 読みが高速路を通り、打鍵 1 個がローマ字変換されてしまった）。読みが belief と**一致**するとき
+/// （awase 自身の操作の確認）は、高速路のままでよい——これは危険なケースではなく、`settle_ms` を待たず
+/// 速く確認できる利点をそのまま残す。
 #[must_use]
 pub const fn decide_use(
     shm: ShmState,
@@ -463,10 +484,17 @@ pub const fn decide_use(
     if shm.tsf_open != shm.effective_open {
         return ShmUse::Split;
     }
-    if !read_is_after_baseline(update_tick_ms, baseline_ms, now_ms, settle_ms) {
+    let open = shm.tsf_open;
+    let settled = now_ms.saturating_sub(baseline_ms) >= settle_ms;
+    let trusted = if open == effective_open {
+        read_is_after_baseline(update_tick_ms, baseline_ms, now_ms, settle_ms)
+    } else {
+        // BUG-232 D5: belief と食い違う読みは update_tick_ms の新しさを信じず、settle 経過のみで判断する。
+        settled
+    };
+    if !trusted {
         return ShmUse::Held;
     }
-    let open = shm.tsf_open;
     ShmUse::Use {
         open,
         disagrees: open != effective_open || open != desired_open,
@@ -1195,6 +1223,72 @@ mod tests {
                 open: false,
                 disagrees: true
             }
+        );
+    }
+
+    /// [BUG-232](../../../../../docs/known-bugs/BUG-232.md)の実機再現（数値は dragonflyg4
+    /// 2026-11-12T01:40:37〜39Zのログから、ms単位で相対化）: 明示的にIME OFFを押した(baseline=0,
+    /// effective_open=false)直後、mozc-readable が「他の高頻度フィールド(key_seq等)の変化だけで
+    /// update_tick_ms を再スタンプする」ため(実機ソース `tip_state_publisher.cc::ThreadSlot::Flush()`
+    /// で確認済み)、`tsf_open` 自体は変わっていない(まだ古い `true`)のに update_tick_ms だけが
+    /// baseline より新しくなる。settle_ms(170ms)未満のこの食い違う読みは、修正前は高速路を通って
+    /// `Use`(belief を誤って true に戻す)になっていた——これが「mermaid」の最初の "m" がローマ字変換
+    /// された直接原因。D5修正後はHeldのまま(settle経過までbeliefを動かさない)。
+    #[test]
+    fn bug232_stale_update_tick_does_not_bypass_settle_when_it_disagrees_with_belief() {
+        let st = shm(true, true); // mozc-shm はまだ古い open=true のまま(Split ではない: 両フィールドとも true で一致)
+        let update_tick_ms = 50; // baseline(0)より後にスタンプされた、しかし値自体は変わっていない
+        let baseline_ms = 0; // 明示 IME OFF を発行した時刻
+        let settle_ms = 170; // KEY_EFFECT_SETTLE_MS
+        let effective_open = false; // 明示 IME OFF 直後の belief
+        let desired_open = false;
+
+        // settle未満(112ms、実機と同じ食い違い): 食い違う読みはHeldのまま、beliefを動かさない。
+        assert_eq!(
+            decide_use(
+                st,
+                update_tick_ms,
+                112,
+                baseline_ms,
+                settle_ms,
+                effective_open,
+                desired_open
+            ),
+            ShmUse::Held,
+            "修正前はここが Use{{open:true,..}} になり belief を誤って true に戻していた(BUG-232)"
+        );
+
+        // settle経過後(170ms): なお true のままなら「書き込みが失われた」事実として追随する(既存のN2救済は残す)。
+        assert_eq!(
+            decide_use(
+                st,
+                update_tick_ms,
+                170,
+                baseline_ms,
+                settle_ms,
+                effective_open,
+                desired_open
+            ),
+            ShmUse::Use {
+                open: true,
+                disagrees: true
+            }
+        );
+    }
+
+    /// D5修正の退行防止: belief と**一致**する読みは、update_tick_ms の新しさだけでsettle未満でも
+    /// 高速に確認してよい(危険が無い。これが無いとADR-268 D3が意図した「速い確認」の利点が失われる)。
+    #[test]
+    fn decide_use_still_fast_paths_a_read_that_agrees_with_belief() {
+        let st = shm(false, false); // mozc-shm 自身も既に false(awase の明示OFFにMozcが追随した確認)
+        let update_tick_ms = 50; // baseline(0)より後
+        assert_eq!(
+            decide_use(st, update_tick_ms, 60, 0, 170, false, false), // settle(170)未満の60msでも
+            ShmUse::Use {
+                open: false,
+                disagrees: false
+            },
+            "beliefと一致する確認はsettleを待たず速く受理できる(BUG-232修正の副作用で遅くならないことの固定)"
         );
     }
 
