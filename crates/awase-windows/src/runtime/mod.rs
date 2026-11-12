@@ -10,6 +10,7 @@ mod ime_actuation;
 mod ime_coordinator;
 mod ime_refresh;
 mod indicator_glyph_shadow;
+mod key_effect_open_hold;
 mod key_pipeline;
 mod lang_check;
 mod lang_detect_shadow;
@@ -322,6 +323,8 @@ pub struct Runtime {
     resume_hold: crate::state::half_width_resume_hold::ResumeHold<RawKeyEvent>,
     /// PR #809 の M1: 窓切替直後、refresh が新しい窓を読み終える前に届いた打鍵の保持(`runtime/focus_switch_hold.rs`)。
     focus_switch_hold: crate::state::focus_switch_hold::FocusSwitchHold<RawKeyEvent>,
+    /// ADR-292 P(BUG-233): モードキー予測の開が mozc-shm で未照合の間の打鍵の保持(`runtime/key_effect_open_hold.rs`)。
+    key_effect_open_hold: crate::state::key_effect_open_hold::KeyEffectOpenHold<RawKeyEvent>,
     /// フォーカス変更の世代(`on_window_focus_event` ごとに 1 増える)。refresh は spawn 時に読んだ値で保持を解放する。
     focus_event_seq: u64,
     /// R2: Resume の段が作った R1 の ticket と完了の札。`kp_restore_kana_from_half_width` が取り出して復元タスクへ渡す
@@ -1451,6 +1454,9 @@ impl Runtime {
             resume_hold: crate::state::half_width_resume_hold::ResumeHold::new(),
             focus_switch_hold: crate::state::focus_switch_hold::FocusSwitchHold::new(
                 crate::tuning::FOCUS_SWITCH_HOLD_MAX_MS,
+            ),
+            key_effect_open_hold: crate::state::key_effect_open_hold::KeyEffectOpenHold::new(
+                crate::tuning::KEY_EFFECT_OPEN_HOLD_ARM_TTL_MS,
             ),
             focus_event_seq: 0,
             pending_resume_r1: None,

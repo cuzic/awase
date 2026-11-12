@@ -471,12 +471,23 @@ pub enum ShmUse {
 /// 読みが高速路を通り、打鍵 1 個がローマ字変換されてしまった）。読みが belief と**一致**するとき
 /// （awase 自身の操作の確認）は、高速路のままでよい——これは危険なケースではなく、`settle_ms` を待たず
 /// 速く確認できる利点をそのまま残す。
+///
+/// **G3（[ADR-292](../../../../docs/adr/292-key-effect-prediction-vs-observation-priority.md)、
+/// [BUG-233](../../../../docs/known-bugs/BUG-233.md)の修正）**: D5 の `settle_ms` 無条件経過の起点
+/// (`disagree_baseline_ms`) は `baseline_ms`（全フックコールバックで進むローリング値）とは**別の引数**で渡す。
+/// `baseline_ms` は一致する読みの高速路判定(`read_is_after_baseline`)にのみ使う。`disagree_baseline_ms` は
+/// 呼び出し元(`report_mozc_shm`)が「IMEの開閉/モードを動かす目的の送信（モードキーの予測・ImmCross書き込み・
+/// awase自身の注入）」だけに限定して合成する——物理キーやBackspace等、IMEへの意図を持たない打鍵では進まない。
+/// これにより、KeyEffectPredictionだけで開を信じた直後の未確認の打鍵（BUG-233のBackspace連打）が
+/// settleの基準点を押し出し訂正が遅れる悪循環を避ける。BUG-232のシナリオ（belief食い違いの根拠が
+/// `ExplicitIntent`）では、`disagree_baseline_ms`の起点は明示操作のままなので保護は変わらない。
 #[must_use]
 pub const fn decide_use(
     shm: ShmState,
     update_tick_ms: u64,
     now_ms: u64,
     baseline_ms: u64,
+    disagree_baseline_ms: u64,
     settle_ms: u64,
     effective_open: bool,
     desired_open: bool,
@@ -485,12 +496,12 @@ pub const fn decide_use(
         return ShmUse::Split;
     }
     let open = shm.tsf_open;
-    let settled = now_ms.saturating_sub(baseline_ms) >= settle_ms;
     let trusted = if open == effective_open {
         read_is_after_baseline(update_tick_ms, baseline_ms, now_ms, settle_ms)
     } else {
-        // BUG-232 D5: belief と食い違う読みは update_tick_ms の新しさを信じず、settle 経過のみで判断する。
-        settled
+        // BUG-232 D5/BUG-233 G3: belief と食い違う読みは update_tick_ms の新しさを信じず、
+        // IMEの開閉/モードを動かす目的の送信からの settle 経過のみで判断する。
+        now_ms.saturating_sub(disagree_baseline_ms) >= settle_ms
     };
     if !trusted {
         return ShmUse::Held;
@@ -1155,13 +1166,13 @@ mod tests {
         let st = shm(true, false);
         let tick = 5000;
         assert_eq!(
-            decide_use(st, tick, 6000, 1000, 170, true, true),
+            decide_use(st, tick, 6000, 1000, 1000, 170, true, true),
             ShmUse::Split
         );
         let st = shm(false, true);
         let tick = 5000;
         assert_eq!(
-            decide_use(st, tick, 6000, 1000, 170, true, true),
+            decide_use(st, tick, 6000, 1000, 1000, 170, true, true),
             ShmUse::Split
         );
     }
@@ -1172,7 +1183,7 @@ mod tests {
         let st = shm(false, false);
         let tick = 1000;
         assert_eq!(
-            decide_use(st, tick, 1010, 1000, 170, true, true),
+            decide_use(st, tick, 1010, 1000, 1000, 170, true, true),
             ShmUse::Held
         );
     }
@@ -1183,7 +1194,7 @@ mod tests {
         let st = shm(true, true);
         let tick = 5000;
         assert_eq!(
-            decide_use(st, tick, 6000, 1000, 170, true, true),
+            decide_use(st, tick, 6000, 1000, 1000, 170, true, true),
             ShmUse::Use {
                 open: true,
                 disagrees: false
@@ -1191,7 +1202,7 @@ mod tests {
         );
         // belief(effective_open)と食い違う → 追随
         assert_eq!(
-            decide_use(st, tick, 6000, 1000, 170, false, true),
+            decide_use(st, tick, 6000, 1000, 1000, 170, false, true),
             ShmUse::Use {
                 open: true,
                 disagrees: true
@@ -1199,7 +1210,7 @@ mod tests {
         );
         // desired_open と食い違う(belief は共有メモリに従っているが desired が古い、N8)→ 追随
         assert_eq!(
-            decide_use(st, tick, 6000, 1000, 170, true, false),
+            decide_use(st, tick, 6000, 1000, 1000, 170, true, false),
             ShmUse::Use {
                 open: true,
                 disagrees: true
@@ -1214,11 +1225,11 @@ mod tests {
         let st = shm(false, false);
         let tick = 900; // 操作(1000)より前のまま
         assert_eq!(
-            decide_use(st, tick, 1100, 1000, 170, true, true),
+            decide_use(st, tick, 1100, 1000, 1000, 170, true, true),
             ShmUse::Held
         );
         assert_eq!(
-            decide_use(st, tick, 1170, 1000, 170, true, true),
+            decide_use(st, tick, 1170, 1000, 1000, 170, true, true),
             ShmUse::Use {
                 open: false,
                 disagrees: true
@@ -1244,11 +1255,14 @@ mod tests {
         let desired_open = false;
 
         // settle未満(112ms、実機と同じ食い違い): 食い違う読みはHeldのまま、beliefを動かさない。
+        // disagree_baseline_ms(G3)はbaseline_msと同じ(明示OFFの瞬間)——ExplicitIntent由来の食い違いでは
+        // G3導入後もBUG-232の保護が変わらないことをここで固定する。
         assert_eq!(
             decide_use(
                 st,
                 update_tick_ms,
                 112,
+                baseline_ms,
                 baseline_ms,
                 settle_ms,
                 effective_open,
@@ -1264,6 +1278,7 @@ mod tests {
                 st,
                 update_tick_ms,
                 170,
+                baseline_ms,
                 baseline_ms,
                 settle_ms,
                 effective_open,
@@ -1283,12 +1298,62 @@ mod tests {
         let st = shm(false, false); // mozc-shm 自身も既に false(awase の明示OFFにMozcが追随した確認)
         let update_tick_ms = 50; // baseline(0)より後
         assert_eq!(
-            decide_use(st, update_tick_ms, 60, 0, 170, false, false), // settle(170)未満の60msでも
+            decide_use(st, update_tick_ms, 60, 0, 0, 170, false, false), // settle(170)未満の60msでも
             ShmUse::Use {
                 open: false,
                 disagrees: false
             },
             "beliefと一致する確認はsettleを待たず速く受理できる(BUG-232修正の副作用で遅くならないことの固定)"
+        );
+    }
+
+    /// [BUG-233](../../../../../docs/known-bugs/BUG-233.md)/[ADR-292](../../../../../docs/adr/292-key-effect-prediction-vs-observation-priority.md)
+    /// G3: `KeyEffectPrediction`だけで開を信じた直後、後続のBackspace等の物理キー(IMEの開閉を動かす
+    /// 意図を持たない)を打ち続けても、`disagree_baseline_ms`(モードキー予測/awase自身のIME書き込み
+    /// 送信だけに限定した起点)はそれらで押し戻されない——`baseline_ms`(全フックコールバックで進む
+    /// ローリング値)を別に与えても、disagree_baseline_msが固定ならsettle経過後に正しくUseされる。
+    #[test]
+    fn bug233_disagree_baseline_is_not_pushed_back_by_physical_keys_without_ime_intent() {
+        let st = shm(false, false); // mozc-shmの実体は閉のまま(予測が外れている)
+        let update_tick_ms = 50; // 予測(モードキー)直後に進んだ、state不変のdirty timestamp
+        let mode_key_at_ms = 0; // モードキー予測が立った時刻(disagree_baseline_msの起点)
+        let rolling_baseline_ms = 2617; // Backspace連打等で押し戻された、全キー込みのローリング値(大きい)
+        let effective_open = true; // KeyEffectPredictionだけで信じたbelief
+        let desired_open = false;
+        let settle_ms = 170;
+
+        // モードキーからsettle未満(169ms): disagree_baseline_ms起点でもまだHeld
+        assert_eq!(
+            decide_use(
+                st,
+                update_tick_ms,
+                mode_key_at_ms + settle_ms - 1,
+                rolling_baseline_ms,
+                mode_key_at_ms,
+                settle_ms,
+                effective_open,
+                desired_open
+            ),
+            ShmUse::Held
+        );
+        // モードキーからsettle経過(170ms): ローリングbaseline(2617)がまだ先の未来でも、
+        // disagree_baseline_ms(モードキー起点=0)だけを見ればUseになる。
+        assert_eq!(
+            decide_use(
+                st,
+                update_tick_ms,
+                mode_key_at_ms + settle_ms,
+                rolling_baseline_ms,
+                mode_key_at_ms,
+                settle_ms,
+                effective_open,
+                desired_open
+            ),
+            ShmUse::Use {
+                open: false,
+                disagrees: true
+            },
+            "disagree_baseline_msをモードキー起点に限定すれば、無関係な物理キーで訂正が遅れない(BUG-233)"
         );
     }
 

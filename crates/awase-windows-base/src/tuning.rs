@@ -531,6 +531,39 @@ pub const HALF_WIDTH_RESUME_HOLD_MAX_MS: u64 = 100;
 #[measured_macro::measured(value_ms = 250, margin_ms = 22, commit = "bcb9e2dd")]
 pub const FOCUS_SWITCH_HOLD_MAX_MS: u64 = 250;
 
+/// ADR-292 P(BUG-233): モードキー予測(`KeyEffectPredicted` の開)が未照合の間の打鍵の保持で、mozc-shm を読み直す
+/// 短い周期 (ms)(`TIMER_KEY_EFFECT_OPEN_HOLD`、`runtime/key_effect_open_hold.rs`)。
+///
+/// ADR-292 S5: 通常の `MOZC_SHM_TIMER_MS`(500ms)任せでは保持が最大 500ms 以上になるため、保持中だけ短い周期で読む。
+/// 値は ADR-270 の確認(Mozc の入力中の文字を `TIMER_TSF_PROBE` の tick で読む。最初のローマ字の送信が最大 30ms 遅れうる、
+/// `observer/mozc_shm.rs`)と同程度の 16〜30ms の範囲(ADR-292 S5)から、`GetTickCount64` の分解能 ~15.6ms の
+/// 1 目盛りより長い 20ms を選んだ。**実測は未取得**(読みのコスト `read_us` と、正常時〈予測が正しい場合〉のモードキー
+/// から最初の文字が出るまでの遅延増分を、warm/cold 別に CI 確証計画 5〈ADR-292〉で測って見直す)ので pending。
+#[measured_macro::measured(pending = true)]
+pub const KEY_EFFECT_OPEN_HOLD_POLL_MS: u64 = 20;
+
+/// ADR-292 P(BUG-233): モードキー予測が未照合の間の打鍵の保持の期限 (ms)(保持の開始から)。期限までに mozc-shm の
+/// 読みで「開」も「閉」も確定しなければ、belief を変えずに保持した打鍵を再生する(P が無いときと同じ挙動)。
+///
+/// **導出(実測ではなく既存の値からの組み立て)**: 「閉」の確定は `decide_use` の食い違いの settle で、起点
+/// (予測の時刻 or awase の送信打刻)から `KEY_EFFECT_SETTLE_MS`(170ms、実測最大 131ms + マージン 39ms)。保持は予測の
+/// 後の次の打鍵から始まるので、保持の開始から見ても 170ms + 読みの周期 20ms 以内に確定する見込み。期限はそれに、
+/// 利用者が待たせてもよいと言った上限「0.3 秒程度」(2026-10-19、`MOZC_COMPOSE_CHECK_MS` と同じ根拠)を当てた 300ms。
+/// 実機の確定までの分布(`[key-effect-open-hold] 保持の解放: reason=... hold_ms=...` のログ)は未測定なので pending。
+#[measured_macro::measured(pending = true)]
+pub const KEY_EFFECT_OPEN_HOLD_MAX_MS: u64 = 300;
+
+/// ADR-292 P(BUG-233): 予測の開で武装してから、保持を始める打鍵が来るまでの期限 (ms)。期限を過ぎて来た打鍵では
+/// 保持を始めず武装を解く(P 導入前の挙動に戻るだけ。コードレビュー指摘 1)。
+///
+/// **導出(実測ではなく既存の値からの組み立て)**: 短すぎると BUG-233 そのもの(モードキーから最初のローマ字の送信まで
+/// **実測 318ms**、awase.log 2026-11-12 20:24:20.671→20.989)を取り逃す(`KEY_EFFECT_OPEN_HOLD_MAX_MS` の 300ms では
+/// 足りない)。武装が要らなくなるのは、通常の読み(`MOZC_SHM_TIMER_MS` 500ms 周期)が予測を照合したとき(照合すると
+/// `pending_open_pred_at` が外れて武装は自然に解ける)で、その最悪は周期 500ms + 食い違いの settle
+/// `KEY_EFFECT_SETTLE_MS` 170ms = 670ms。マージン 30ms を足して 700ms。実機の分布は未測定なので pending。
+#[measured_macro::measured(pending = true)]
+pub const KEY_EFFECT_OPEN_HOLD_ARM_TTL_MS: u64 = 700;
+
 /// Zoom のチャット窓で、注入するキーの「↓から↑まで」に空ける時間 (ms)。
 ///
 /// `class_names::needs_key_hold_window` の窓だけに使う。実測(dragonflyg4、GJI、Zoom のメイン会議ウィンドウ内のチャット、

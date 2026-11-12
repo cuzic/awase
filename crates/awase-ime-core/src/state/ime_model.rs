@@ -424,6 +424,13 @@ impl ImeModel {
         }
     }
 
+    /// 最後のモード系の入力の生の時刻(`GetTickCount64`値)。無ければ`None`(`FocusChanged`直後等)。
+    /// ADR-292 D1b/G3: `decide_use`のbelief食い違い時のsettle起点の合成(`report_mozc_shm`内でのみ)に使う。
+    #[must_use]
+    pub const fn last_mode_key_tick_ms(&self) -> Option<u64> {
+        self.last_mode_key_tick_ms
+    }
+
     /// ADR-273 D2 (a)〜(e) の試算（副作用なし）: この字形の観測を**今報告したら**どうなるか。モデルの複製に、本物と同じ
     /// `ObserverReported` を `reduce` に通す（柵・予測の照合〔N1〕・drift の扱いが本物と同じ）。モデルは変えない。
     /// 設定が `observe` のときの journal に使う。複製はここ 1 か所だけ（`architecture_guard` が固定）。

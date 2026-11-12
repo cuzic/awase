@@ -9302,6 +9302,130 @@ fn resume_hold_r2_wiring_adr245_add2() {
     );
 }
 
+/// ADR-292 P(BUG-233): モードキー予測の開が mozc-shm で未照合の間の打鍵の保持(`state/key_effect_open_hold.rs`・
+/// `runtime/key_effect_open_hold.rs`、第3のhold)の配線の形を固定する。
+///
+/// - 武装は `kp_predict_key_effect` の `apply_key_effect_prediction` の後、予測が開のときだけ。
+/// - 保持の判定は `deliver_key_event` の先頭の `hold_on_delivery` で、窓切替直後 → 戻り待ち → この保持の順。
+///   `kp_run_inner` の Phase A の直後にも判定する(入れ子で武装したとき、今の打鍵が追い越さない)。
+/// - 解放は短周期のタイマー・上限・フォーカスの変化(`ir_notify_focus_changed`)・`WM_PANIC_RESET`・設定の再読み込み。
+/// - 再生は `INPUT_DEFER.replay_later` の 1 か所。殻は IME へ書かず、belief への入口は `mozc_shm_read_for_hold`
+///   (→ 既存の `report_mozc_shm` の 1 か所)だけ。読みの起点はローリング値の代わりに保持専用の起点(T1)。
+#[test]
+fn key_effect_open_hold_wiring_adr292_p() {
+    let squash = |s: &str| s.split_whitespace().collect::<String>();
+    let code = |rel: &str| {
+        squash(&non_comment_lines(production_code_only(&read_crate_file(
+            rel,
+        ))))
+    };
+
+    // 武装の入口
+    let kp = code("src/runtime/key_pipeline.rs");
+    let apply_at = kp
+        .find(".apply_key_effect_prediction(prediction,tick);")
+        .expect("kp_predict_key_effect の予測の反映");
+    let arm_at = kp
+        .find("self.key_effect_open_hold_arm();")
+        .expect("予測が開のときに武装する");
+    assert!(apply_at < arm_at, "武装は予測の反映の後");
+    assert!(
+        kp[apply_at..arm_at].contains("ifprediction.effect.open==Some(true){"),
+        "武装は予測が開のときだけ"
+    );
+    // Phase A の直後
+    let phase_a = kp.find("take_ime_off_rescue_pending()").expect("Phase A");
+    let nested = kp[phase_a..]
+        .find("self.key_effect_open_hold_on_key(&event)")
+        .map(|i| phase_a + i)
+        .expect("Phase A の直後に保持の判定がある");
+    let focus_probe = kp[phase_a..]
+        .find("self.kp_stage_focus_probe();")
+        .map(|i| phase_a + i)
+        .expect("kp_stage_focus_probe");
+    assert!(nested < focus_probe);
+    assert!(
+        kp.contains("if!skip_rescue_defer&&self.key_effect_open_hold_on_key(&event)"),
+        "Phase A の直後の判定も ime-off-rescue の再生(skip_rescue_defer)を対象外にする(コードレビュー指摘 3)"
+    );
+
+    // hold_on_delivery の順序
+    assert!(
+        code("src/runtime/focus_switch_hold.rs").contains(
+            "self.focus_switch_hold_on_delivery(event,origin)||self.resume_hold_on_delivery(event,origin)||self.key_effect_open_hold_on_delivery(event,origin)"
+        ),
+        "窓切替直後 → 戻り待ち → 予測の未照合の順に見る"
+    );
+
+    // 解放の入口
+    let mh = code("src/runtime/message_handlers.rs");
+    assert!(
+        mh.contains("TIMER_KEY_EFFECT_OPEN_HOLD=>")
+            && mh.contains("timer.kill(crate::TIMER_KEY_EFFECT_OPEN_HOLD)")
+            && mh.contains("app.key_effect_open_hold_on_timer()"),
+        "タイマーのハンドラは冒頭で kill してから判定する"
+    );
+    assert!(
+        mh.contains("crate::state::key_effect_open_hold::ReleaseReason::PanicReset"),
+        "WM_PANIC_RESET で保持を解放する"
+    );
+    assert!(
+        code("src/runtime/lang_detect_shadow.rs")
+            .contains("crate::state::key_effect_open_hold::ReleaseReason::ConfigReload"),
+        "設定の再読み込みで保持を解放する"
+    );
+    assert!(
+        code("src/runtime/ime_refresh.rs")
+            .contains("crate::state::key_effect_open_hold::ReleaseReason::FocusChanged"),
+        "フォーカスの変化で保持を解放する(窓が違えば warn を残して捨てる)"
+    );
+
+    // 読みの起点(T1)
+    assert!(
+        code("src/runtime/mozc_shm_shadow.rs")
+            .contains("hold_baseline_ms.unwrap_or_else(crate::hook::last_operation_tick_ms)"),
+        "保持の解放判定の読みはローリング値の代わりに保持専用の起点を使う"
+    );
+
+    // 殻
+    let kh = code("src/runtime/key_effect_open_hold.rs");
+    assert_eq!(
+        kh.matches(".replay_later(").count(),
+        1,
+        "保持の再生は INPUT_DEFER.replay_later の 1 か所だけ"
+    );
+    assert!(kh.contains("KeyOrigin::ImeOffRescueReplay"));
+    assert!(kh.contains("self.mozc_shm_read_for_hold(baseline)"));
+    for forbidden in [
+        "send_input",
+        "SendInput",
+        "VK_BACK",
+        "set_ime_open",
+        "dispatch_event",
+        "record_explicit_intent",
+        "apply_key_effect",
+        "report_mozc_shm(",
+        "with_app(",
+    ] {
+        assert!(
+            !kh.contains(forbidden),
+            "key_effect_open_hold.rs は {forbidden} を使わない(IME へ書かない・belief への入口は report_mozc_shm だけ)"
+        );
+    }
+    assert_eq!(
+        kh.matches("timer.set(crate::TIMER_KEY_EFFECT_OPEN_HOLD")
+            .count(),
+        2,
+        "タイマーは保持の開始と、判定が保持を続けるときだけ張る"
+    );
+    assert_eq!(
+        kh.matches("timer.kill(crate::TIMER_KEY_EFFECT_OPEN_HOLD)")
+            .count(),
+        2,
+        "解放の出口で再生・破棄の両方が kill する"
+    );
+}
+
 /// ADR-245 PR 2: 半角英数トグルの「戻ってきたときに復元」の配線の形を固定する。
 ///
 /// - 離脱(`ir_notify_focus_changed`)は復元(`kp_restore_kana_from_half_width`)を呼ばない。IME へ何も送らず、

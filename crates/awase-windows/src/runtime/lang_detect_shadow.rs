@@ -678,6 +678,11 @@ impl super::Runtime {
         );
         // PR #809 の M1: 窓切替直後の打鍵の保持も同じく解放する。
         self.focus_switch_hold_release_all("ConfigReload");
+        // ADR-292 P: モードキー予測の未照合の間の保持も同じく解放する。
+        self.key_effect_open_hold_release(
+            None,
+            crate::state::key_effect_open_hold::ReleaseReason::ConfigReload,
+        );
         // 設定リロードで作り直す前に、保持中の打鍵を解放する（作り直しで黙って消えないように）。
         let scope = scope_id(crate::win32::foreground_scope());
         self.lang_detect.scope_now = scope;
