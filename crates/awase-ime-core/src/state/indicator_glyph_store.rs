@@ -161,14 +161,13 @@ impl GlyphSampleFile {
         self.envs
             .iter()
             .find(|e| &e.fingerprint == fingerprint)
-            .map(|e| {
+            .map_or_default(|e| {
                 e.samples
                     .iter()
                     .take(MAX_SAMPLES_PER_ENV)
                     .filter_map(from_stored)
                     .collect()
             })
-            .unwrap_or_default()
     }
 
     /// この環境の見本を、表の同じ環境の見本で置き換える（なければ足す）。環境の数が上限を超えたら古いものから捨てる。
