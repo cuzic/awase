@@ -50,9 +50,16 @@ status: |-
   既に却下済みの設計を再現する指摘、G1/G2)・round3((a)固有の別の欠陥〈170ms柵による書き込み
   拒否〉を指摘され(b)へ設計変更、H1〜H3)を経て、round4で「ゲート除去は他の2つのトグル抜け口
   (`key_pipeline.rs`・`ime_refresh.rs`のfocus-suspend)と揃えるだけで新しいリスクではない」と
-  確認され収束(これ以上のレビューラウンドは不要と判定)。実装PRで直す3件のコメント同期
-  (`half_width_alnum.rs`・`architecture_guard.rs`docstring・`mode_state.rs`)を残し、
-  実装・実機確認とも未着手。
+  確認され収束(これ以上のレビューラウンドは不要と判定)。**D1′はround4で確定した設計(b)どおり
+  実装済み**(コミット`68afaf900`、branch `fix/bug231-adr291-d1-prime`、developへは未マージ)。
+  実装PRで直す3件のコメント同期(`half_width_alnum.rs`・`architecture_guard.rs`docstring・
+  `mode_state.rs`)も同コミットで反映済み。回帰は`scope_belief.rs`の既存テストに
+  `UserTurnOnEisuReset`がZに写らないことの明示assertを追加して固定(Linux単体テスト、
+  `fix-requires-evidence.md`(a))。Linux `cargo test --lib`全件・`cargo nextest run
+  --workspace --lib`・Windows target `cargo check`/`clippy -D warnings`/`fmt --check`、
+  いずれもグリーン。実機再発(2026-11-13 11:45:47〜11:46:00 JST、dragonflyg4、修正前ビルド、
+  固着時間約13.5秒)で原因2の診断を再確認済み(詳細は[BUG-231](../known-bugs/BUG-231.md))。
+  実機での修正後の再確認はまだ(デプロイ待ち)。
 
   D5(BUG-232)はコード実装済み(`crates/awase-ime-core/src/state/mozc_shm.rs::decide_use`、
   Linux単体テスト2件追加、既存52件含め全774件グリーン、windows target check/clippy/fmtグリーン)。
