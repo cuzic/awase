@@ -50,9 +50,31 @@ status: |-
   既に却下済みの設計を再現する指摘、G1/G2)・round3((a)固有の別の欠陥〈170ms柵による書き込み
   拒否〉を指摘され(b)へ設計変更、H1〜H3)を経て、round4で「ゲート除去は他の2つのトグル抜け口
   (`key_pipeline.rs`・`ime_refresh.rs`のfocus-suspend)と揃えるだけで新しいリスクではない」と
-  確認され収束(これ以上のレビューラウンドは不要と判定)。実装PRで直す3件のコメント同期
-  (`half_width_alnum.rs`・`architecture_guard.rs`docstring・`mode_state.rs`)を残し、
-  実装・実機確認とも未着手。
+  確認され収束(これ以上のレビューラウンドは不要と判定)。**D1′はround4で確定した設計(b)どおり
+  実装済み**([PR #938](https://github.com/cuzic/awase/pull/938)、コミット`68afaf900`)。
+  実装PRで直す3件のコメント同期(`half_width_alnum.rs`・`architecture_guard.rs`docstring・
+  `mode_state.rs`)も同PRで反映済み。
+
+  実装後のOpus敵対的レビュー(PR #938自体のレビュー、1ラウンド)で、`scope_belief.rs`の
+  既存テストへの追加assert(`UserTurnOnEisuReset`がZに写らないことの確認)は「表の性質」を
+  固定するだけで、本fix自体(`ir_do_abandon_half_width_alnum_from_mozc_shm`が
+  `UserHalfWidthAlnumToggle`を無条件dispatchし`notify_engine_refresh()`を呼ぶこと)への
+  回帰(例: 旧`UserTurnOnEisuReset`呼び出しへの巻き戻しや`notify_engine_refresh()`の削除)を
+  検知しないという指摘を受け、2つのテストを追加した: (S1)
+  `architecture_guard.rs::mozc_shm_abandon_writes_z_reachable_strategy_and_notifies_engine`
+  (関数本体のソース走査で呼び出し・順序・禁止パターンを直接固定)、(S2)
+  `platform_state.rs::scope_shadow_tests::
+  engine_belief_z_follows_user_half_width_alnum_toggle_but_ignores_user_turn_on_eisu_reset`
+  (Hub直結で`engine_belief()`レベルの修正前後の差をBUG-231として再現・固定)。未解決2(ii)(iii)は
+  S2単独で満たすが、(i)(Engineが追加の打鍵無しで活性化すること)はS2単独では belief しか見ないため
+  満たさず、S1(この belief 更新の直後に`notify_engine_refresh()`が呼ばれることの固定)と
+  **合わせて**満たす(round2レビューで指摘・訂正)。どちらもLinuxで実行可能。Linux
+  `cargo test --lib`全件・`cargo test -p awase-windows --test architecture_guard`(S1含む177件)・
+  `cargo nextest run --workspace --lib`・Windows target `cargo check`/`clippy -D warnings`/
+  `fmt --check`、いずれもグリーン(CIの`test`/`windows-test`ジョブでも確認済み、run 43364902807)。
+  実機再発(2026-11-13 11:45:47〜11:46:00 JST、dragonflyg4、修正前ビルド、固着時間約13.5秒)で
+  原因2の診断を再確認済み(詳細は[BUG-231](../known-bugs/BUG-231.md))。実機での修正後の再確認は
+  まだ(デプロイ待ち)。
 
   D5(BUG-232)はコード実装済み(`crates/awase-ime-core/src/state/mozc_shm.rs::decide_use`、
   Linux単体テスト2件追加、既存52件含め全774件グリーン、windows target check/clippy/fmtグリーン)。

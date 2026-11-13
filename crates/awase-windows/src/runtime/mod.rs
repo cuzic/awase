@@ -1517,7 +1517,8 @@ impl Runtime {
         self.predict_henkan_open_in_unreadable_windows = enabled;
     }
 
-    /// ADR-282 V2-2: `config.general.belief_v2`(隠し設定、既定 false)。Engine の入力の belief を候補 Z から読むか。
+    /// ADR-282 V2-2: `config.general.belief_v2`(隠し設定、既定 true、ADR-282 V2-3 決定O8)。
+    /// Engine の入力の belief を候補 Z から読むか。
     pub(crate) fn set_belief_v2(&mut self, enabled: bool) {
         self.platform_state.ime.set_engine_belief_z(enabled);
     }

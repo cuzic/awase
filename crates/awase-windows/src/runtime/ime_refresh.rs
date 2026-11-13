@@ -102,9 +102,17 @@ impl Runtime {
     /// 実際に観測してからのかなの読みだけを「本当の追随」として受理する。
     ///
     /// 手放すと分かったら、BUG-222(`kp_exit_lang_detect_toggle_on_hiragana`)と同じ後始末に加えて
-    /// `eisu_reset_on_turn_on_while_open` → `InputModeApplied`でromaji-capableへ戻す(ADR-244 D3の
-    /// 直接観測と違い、ここでは一切`InputModeObserved`を書いていないため、ObservedEisuのまま放置すると
-    /// Engineが`Inactive(NotRomajiInput)`のまま戻らない、Opusレビュー round1 F1)。
+    /// `AssumedRomaji{UserHalfWidthAlnumToggleOff}`を`InputModeApplyStrategy::UserHalfWidthAlnumToggle`
+    /// で無条件dispatchしromaji-capableへ戻す(ADR-291 D1′、BUG-231)。`key_pipeline.rs`/本ファイルの
+    /// focus-suspend経路にある他2つのトグル抜け口と同じstrategyで揃える——以前はここだけ
+    /// `eisu_reset_on_turn_on_while_open`→`UserTurnOnEisuReset`を使っていたが、`general.belief_v2`
+    /// (既定true、ADR-282)下でEngineが読む候補Z(`scope_belief.rs::scope_event_of`)の変換表は
+    /// `UserTurnOnEisuReset`を`_ => None`として無視するため、旧`ImeModel`だけが即座に
+    /// romaji-capableへ補正され、**Zは英数(Eisu)の主張のまま取り残される**。この間に打鍵しても
+    /// `Engine::on_input`は毎回`check_active_transition`を再実行するが読む先のZが古いため非活性が
+    /// 続き、次に`InputModeObserved`等でZへ直接届く何らかの観測(かなキー押下の予測等)が起きるまで
+    /// 最大数秒Engineが`Inactive(NotRomajiInput)`のまま固着する(2026-11-11実機で最大約5.3秒、
+    /// 2026-11-13実機で約13.5秒を観測)。
     pub(super) fn ir_abandon_half_width_alnum_from_mozc_shm_if(
         &mut self,
         mode_read: Option<(crate::state::mozc_shm::CompositionMode, u64)>,
@@ -164,18 +172,19 @@ impl Runtime {
         tracing::info!(
             "[shift-conv-guard] mozc-shm の観測でかなへの追随を確認 → 半角英数トグルを手放す (OS 書き込みなし、ADR-290)"
         );
-        // BUG-222 と同じく、手放した belief を romaji-capable へ戻す(ObservedEisu を放置しない、F1)。
+        // 旧ImeModelだけでなく候補Z(belief_v2)にも届く経路(ADR-291 D1′)。key_pipeline.rs の
+        // 2経路・本ファイルの focus-suspend 経路と同じ strategy で揃える（BUG-231）。
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_turn_on_while_open(
-            true,
-            self.platform_state.ime.input_mode(),
-        ) {
-            self.apply_input_mode_correction(
-                new_mode,
-                crate::state::ime_event::InputModeApplyStrategy::UserTurnOnEisuReset,
-                tick_ms,
-            );
-        }
+        self.apply_input_mode_correction(
+            InputModeState::AssumedRomaji {
+                reason: awase::engine::AssumedReason::UserHalfWidthAlnumToggleOff,
+            },
+            crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            tick_ms,
+        );
+        // タイマー/ポーリング由来のtickからの手放しのため、ここで明示的に Engine の活性再評価を
+        // 呼ばないと次の物理キー入力まで Inactive(NotRomajiInput) のまま取り残される(ADR-291 D1′)。
+        self.notify_engine_refresh();
     }
 
     // ── Stage 1: フォーカス検出 ──

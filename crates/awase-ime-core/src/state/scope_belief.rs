@@ -1245,13 +1245,33 @@ mod tests {
         );
         z.evolve(scope_event_of(&off, &z.view(), 0, 600).expect("トグル OFF も写す"));
         assert_ne!(z.view().input_mode, InputModeState::ObservedEisu);
+        // `ModeClass::Kana`であることを明示的に確かめる(ADR-290 D1′ F1回帰の固定)——
+        // 単に`!= ObservedEisu`だけでは、`ObservedKana`/`KanaInputMethod`(JISかな直接入力)への
+        // 誤った写しも素通りしてしまう(ADR-291未解決2(iii))。
+        assert_eq!(mode_class_of(z.view().input_mode), Some(ModeClass::Kana));
 
         // 適用しなかったもの・表に無い手段は写さない。
+        //
+        // BUG-231: `UserTurnOnEisuReset` がここで写らない(表に無い)ことが、
+        // `ir_do_abandon_half_width_alnum_from_mozc_shm`(当時)が同strategyで旧ImeModelだけを
+        // romaji-capableへ補正しZを英数のまま取り残した根本原因だった。ADR-291 D1′でその呼び出しを
+        // `UserHalfWidthAlnumToggle`(上のトグルOFFと同じ、表に入っている)へ差し替えて直した。
+        //
+        // このassertは「表の現状」を記録するだけ(今後も成り立つことを保証する規範ではない)。
+        // BUG-222の`kp_exit_lang_detect_toggle_on_hiragana`(key_pipeline.rs)も同じ
+        // `UserTurnOnEisuReset`を書くため同じ穴を持つ可能性が高く(ADR-291未解決3)、その修正で
+        // `UserTurnOnEisuReset`自体を表に追加するのは妥当な選択。そうする場合は、この
+        // `UserTurnOnEisuReset`の行をループから削り、代わりに上のトグルOFFと同じ形で
+        // 「写ること」を確かめるassertへ書き直すこと。
         let view = z.view();
         for (strategy, result) in [
             (
                 InputModeApplyStrategy::UserHalfWidthAlnumToggle,
                 InputModeApplyResult::Skipped,
+            ),
+            (
+                InputModeApplyStrategy::UserTurnOnEisuReset,
+                InputModeApplyResult::Applied,
             ),
             (
                 InputModeApplyStrategy::CacheRestore,

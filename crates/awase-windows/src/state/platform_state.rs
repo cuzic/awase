@@ -6202,4 +6202,92 @@ mod scope_shadow_tests {
         ps.ime.scope_shadow_end_focus(TickMs(T0 + 7));
         assert_eq!(belief_v2_rows(&ps).len(), n + 1);
     }
+
+    /// ADR-291 D1′/BUG-231: `engine_belief_z`(`general.belief_v2`)が有効なとき、
+    /// `UserHalfWidthAlnumToggle`は候補Zにも届くが、`UserTurnOnEisuReset`(旧実装が使っていた
+    /// strategy)はZに無視される——この非対称こそがBUG-231の根本原因だったことを、
+    /// `ir_do_abandon_half_width_alnum_from_mozc_shm`自体を呼ばずに(Runtime不要)Hub直結で
+    /// 再現・固定する(Opusレビュー、PR #938 S2)。
+    #[test]
+    fn engine_belief_z_follows_user_half_width_alnum_toggle_but_ignores_user_turn_on_eisu_reset() {
+        use crate::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
+        use crate::state::scope_belief::{mode_class_of, ModeClass};
+        use awase::engine::{AssumedReason, InputModeState};
+
+        fn setup() -> PlatformState {
+            let mut ps = PlatformState::for_test(crate::state::hub_clock::HubClock::manual(
+                T0,
+                std::time::Instant::now(),
+            ));
+            ps.ime.set_engine_belief_z(true);
+            focus(&mut ps, 1, 1, T0, true);
+            // トグルON相当: Zを英数(Eisu)にする(BUG-231の前提: 手放し前はZ=Eisu)。
+            ps.ime.dispatch_event(
+                ImeEvent::InputModeApplied {
+                    mode: InputModeState::ObservedEisu,
+                    strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+                    result: InputModeApplyResult::Applied,
+                },
+                TickMs(T0 + 10),
+            );
+            assert_eq!(
+                ps.ime.engine_belief().input_mode,
+                InputModeState::ObservedEisu,
+                "前提: トグルONでZがEisuになる"
+            );
+            ps
+        }
+
+        // 修正後の経路: UserHalfWidthAlnumToggle は Z にも届く(ADR-291 D1′が実際に直す対象)。
+        let mut fixed = setup();
+        fixed.ime.dispatch_event(
+            ImeEvent::InputModeApplied {
+                mode: InputModeState::AssumedRomaji {
+                    reason: AssumedReason::UserHalfWidthAlnumToggleOff,
+                },
+                strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+                result: InputModeApplyResult::Applied,
+            },
+            TickMs(T0 + 20),
+        );
+        let z_mode = fixed.ime.engine_belief().input_mode;
+        assert!(
+            z_mode.is_romaji_capable(),
+            "UserHalfWidthAlnumToggle での手放しは Z を romaji-capable へ進める: {z_mode:?}"
+        );
+        assert_eq!(
+            mode_class_of(z_mode),
+            Some(ModeClass::Kana),
+            "書き込むモードは常に AssumedRomaji(ModeClass::Kana)であり、\
+             ObservedKana/KanaInputMethod ではないこと(ADR-290 D1′ F1 回帰の固定、未解決2(iii))"
+        );
+        assert!(
+            fixed.ime.input_mode().is_romaji_capable(),
+            "旧ImeModelも romaji-capable へ進む(未解決2(ii))"
+        );
+
+        // BUG-231 の再現: 旧実装が使っていた UserTurnOnEisuReset は、旧ImeModelは直すが
+        // Z には届かない(scope_event_of の変換表に無いため)。
+        let mut reproduced = setup();
+        reproduced.ime.dispatch_event(
+            ImeEvent::InputModeApplied {
+                mode: InputModeState::AssumedRomaji {
+                    reason: AssumedReason::UserHalfWidthAlnumToggleOff,
+                },
+                strategy: InputModeApplyStrategy::UserTurnOnEisuReset,
+                result: InputModeApplyResult::Applied,
+            },
+            TickMs(T0 + 20),
+        );
+        assert_eq!(
+            reproduced.ime.engine_belief().input_mode,
+            InputModeState::ObservedEisu,
+            "BUG-231の再現: UserTurnOnEisuReset では Z が Eisu のまま取り残される \
+             (Engine が読む先が古いまま、Inactive(NotRomajiInput)固着の直接原因)"
+        );
+        assert!(
+            reproduced.ime.input_mode().is_romaji_capable(),
+            "旧ImeModelだけは即座に romaji-capable へ補正される(食い違いの直接証拠)"
+        );
+    }
 }
