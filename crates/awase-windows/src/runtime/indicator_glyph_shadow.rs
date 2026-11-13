@@ -208,9 +208,10 @@ impl super::Runtime {
     ) {
         // 保存済みの見本（同じ環境で集めたもの）を読む。壊れている・版が違う・無いときは空（集め直す）。
         let store_path = base_dir.join(SAMPLES_FILENAME);
-        let store = std::fs::read_to_string(&store_path)
-            .map(|json| GlyphSampleFile::from_json(&json))
-            .unwrap_or_default();
+        let store = std::fs::read_to_string(&store_path).map_or_else(
+            |_| GlyphSampleFile::default(),
+            |json| GlyphSampleFile::from_json(&json),
+        );
         tracing::info!(
             "[indicator-glyph] stored sample environments: {} ({})",
             store.env_count(),

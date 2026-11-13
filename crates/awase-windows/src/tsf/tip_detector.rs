@@ -389,8 +389,7 @@ pub(super) fn dump_profiles(
                     &raw const prof.guidProfile,
                 )
                 .ok()
-                .map(|b| b.to_string())
-                .unwrap_or_default();
+                .map_or_else(String::new, |b| b.to_string());
             if prof.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR {
                 cache_profile_description(&prof, &desc);
             }

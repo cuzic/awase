@@ -161,7 +161,7 @@ impl GlyphSampleFile {
         self.envs
             .iter()
             .find(|e| &e.fingerprint == fingerprint)
-            .map_or_default(|e| {
+            .map_or_else(Vec::new, |e| {
                 e.samples
                     .iter()
                     .take(MAX_SAMPLES_PER_ENV)
