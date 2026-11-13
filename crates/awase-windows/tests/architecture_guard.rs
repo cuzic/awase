@@ -787,6 +787,8 @@ fn heuristic_default_observation_is_limited_to_designated_methods() {
 ///     (`AssumedRomaji` へ、`kp_restore_kana_from_half_width`。B節のトグルOFF・E節の3競合
 ///     経路・F節のフォーカス変更安全策から共通で呼ばれる、2026-07-11)
 ///   - `ime_refresh.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (FocusChanged)
+///   - `ime_refresh.rs` (フォーカス変更時のトグル下ろし)   → `InputModeApplyStrategy::UserHalfWidthAlnumToggle`
+///     (`AssumedRomaji` へ、`ir_notify_focus_changed`のfocus-suspend経路。OSへは送らない)
 ///   - `ime_refresh.rs` (mozc-shm観測での半角英数トグル手放し)→ `InputModeApplyStrategy::UserHalfWidthAlnumToggle`
 ///     (`AssumedRomaji` へ、`ir_do_abandon_half_width_alnum_from_mozc_shm`、ADR-291 D1′/BUG-231、2026-11-13)
 ///   - `runtime/mod.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (Blacklist force-ON)
@@ -797,7 +799,10 @@ fn heuristic_default_observation_is_limited_to_designated_methods() {
 #[test]
 fn input_mode_applied_construction_sites_are_accounted_for() {
     let known_sites: &[(&str, usize)] = &[
-        ("src/state/platform_state.rs", 2), // PanicReset + CacheRestore（直接構築、対象外）
+        // PanicReset + CacheRestore（本番、直接構築、対象外）+ 3（ADR-291 D1′/BUG-231の回帰テスト
+        // `scope_shadow_tests::engine_belief_z_follows_user_half_width_alnum_toggle_but_ignores_user_turn_on_eisu_reset`
+        // が`#[cfg(test)]`内でHub直結で構築する分、本番の呼び出し元は増えていない）。
+        ("src/state/platform_state.rs", 5),
         // 7箇所すべて apply_input_mode_correction 経由になったため key_pipeline.rs / ime_refresh.rs はゼロ。
         ("src/runtime/key_pipeline.rs", 0),
         ("src/runtime/ime_refresh.rs", 0),
@@ -9768,4 +9773,58 @@ fn lang_detect_toggle_is_exited_by_hiragana_key_only_when_marked() {
             "key_pipeline に {needle} が無い（BUG-222）"
         );
     }
+}
+
+/// ADR-291 D1′/BUG-231: `ir_do_abandon_half_width_alnum_from_mozc_shm`(mozc-shm観測での
+/// 半角英数トグル手放し)が、旧`ImeModel`だけでなく候補Z(belief_v2)にも届く形を保っていること。
+///
+/// Opusレビュー(PR #938)の指摘どおり、`scope_belief.rs`の`UserTurnOnEisuReset`非写像テストは
+/// 「表自体の性質」しか固定せず、この呼び出し元が**元のゲート付き`UserTurnOnEisuReset`経由へ
+/// 戻る回帰**や**`notify_engine_refresh()`の削除**を検知しない(どちらも全テストが通る)。
+/// この関数の本体をソース走査で直接固定し、その穴を塞ぐ。
+#[test]
+fn mozc_shm_abandon_writes_z_reachable_strategy_and_notifies_engine() {
+    let content = read_crate_file("src/runtime/ime_refresh.rs");
+    let content = production_code_only(&content);
+    let body = extract_fn_body(content, "fn ir_do_abandon_half_width_alnum_from_mozc_shm(");
+    let squashed: String = body.split_whitespace().collect();
+
+    for needle in [
+        ".abandon_on_observed_follow()",
+        "InputModeApplyStrategy::UserHalfWidthAlnumToggle",
+        "AssumedRomaji{reason:awase::engine::AssumedReason::UserHalfWidthAlnumToggleOff,}",
+        "self.notify_engine_refresh();",
+    ] {
+        assert!(
+            squashed.contains(needle),
+            "ir_do_abandon_half_width_alnum_from_mozc_shm に {needle} が無い(ADR-291 D1′/BUG-231)"
+        );
+    }
+    for needle in [
+        "UserTurnOnEisuReset",
+        "eisu_reset_on_turn_on_while_open",
+        "ObservedKana",
+        "InputModeObserved",
+    ] {
+        assert!(
+            !squashed.contains(needle),
+            "ir_do_abandon_half_width_alnum_from_mozc_shm に {needle} が復活している(ADR-290 D1′ \
+             F1/ADR-291 D1′の回帰。Zに届かない旧strategyへ戻した、またはObservedKanaを書く変更は \
+             Engineが`Inactive(NotRomajiInput)`のまま戻らない退行を再現する)"
+        );
+    }
+
+    // 書き込み(apply_input_mode_correction)がEngine再評価の通知より前に行われること
+    // (順序を入れ替えると、古いbeliefのままRefreshStateを呼んでしまう)。
+    let write_pos = squashed
+        .find("apply_input_mode_correction(")
+        .expect("apply_input_mode_correction呼び出しが見つからない");
+    let notify_pos = squashed
+        .find("self.notify_engine_refresh();")
+        .expect("notify_engine_refresh呼び出しが見つからない");
+    assert!(
+        write_pos < notify_pos,
+        "apply_input_mode_correction はnotify_engine_refreshより前であること(新しいbeliefを \
+         書いてからEngineへ再評価させる順序が入れ替わっている)"
+    );
 }
