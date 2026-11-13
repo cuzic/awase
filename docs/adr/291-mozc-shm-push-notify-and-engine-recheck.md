@@ -51,11 +51,11 @@ status: |-
   拒否〉を指摘され(b)へ設計変更、H1〜H3)を経て、round4で「ゲート除去は他の2つのトグル抜け口
   (`key_pipeline.rs`・`ime_refresh.rs`のfocus-suspend)と揃えるだけで新しいリスクではない」と
   確認され収束(これ以上のレビューラウンドは不要と判定)。**D1′はround4で確定した設計(b)どおり
-  実装済み**([PR #938](https://github.com/cuzic/awase/pull/938)、コミット`68afaf900`)。
-  実装PRで直す3件のコメント同期(`half_width_alnum.rs`・`architecture_guard.rs`docstring・
-  `mode_state.rs`)も同PRで反映済み。
+  実装し、[PR #938](https://github.com/cuzic/awase/pull/938)としてdevelopへマージ済み**
+  (squash commit `96fa5e40d`、2026-11-13)。実装PRで直す3件のコメント同期
+  (`half_width_alnum.rs`・`architecture_guard.rs`docstring・`mode_state.rs`)も同PRで反映済み。
 
-  実装後のOpus敵対的レビュー(PR #938自体のレビュー、1ラウンド)で、`scope_belief.rs`の
+  実装後のOpus敵対的レビュー(PR #938自体のレビュー、2ラウンドで収束)で、`scope_belief.rs`の
   既存テストへの追加assert(`UserTurnOnEisuReset`がZに写らないことの確認)は「表の性質」を
   固定するだけで、本fix自体(`ir_do_abandon_half_width_alnum_from_mozc_shm`が
   `UserHalfWidthAlnumToggle`を無条件dispatchし`notify_engine_refresh()`を呼ぶこと)への
@@ -74,7 +74,7 @@ status: |-
   `fmt --check`、いずれもグリーン(CIの`test`/`windows-test`ジョブでも確認済み、run 43364902807)。
   実機再発(2026-11-13 11:45:47〜11:46:00 JST、dragonflyg4、修正前ビルド、固着時間約13.5秒)で
   原因2の診断を再確認済み(詳細は[BUG-231](../known-bugs/BUG-231.md))。実機での修正後の再確認は
-  まだ(デプロイ待ち)。
+  まだ(デプロイ後に確認予定)。
 
   D5(BUG-232)はコード実装済み(`crates/awase-ime-core/src/state/mozc_shm.rs::decide_use`、
   Linux単体テスト2件追加、既存52件含め全774件グリーン、windows target check/clippy/fmtグリーン)。
