@@ -14,7 +14,7 @@ name: mozc-shm-e2e
 
 on:
   push:
-    branches: [ci/mozc-shm-e2e, ci/mozc-shm-e2e2]
+    branches: [ci/mozc-shm-e2e, ci/mozc-shm-e2e2, ci/bug234-publish-delay]
   workflow_dispatch:
 
 permissions:
@@ -67,29 +67,16 @@ jobs:
         # stale は IME(レイアウト)の切り替えがセッション全体に効くので、専用のジョブにする。
         # include だけで列挙する(既存の値と同じ項目を持つ include は、新しいジョブではなく既存のジョブに項目を足してしまう)。
         include:
-          - scenario: focus
-          - scenario: threads
-          - scenario: appcontainer
-          # 対照: awase を起動せずに、AppContainer の窓を同じ手順で IME ON にできるか(awase の干渉かどうかの切り分け)
-          - scenario: appcontainer
-            noawase: '-NoAwase'
-          - scenario: stale
-          # 速い切り替え: 滞在 0.03〜0.4 秒(切り替えの直後に読む機会が増える。awase の読みは tick の周期を待たない場面も含む)
-          - scenario: focus
-            fast: '-DwellMin 0.03 -DwellMax 0.4 -Rounds 300 -FocusGrace 1.5'
-          - scenario: threads
-            fast: '-DwellMin 0.03 -DwellMax 0.4 -Rounds 300 -FocusGrace 1.5'
-          # 真値が動く場面: 状態を切り替えた直後(0〜200ms)にフォーカスを移す
-          - scenario: flip
-            fast: '-Rounds 150 -FocusGrace 1.5'
-          # 負荷時の read_us: CPU を使い切るプロセスを 8 つ動かしながら、速い切り替え
-          - scenario: focus
-            fast: '-DwellMin 0.1 -DwellMax 0.5 -Rounds 200 -FocusGrace 1.5 -Load 8'
-            tag: load
-          # スレッド ID の再利用(awase なし)
-          - scenario: tidreuse
-          # [BUG-232] update_tick_ms がブロック全体の dirty タイムスタンプであること(awase なし)
-          - scenario: tickchurn
+          # [BUG-234] 1 回限りの検証(ci/bug234-publish-delay): mozc-readable の試験用の遅延注入で、明示 OFF の後の
+          # 開閉の公開を遅らせ、awase が古い「開」へ追随するかを遅延量ごとに測る。0 は対照(遅延なし)。
+          - scenario: bug234
+            delay: 0
+          - scenario: bug234
+            delay: 300
+          - scenario: bug234
+            delay: 700
+          - scenario: bug234
+            delay: 2000
     steps:
       - uses: actions/checkout@v4
       - name: mozc-readable の CI の部品(AppContainer 用)
@@ -107,18 +94,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $run = gh run list -R cuzic/mozc-readable --workflow readable-build.yaml --branch readable --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          # bug234 は遅延注入の入った exp/open-close-publish-delay の MSI を使う。
+          $branch = if ('${{ matrix.scenario }}' -eq 'bug234') { 'exp/open-close-publish-delay' } else { 'readable' }
+          $run = gh run list -R cuzic/mozc-readable --workflow readable-build.yaml --branch $branch --status success --limit 1 --json databaseId --jq '.[0].databaseId'
           Write-Host "mozc-readable readable-build run: $run"
           gh run download $run -R cuzic/mozc-readable -n Mozc64_x64.msi -D msi
           Get-ChildItem msi | Out-Host
       - name: 場面を測る (${{ matrix.scenario }})
         shell: pwsh
-        run: ./tools/mozc_shm_ci/run_scenario.ps1 -Scenario ${{ matrix.scenario }} -Msi "${{ github.workspace }}\msi\Mozc64.msi" -Dist dist -OutDir out ${{ matrix.noawase }} ${{ matrix.fast }}
+        run: ./tools/mozc_shm_ci/run_scenario.ps1 -Scenario ${{ matrix.scenario }} -Msi "${{ github.workspace }}\msi\Mozc64.msi" -Dist dist -OutDir out -DelayMs ${{ matrix.delay || 0 }} ${{ matrix.noawase }} ${{ matrix.fast }}
       - name: 結果を残す
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mozc-shm-${{ matrix.scenario }}${{ matrix.noawase && '-control' || '' }}${{ matrix.fast && '-fast' || '' }}${{ matrix.tag && format('-{0}', matrix.tag) || '' }}
+          name: mozc-shm-${{ matrix.scenario }}-d${{ matrix.delay || 0 }}${{ matrix.noawase && '-control' || '' }}${{ matrix.fast && '-fast' || '' }}${{ matrix.tag && format('-{0}', matrix.tag) || '' }}
           path: out
           if-no-files-found: ignore
           retention-days: 7

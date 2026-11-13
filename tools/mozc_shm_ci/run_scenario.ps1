@@ -3,7 +3,7 @@
 # 窓にキーを送るので、コンソール窓を作るプロセスを並行して起動しない(窓が前面を奪って、キーが別の窓に行く)。
 # python のヘルパーは shmci.py の中で CREATE_NO_WINDOW で起動する。ここでは Start-Process -Wait を使わない
 # (TIP を読み込んだプロセスが起動する mozc_server が子孫として残り、-Wait が戻らない)。
-param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'stale', 'flip', 'tidreuse', 'tickchurn')][string]$Scenario,
+param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'stale', 'flip', 'tidreuse', 'tickchurn', 'bug234')][string]$Scenario,
       [Parameter(Mandatory)][string]$Msi,
       [string]$Dist = 'dist',
       [string]$MozcCiDir = 'mozc-readable\readable\ci',
@@ -13,6 +13,8 @@ param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'st
       [double]$FocusGrace = 0.9,
       [int]$Load = 0,
       [string]$OutDir = 'out',
+      [int]$DelayMs = 0,
+      [int]$Trials = 10,
       [switch]$NoAwase)
 $ErrorActionPreference = 'Stop'
 $Clsid   = '{AFC94560-63DA-488E-9227-B04F3EF34B5B}'
@@ -43,6 +45,18 @@ if ($Scenario -eq 'tickchurn') {
   exit $LASTEXITCODE
 }
 
+if ($Scenario -eq 'bug234') {
+  # [BUG-234] mozc-readable の試験用の遅延注入(exp/open-close-publish-delay)で、開閉の公開だけを DelayMs 遅らせる。
+  # TIP はプロセスごとに 1 回だけ読むので、窓を作る shmci.py を起動する前に書く。
+  New-Item -Path 'HKCU:\Software\mozc-readable' -Force | Out-Null
+  New-ItemProperty -Path 'HKCU:\Software\mozc-readable' -Name 'test_open_close_publish_delay_ms' -PropertyType DWord -Value $DelayMs -Force | Out-Null
+  Write-Host "== test_open_close_publish_delay_ms = $DelayMs"
+  # awase の keys.ime_off を単一キー(VK_NONCONVERT)にし、目印付きの注入を物理キーとして扱わせる(AWASE_TEST_INJECTION=1)。
+  $cfg = Join-Path $Dist 'config.toml'
+  Add-Content -Path $cfg -Value @('', '[keys]', 'ime_off = ["VK_NONCONVERT"]')
+  $env:AWASE_TEST_INJECTION = '1'
+}
+
 $aw = $null
 if ($NoAwase) {
   # 対照: awase を起動せずに、同じ手順で窓を IME ON にできるか(awase が干渉しているのか、手順の問題かを切り分ける)
@@ -60,6 +74,19 @@ if ($NoAwase) {
 
 $events = Join-Path $OutDir 'events.jsonl'
 $log = Join-Path $Dist 'awase.log'
+
+if ($Scenario -eq 'bug234') {
+  Write-Host "== bug234 (delay $DelayMs ms, $Trials trials)"
+  python "$here\shmci.py" bug234 --events $events --trials $Trials
+  $driveExit = $LASTEXITCODE
+  Start-Sleep -Seconds 2
+  if (Test-Path $log) { Copy-Item $log (Join-Path $OutDir 'awase-full.log') -ErrorAction SilentlyContinue }
+  python "$here\shmci.py" bug234-analyze --awase-log $log --events $events --delay-ms $DelayMs --summary-json (Join-Path $OutDir 'summary.json')
+  $analyzeExit = $LASTEXITCODE
+  if ($aw) { Stop-Process -Id $aw.Id -Force -ErrorAction SilentlyContinue }
+  if ($driveExit -ne 0) { exit $driveExit }
+  exit $analyzeExit
+}
 
 Write-Host "== drive: $Scenario"
 python "$here\shmci.py" drive $Scenario --events $events --rounds $Rounds --dwell-min $DwellMin --dwell-max $DwellMax --load $Load --mozc-ci-dir $MozcCiDir

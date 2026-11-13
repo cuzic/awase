@@ -336,6 +336,21 @@ def cmd_selftest(_args):
     recs = parse_records([line, "noise", ""])
     assert len(recs) == 1 and recs[0][1]["thread_id"] == 7, recs
     assert abs(recs[0][0] - 1792305031.25) < 1e-6, recs[0][0]
+
+    # [BUG-234] 追随の行の解析と、試行ごとの数え方
+    fl = parse_follows([
+        '2026-10-18T06:30:31.500000Z  INFO awase_windows::state::platform_state: '
+        '[mozc-shm] follow external change open=true effective_was=false desired_was=false',
+        '2026-10-18T06:30:33.000000Z  INFO awase_windows::state::platform_state: '
+        '[mozc-shm] follow external change open=false effective_was=true desired_was=true',
+        "noise",
+    ])
+    assert len(fl) == 2 and fl[0][1] is True and fl[1][1] is False, fl
+    t0 = 1792305031.0
+    rows = bug234_verdicts(fl, [{"trial": 0, "t_off": t0, "t_pub": t0 + 2.0},
+                                {"trial": 1, "t_off": t0 + 10, "t_pub": None}])
+    assert rows[0]["false_follow_open"] == 1 and rows[0]["publish_ms"] == 2000, rows
+    assert rows[1] == {"trial": 1, "observed": False}, rows
     print("selftest OK")
     return 0
 
@@ -940,6 +955,99 @@ def cmd_tickchurn(args):
     return 0 if ok else 1
 
 
+TEST_INJECTION_MARKER = 0x5350494B  # awase hook::TEST_INJECTION_MARKER (AWASE_TEST_INJECTION=1 で物理キー扱い)
+FOLLOW_RE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?)Z\b.*\[mozc-shm\] follow external change open=(true|false)")
+
+
+def parse_follows(lines):
+    """awase.log から `[mozc-shm] follow external change` を取り出す: [(epoch, open)]。"""
+    out = []
+    for line in lines:
+        m = FOLLOW_RE.match(line.rstrip("\n"))
+        if m:
+            out.append((parse_log_time(m.group(1)), m.group(2) == "true"))
+    return out
+
+
+def bug234_verdicts(follows, trials):
+    """試行ごとに、明示 OFF(t_off)から共有メモリが閉を公開する(t_pub)までの間に、awase が古い開(open=true)へ
+    追随した回数を数える。t_pub が無い試行(公開を観測できなかった)は数えない。"""
+    rows = []
+    for tr in trials:
+        t_off, t_pub = tr["t_off"], tr.get("t_pub")
+        if t_pub is None:
+            rows.append({"trial": tr["trial"], "observed": False})
+            continue
+        n = sum(1 for (t, open_) in follows if open_ and t_off <= t <= t_pub + 0.05)
+        rows.append({"trial": tr["trial"], "observed": True, "publish_ms": round((t_pub - t_off) * 1000),
+                     "false_follow_open": n})
+    return rows
+
+
+def cmd_bug234(args):
+    """[BUG-234] 明示 IME OFF(awase の keys.ime_off、目印付きの注入)の後、Mozc Readable の開閉の公開が遅れる
+    (試験用の遅延注入、mozc-readable exp/open-close-publish-delay)間に、awase が古い「開」の読みを外部変化として
+    追随してしまうかを測る。窓はこのプロセス自身が作る(キーは自スレッドから送る)。結果は events に JSON 行で書く。"""
+    w = win32()
+    ctypes = w.ctypes
+
+    def send_marked(vk):
+        for flags in (0, 2):
+            i = w.INPUT(type=1)
+            i.ki = w.KEYBDINPUT(vk, 0, flags, 0, TEST_INJECTION_MARKER)
+            w.u32.SendInput(1, ctypes.byref(i), ctypes.sizeof(w.INPUT))
+            time.sleep(0.03)
+
+    win = Window(w, "B234", "B234")
+    win.create()
+    ok_trials = 0
+    with open(args.events, "w", encoding="utf-8") as f:
+        for i in range(args.trials):
+            if not win.set_open(1):
+                emit({"ev": "setup_failed", "trial": i})
+                continue
+            w.pump(args.settle)
+            win.focus()
+            w.pump(0.1)
+            t_off = time.time()
+            send_marked(args.off_vk)
+            t_pub = None
+            end = t_off + args.observe
+            while time.time() < end:
+                w.pump(0.01)
+                if t_pub is None and win.state_open() == 0:
+                    t_pub = time.time()
+            rec = {"ev": "off", "trial": i, "t_off": t_off, "t_pub": t_pub}
+            emit(rec)
+            f.write(json.dumps(rec) + "\n")
+            f.flush()
+            if t_pub is not None:
+                ok_trials += 1
+    print(f"trials with an observed publish: {ok_trials}/{args.trials}")
+    return 0 if ok_trials > 0 else 1
+
+
+def cmd_bug234_analyze(args):
+    with open(args.awase_log, encoding="utf-8", errors="replace") as f:
+        follows = parse_follows(f)
+    with open(args.events, encoding="utf-8") as f:
+        trials = [json.loads(line) for line in f if line.strip()]
+    rows = bug234_verdicts(follows, trials)
+    for r in rows:
+        print(json.dumps(r))
+    observed = [r for r in rows if r["observed"]]
+    reproduced = sum(1 for r in observed if r["false_follow_open"] > 0)
+    summary = {"delay_ms": args.delay_ms, "trials": len(rows), "observed": len(observed),
+               "reproduced": reproduced,
+               "publish_ms": sorted(r["publish_ms"] for r in observed)}
+    print("summary: " + json.dumps(summary))
+    if args.summary_json:
+        with open(args.summary_json, "w", encoding="utf-8") as f:
+            json.dump({"summary": summary, "rows": rows}, f, indent=1)
+    # 観測のみ(赤くしない)。測定自体が成り立たなかった(公開を 1 回も観測できなかった)ときだけ失敗にする。
+    return 0 if observed else 1
+
+
 def cmd_drive(args):
     w = win32()
     here = os.path.dirname(os.path.abspath(__file__))
@@ -1117,9 +1225,23 @@ def main(argv=None):
     tc.add_argument("--vks", type=lambda s: [int(x, 0) for x in s.split(",")], default=[0x41, 0x42, 0x43],
                     help="tsf_open/tsf_mode を変えずに打つ VK のカンマ区切り(既定: A,B,C。かな変換される文字キー)")
 
+    b = sub.add_parser("bug234")
+    b.add_argument("--events", required=True)
+    b.add_argument("--trials", type=int, default=10)
+    b.add_argument("--settle", type=float, default=1.5, help="IME ON を確認してから OFF を押すまでの待ち(秒)")
+    b.add_argument("--observe", type=float, default=4.0, help="OFF の後、共有メモリの閉の公開を待つ時間(秒)")
+    b.add_argument("--off-vk", type=lambda s: int(s, 0), default=0x1D, help="awase の keys.ime_off に設定したキー(既定 VK_NONCONVERT)")
+
+    ba = sub.add_parser("bug234-analyze")
+    ba.add_argument("--awase-log", required=True)
+    ba.add_argument("--events", required=True)
+    ba.add_argument("--delay-ms", type=int, default=0)
+    ba.add_argument("--summary-json")
+
     args = ap.parse_args(argv)
     return {"host": cmd_host, "drive": cmd_drive, "analyze": cmd_analyze, "selftest": cmd_selftest,
-            "burn": cmd_burn, "tidreuse": cmd_tidreuse, "tickchurn": cmd_tickchurn}[args.cmd](args)
+            "burn": cmd_burn, "tidreuse": cmd_tidreuse, "tickchurn": cmd_tickchurn,
+            "bug234": cmd_bug234, "bug234-analyze": cmd_bug234_analyze}[args.cmd](args)
 
 
 if __name__ == "__main__":
