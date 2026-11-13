@@ -399,7 +399,7 @@ runtime層(`key_pipeline.rs`相当)で判断する——`output/`は層境界に
 - **defer/replayファミリーへの登録(S5)**: `fix-requires-evidence.md`の「defer/replay
   キューの解放条件」ファミリーに入る。フォーカス変更・panic・設定再読み込み・期限・
   Engine非活性化の全ての解放窓口への配線、既存2つのholdとの同時保留時の順序は実装済み
-  (`hold_on_delivery`は窓切替直後→戻り待ち→Pの順)。**round5で判明、本コミットで対応
+  (`hold_on_delivery`は窓切替直後→戻り待ち→Pの順)。**round5で判明、`9e9ecd5d4`で対応
   済み**: `fix-requires-evidence.md`の表と`.githooks/pre-push`の正規表現に
   `key_effect_open_hold`が登録されていなかった(純粋側はたまたま`state/key_effect_`
   接頭辞に一致して拾われているだけだった)——BUG-116と同型の「判断の殻が自動チェックの
@@ -509,24 +509,26 @@ CI確証計画の項目2(閉のMozcでも`update_tick_ms`が進むか)は実施�
 
 ### Pの既知の限界(round5、マージ後の最終Opusレビューで発見・round5追確認で機序を訂正)
 
-**[高]Pは「Mozcがモードキーの処理からtsf_openの共有メモリ公開まで、settle_ms(170ms)+
-読みの周期(≤20ms)より遅れる」場面で、正しい出力を誤った出力に変える。** 機序(round5
-追確認〈followup〉で訂正):
+**[高]Pは「モードキーの押下(フックが見た時刻)から`tsf_open`の共有メモリ公開まで
+(入力キューでの待ちを含む)、settle_ms(170ms)+読みの周期(≤20ms)より遅れる」場面で、
+正しい出力を誤った出力に変える。** 機序(round5追確認〈followup〉で訂正):
 
 1. **Pが無ければ正しく入る理由は「送信がまだ届いていないから」ではない**。モードキー
    (VK_CONVERT)とそれに続くローマ字キーは、同じ対象スレッドの入力キューへ**順番に**
-   送られる。Mozc(TIP)の処理自体が遅れても(cold起動でスレッドが混んでいる等)、
-   TIPはキューの順でまずモードキーを処理して開いてから後続のローマ字を処理するため、
-   内部的には正しく合成される。共有メモリの`tsf_open`はこの内部処理の**結果の公開**
-   でしかなく、公開(flush)が遅れているだけで内部状態はもう開いている、という
-   ずれが起こり得る。
-2. 保持中、短周期タイマーの読みが保持専用baseline(`pred.at_ms`とS1打刻の大きい方)から
-   `KEY_EFFECT_SETTLE_MS`(170ms)+読みの周期経過した時点で、公開がまだ追いついて
-   おらず`tsf_open=0`のままなら、`decide_use`が`Use{open:false, disagrees:true}`を
-   返す。これが`report_mozc_shm`経由でbeliefを閉へ確定させる(ADR-191決定3の既存の
-   `reconcile_key_effect_open`。この段階自体は害が無い——次の読みで開が見えれば
-   belief はまた戻る)。
-3. **取り消せない害を生むのは、この後にPの`judge()`がそれを`ReleaseReason::
+   送られる。Mozc(TIP)がこの遅れの間**まだモードキーを処理していない**場合(cold起動
+   でスレッドが混んでいる・mozc_serverとのIPCが遅い等、よくある場合)でも、処理済みで
+   公開がまだ追いついていないだけの場合でも、どちらでもTIPはキューの順でまずモード
+   キーを処理して開いてから後続のローマ字を処理するため、内部的には正しく合成される。
+   共有メモリの`tsf_open`は確定済みの状態の公開(flush)でしかなく、公開のタイミングが
+   内部の処理完了より遅れることがある。
+2. 保持中、短周期タイマーの読みが`report_mozc_shm`が合成するG3の食い違いの起点
+   (通常はモードキーの時刻`last_mode_key_tick_ms`、ただし`UserImeSetIntent`・
+   `ImeApplyRequested`・`ModeKeyPassedThrough`でも進む別物であり`pred.at_ms`と厳密には
+   同じではない)から`KEY_EFFECT_SETTLE_MS`(170ms)+読みの周期経過した時点で、公開が
+   まだ追いついておらず`tsf_open=0`のままなら、`decide_use`が`Use{open:false,
+   disagrees:true}`を返す。これが`report_mozc_shm`経由でbeliefを閉へ確定させる
+   (ADR-191決定3の既存の`reconcile_key_effect_open`)。
+3. **保持していた打鍵について取り消せない害を生むのは、この後にPの`judge()`がそれを`ReleaseReason::
    ObservedClosed`として、その場で即座に保持を解放・再生すること**。保持していた
    物理キーが、確定した閉のbeliefの下でqwerty生文字(NICOLA変換を経ない直接入力)
    として**その時点で**`INPUT_DEFER.replay_later`を通じて送信される。
@@ -537,30 +539,38 @@ CI確証計画の項目2(閉のMozcでも`update_tick_ms`が進むか)は実施�
    リテラル(IMEが閉のまま生文字が出る)ではなく、逆に「開いたMozcが生のqwertyを
    誤ってローマ字と解釈した結果の誤変換かな」になる**。
 
-**範囲**: `Split`(`tsf_open != effective_open`)が続く窓や、保持中に食い違いの起点が
-drift correction等で前へ押される場合は、むしろ`judge()`が`Keep`→`Deadline`に進み
-belief を変えずに(予測の開のまま)再生するため、この限界は**起きない**(round5
-followupで訂正)。この限界が起きる条件は1つだけ:**cold Mozcがモードキーを処理して
-`tsf_open`を公開するまでの遅れが、settle_ms+読みの周期を超えること**(Split・起点の
-押し戻しは不要)。発生後の影響に300msの上限は無い——`ObservedClosed`は判定した
-瞬間(約170〜190ms)に即座に解放されるため、Mozcがその後いつ公開しても遅い。さらに
-belief が閉に追随したことで、Mozcが実際に開いた後の「開」の読みも`decide_use`の
-settleをもう一度要求するため追加で遅れ、保持の解放で`TIMER_MOZC_SHM`を張り直す
-(次の通常の読みは最大500ms後)ので、その間の後続の打鍵もqwerty素通しになり得る。
+**範囲**: `Split`(`tsf_open != effective_open`)が続く窓では`judge()`が`Keep`→
+`Deadline`に進みbeliefを変えずに(予測の開のまま)再生するため、この限界は**起きない**。
+保持中に食い違いの起点(G3の起点)がdrift correction等で前へ押される場合は、**起きにくく
+なる**(round5 followupで訂正——「起きない」は強すぎる。確定が押された分だけ遅れる
+だけで、公開の遅れがそれより長ければ期限の前に`ObservedClosed`になり得る。押された量
+が十分大きければ期限に達して`Deadline`側に入る)。この限界が最も起きやすい条件は
+**cold Mozcがモードキーを処理して`tsf_open`を公開するまでの遅れが、G3の起点から
+settle_ms+読みの周期を超えること**(Split・十分な起点の押し戻しが無い場合)。発生後の
+影響に300msの上限は無い——`ObservedClosed`は判定した瞬間(約170〜190ms)に即座に
+解放されるため、Mozcがその後いつ公開しても遅い。
 
-**ADR-191決定3の`reconcile_key_effect_open`自体のせいではない**(round5 followupで
-訂正)。belief が閉に確定すること自体は無害——取り消せない害は、Pの`judge()`がその
-belief確定を根拠に**即座に**再生する判断にある。打鍵がどのbeliefで変換されるかは
-再生**時点**のbeliefで決まるため、`KEY_EFFECT_SETTLE_MS`を動かさずとも、P専用の
-判断(例: 予測から別途の待ち時間が経つまで再生しない、または保持の読みの食い違いの
-起点をP専用にしてbeliefの追随自体を遅らせる)で対策できる余地がある。
+**belief が閉に確定する段階自体にも、別の(回復可能な)害がある**(round5 followupで
+訂正——「無害」ではない): belief が閉に追随したことで、保持されていない後続の打鍵も
+qwerty素通しになり得る(Mozcが実際に開いた後の「開」の読みも`decide_use`のsettleを
+もう一度要求するため追加で遅れ、保持の解放で`TIMER_MOZC_SHM`を張り直すため次の通常の
+読みは最大500ms後)。Pの20ms周期の読みは、通常の500ms周期の読みよりこの「公開が遅れて
+いる窓」に当たりやすいため、この一時的な害もPが増やすリスクの一部になる。**ただし
+取り消せない害(上記3〜4)は、この belief 確定そのものではなく、Pの`judge()`がそれを
+根拠に即座に再生する判断にある**。打鍵がどのbeliefで変換されるかは再生**時点**の
+beliefで決まるため、`KEY_EFFECT_SETTLE_MS`を動かさずとも、P専用の判断(例: 予測から
+別途の待ち時間が経つまで再生しない、または保持の読みの食い違いの起点をP専用にして
+belief の追随自体を遅らせる——ただし通常のrefresh tick〈`mozc_shm_on_tick`、保持中も
+止めていない〉が同じ時刻にG3の起点で先に追随してしまう経路もあるため、これも合わせて
+扱わないと効かない)で対策できる余地がある。
 
 **是正しない理由**: 本当の二律背反は、P内部の「閉の確定(=再生)を早めるか遅らせるか」
 にある——早めると上記の誤変換リスクを負う一方、遅らせると本当に閉のまま(BUG-233
-そのもの)の場面で保持が延び、リテラル露出の時間が伸びる。どちらに寄せるべきかは、
-cold Mozcでモードキーから`tsf_open`公開までの実際の遅延分布を測ってから決める
-べきで(`tuning-constants.md`の実測なしのエスカレーション禁止)、今回は実測
-(CI確証計画項目5)を待って据え置く。
+そのもの)の場面で、保持した打鍵が出るまでの入力の遅延(保持の時間)が伸びる(round5
+followupで訂正——リテラル自体が伸びるのではなく、R6(iv)の再生まで保持される時間が
+伸びる)。どちらに寄せるべきかは、cold Mozcでモードキーから`tsf_open`公開までの
+実際の遅延分布を測ってから決めるべきで(`tuning-constants.md`の実測なしの
+エスカレーション禁止)、今回は実測(CI確証計画項目5)を待って据え置く。
 
 **未解決として残るもの(実装のTODO)**:
 - 上記Pの既知の限界(cold Mozcのtsf_open公開がsettle_ms+読みの周期より遅れる場面での
@@ -588,7 +598,7 @@ cold Mozcでモードキーから`tsf_open`公開までの実際の遅延分布�
   ときのみ)。
 - 保持中にdrift correctionが発火し食い違いの起点を押す相互作用は未確認。
 
-**本コミットで対応済み**: S5(`fix-requires-evidence.md`・`.githooks/pre-push`への
+**`9e9ecd5d4`で対応済み**: S5(`fix-requires-evidence.md`・`.githooks/pre-push`への
 `key_effect_open_hold`登録)、ADR-268・ADR-291本文へのG3によるbaseline変更への
 言及(下記「関連ADRとの関係」参照)。
 
@@ -658,7 +668,7 @@ TIPへ入力を渡していない可能性が高く、「フォーカス直後�
 - **ADR-270/285/288**: H1は却下したため、`judge_compose`の`ImeNotActive`判定(ADR-270の
   意図的な「キーがアプリに届いたかIMEが受けたかを言えない」という判断)はそのまま維持
   される。
-- **ADR-268/ADR-291への追記(round5で判明、本コミットで対応済み)**: `decide_use`の
+- **ADR-268/ADR-291への追記(round5で判明、`9e9ecd5d4`で対応済み)**: `decide_use`の
   食い違う読みのsettle起点はADR-268 D3(R3')・ADR-291 D5が定義したものだが、両ADRの
   本文はG3によるこの変更(`disagree_baseline_ms`の新設)に触れていなかった。両ADRへ
   「食い違いの起点はADR-292 G3で変更(IME開閉/モード送信だけに限定)」と1行ずつ
