@@ -65,12 +65,16 @@ status: |-
   (関数本体のソース走査で呼び出し・順序・禁止パターンを直接固定)、(S2)
   `platform_state.rs::scope_shadow_tests::
   engine_belief_z_follows_user_half_width_alnum_toggle_but_ignores_user_turn_on_eisu_reset`
-  (Hub直結で`engine_belief()`レベルの修正前後の差をBUG-231として再現・固定、未解決2(i)〜(iii)に対応)。
-  どちらもLinuxで実行可能。Linux `cargo test --lib`全件・`cargo nextest run
-  --workspace --lib`・Windows target `cargo check`/`clippy -D warnings`/`fmt --check`、
-  いずれもグリーン。実機再発(2026-11-13 11:45:47〜11:46:00 JST、dragonflyg4、修正前ビルド、
-  固着時間約13.5秒)で原因2の診断を再確認済み(詳細は[BUG-231](../known-bugs/BUG-231.md))。
-  実機での修正後の再確認はまだ(デプロイ待ち)。
+  (Hub直結で`engine_belief()`レベルの修正前後の差をBUG-231として再現・固定)。未解決2(ii)(iii)は
+  S2単独で満たすが、(i)(Engineが追加の打鍵無しで活性化すること)はS2単独では belief しか見ないため
+  満たさず、S1(この belief 更新の直後に`notify_engine_refresh()`が呼ばれることの固定)と
+  **合わせて**満たす(round2レビューで指摘・訂正)。どちらもLinuxで実行可能。Linux
+  `cargo test --lib`全件・`cargo test -p awase-windows --test architecture_guard`(S1含む177件)・
+  `cargo nextest run --workspace --lib`・Windows target `cargo check`/`clippy -D warnings`/
+  `fmt --check`、いずれもグリーン(CIの`test`/`windows-test`ジョブでも確認済み、run 43364902807)。
+  実機再発(2026-11-13 11:45:47〜11:46:00 JST、dragonflyg4、修正前ビルド、固着時間約13.5秒)で
+  原因2の診断を再確認済み(詳細は[BUG-231](../known-bugs/BUG-231.md))。実機での修正後の再確認は
+  まだ(デプロイ待ち)。
 
   D5(BUG-232)はコード実装済み(`crates/awase-ime-core/src/state/mozc_shm.rs::decide_use`、
   Linux単体テスト2件追加、既存52件含め全774件グリーン、windows target check/clippy/fmtグリーン)。
