@@ -646,10 +646,15 @@ pub enum MozcShmFollowPlan {
 ///
 /// **belief は一切参照・変更しない**——`should_abandon_on_observed_follow`(ADR-244 D3、MS-IME 本体)と
 /// 違い、この判定だけでは「観測した」ことを belief に書かない(`InputModeObserved`を構築しない)。
-/// 手放すと決めたら、呼び出し元が BUG-222(`kp_exit_lang_detect_toggle_on_hiragana`)と同じ経路
-/// (`eisu_reset_on_turn_on_while_open` → `InputModeApplied`)で romaji-capable へ戻すこと——
-/// Mozc の`Hiragana`は awase の`ObservedKana`(JIS かな直接入力)と同義ではないため、観測を直接
-/// `ObservedKana`として書くと engine が`Inactive(NotRomajiInput)`のまま戻らない。
+/// 手放すと決めたら、呼び出し元は`apply_input_mode_correction(AssumedRomaji{UserHalfWidthAlnumToggleOff},
+/// InputModeApplyStrategy::UserHalfWidthAlnumToggle)`を無条件dispatchし、直後に`notify_engine_refresh()`
+/// を呼ぶこと(ADR-291 D1′、BUG-231)。Mozc の`Hiragana`は awase の`ObservedKana`(JIS かな直接入力)と
+/// 同義ではないため、観測を直接`ObservedKana`として書くと engine が`Inactive(NotRomajiInput)`のまま
+/// 戻らない(ADR-290 D1′ F1)。旧版はBUG-222と同じ`eisu_reset_on_turn_on_while_open`→
+/// `UserTurnOnEisuReset`経由だったが、このstrategyは`general.belief_v2`(既定true)下でEngineが読む
+/// 候補Z(`scope_belief.rs::scope_event_of`)の変換表に無く無視されるため、旧`ImeModel`だけが
+/// romaji-capableへ補正されZが英数のまま取り残され、Engineが最大数秒`Inactive(NotRomajiInput)`に
+/// 固着した(BUG-231)。`UserHalfWidthAlnumToggle`は同変換表にあり、旧モデルとZの両方に届く。
 #[must_use]
 pub const fn plan_mozc_shm_follow(
     entered_at_tick_ms: Option<u64>,

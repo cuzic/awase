@@ -31,9 +31,12 @@ pub enum AssumedReason {
     AppKindExcluded,
     /// 強制 ON ガード中（連続検出失敗による）
     ForceOnGuardActive,
-    /// 左Shift単独タップによる「IME-ON 半角英数」トグルOFF直後。
-    /// awase 自身が VK_DBE_HIRAGANA 注入 + conv 復元 write でかな入力へ戻した
-    /// 直後の仮定値（後続の観測が再確認・再訂正する）。
+    /// 左Shift単独タップによる「IME-ON 半角英数」トグルOFF直後の仮定値（後続の観測が再確認・
+    /// 再訂正する）。経路は3つ: awase自身がVK_DBE_HIRAGANA注入+conv復元writeでかな入力へ戻した
+    /// 直後（`kp_restore_kana_from_half_width`）、フォーカス変更でOSへは送らずトグルを下ろす直後
+    /// （`ir_notify_focus_changed`のfocus-suspend）、mozc-shmの観測でMozc自身がかなへ追随済みと
+    /// 確認した直後（`ir_do_abandon_half_width_alnum_from_mozc_shm`、ADR-291 D1′・BUG-231、
+    /// OSへの書き込みは伴わない）。
     UserHalfWidthAlnumToggleOff,
     /// 物理モードキーの打鍵時点で、キーマップの表から予測した入力モード（ADR-191 決定3）。
     /// 観測ではない。settle 後の観測が確認・訂正する（読めないアプリでは予測が残る）。

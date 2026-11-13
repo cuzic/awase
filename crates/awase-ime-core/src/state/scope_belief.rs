@@ -1247,11 +1247,24 @@ mod tests {
         assert_ne!(z.view().input_mode, InputModeState::ObservedEisu);
 
         // 適用しなかったもの・表に無い手段は写さない。
+        //
+        // BUG-231: `UserTurnOnEisuReset` がここで写らない(表に無い)ことが、
+        // `ir_do_abandon_half_width_alnum_from_mozc_shm`(当時)が同strategyで旧ImeModelだけを
+        // romaji-capableへ補正しZを英数のまま取り残した根本原因だった。ADR-291 D1′でその呼び出しを
+        // `UserHalfWidthAlnumToggle`(上のトグルOFFと同じ、表に入っている)へ差し替えて直した
+        // ——このテストはその前提(`UserTurnOnEisuReset`はZに入らない)自体が今後も成り立つことを
+        // 固定する(Zへ届けたい新しい能動的訂正は`UserHalfWidthAlnumToggle`/`PanicReset`のどちらかに
+        // 乗せること、`UserTurnOnEisuReset`を"直せば届く"ように拡張してはならない設計ではない点に注意
+        // ——拡張自体は妥当だが、する場合はこの表自体を更新し、本テストも合わせて書き直すこと)。
         let view = z.view();
         for (strategy, result) in [
             (
                 InputModeApplyStrategy::UserHalfWidthAlnumToggle,
                 InputModeApplyResult::Skipped,
+            ),
+            (
+                InputModeApplyStrategy::UserTurnOnEisuReset,
+                InputModeApplyResult::Applied,
             ),
             (
                 InputModeApplyStrategy::CacheRestore,

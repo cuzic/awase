@@ -787,6 +787,8 @@ fn heuristic_default_observation_is_limited_to_designated_methods() {
 ///     (`AssumedRomaji` へ、`kp_restore_kana_from_half_width`。B節のトグルOFF・E節の3競合
 ///     経路・F節のフォーカス変更安全策から共通で呼ばれる、2026-07-11)
 ///   - `ime_refresh.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (FocusChanged)
+///   - `ime_refresh.rs` (mozc-shm観測での半角英数トグル手放し)→ `InputModeApplyStrategy::UserHalfWidthAlnumToggle`
+///     (`AssumedRomaji` へ、`ir_do_abandon_half_width_alnum_from_mozc_shm`、ADR-291 D1′/BUG-231、2026-11-13)
 ///   - `runtime/mod.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (Blacklist force-ON)
 ///
 /// 新しい能動的訂正を追加する場合は `InputModeApplyStrategy` に専用 variant を追加し、
