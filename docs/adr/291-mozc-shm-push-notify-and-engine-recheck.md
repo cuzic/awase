@@ -58,8 +58,16 @@ status: |-
   Linux単体テスト2件追加、既存52件含め全774件グリーン、windows target check/clippy/fmtグリーン)。
   GitHub Windows CI(実機mozc-readable、新規`tickchurn`シナリオ)での外部事実(update_tick_msが
   stateの変化無しに進む)の再現を2026-11-12に確認済み(run 43145173691、詳細は「未解決」6)。
-  `tickchurn`シナリオはPR #934(developへ、未マージ)として提出済み。D5の修正コード自体は
-  本ADRのブランチに残り、別途そちらのPRでdevelopへ提出する。
+  `tickchurn`シナリオは[PR #934](https://github.com/cuzic/awase/pull/934)として
+  **developへマージ済み**(`6b29383d8`)。D5の修正コード自体も
+  [PR #935](https://github.com/cuzic/awase/pull/935)として**developへマージ済み**
+  (`97d849bfe`、2026-11-12)。本ADRドキュメントブランチ自体のdevelopへのマージは
+  ADR-292のドキュメントPRと合わせて行う(2026-11-12追記)。
+
+  **追記(2026-11-12)**: `decide_use`の食い違う読み用settle起点はADR-292 G3で
+  さらに変更された(ローリング値 → IME開閉/モード送信だけに限定)。D5が変えた
+  「一致する読みの高速路」自体は変わっていない。詳細は
+  [ADR-292](292-key-effect-prediction-vs-observation-priority.md)。
 related_adr:
   - "ADR-290"
   - "ADR-282"
@@ -67,6 +75,7 @@ related_adr:
   - "ADR-268"
   - "ADR-270"
   - "ADR-265"
+  - "ADR-292"
   - "BUG-232"
 ---
 
@@ -558,8 +567,8 @@ Mozc側の`key_seq`を進め、`update_tick_ms`を再スタンプした)と整�
    修正コミットがCI検証ブランチ側にも重複して乗ってしまったため、リベースで取り除き
    (`tickchurn`関連の2コミットのみに整理、`develop`比で`mozc_shm.rs`の差分ゼロを確認済み)、
    PR [#934](https://github.com/cuzic/awase/pull/934)(`ci/mozc-shm-e2e2` → `develop`、
-   未マージ)として`tickchurn`シナリオ追加のみを提出した。D5の修正コード自体は本ADRのブランチ
-   (`docs/adr291-mozc-shm-push-notify-and-engine-recheck`)に残り、別途そちらのPRでdevelopへ
-   提出する。
+   **develop へマージ済み**`6b29383d8`)として`tickchurn`シナリオ追加のみを提出した。
+   D5の修正コード自体は[PR #935](https://github.com/cuzic/awase/pull/935)として
+   **developへマージ済み**(`97d849bfe`、2026-11-12)。
 7. **案E4(mozc-readable側のstate専用タイムスタンプ)は未着手のまま**。本ADR(このリポジトリ)の
    範囲外として記録し、`cuzic/mozc-readable`側で将来のバージョンアップ機会があれば別途検討する。

@@ -555,7 +555,9 @@ unsafe fn collect_indicator_candidates(
         let Ok(el) = all.GetElement(i) else {
             continue;
         };
-        let name = el.CurrentName().map(|b| b.to_string()).unwrap_or_default();
+        let name = el
+            .CurrentName()
+            .map_or_else(|_| String::new(), |b| b.to_string());
         if !name_is_indicator(&name) {
             continue;
         }

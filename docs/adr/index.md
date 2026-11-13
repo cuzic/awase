@@ -295,7 +295,8 @@
 | [287](287-mozc-input-style-signal.md) | mozc-readable の共有メモリに「ローマ字入力/かな入力」の方式そのものを足し、OS のかなロックビット直読み(ADR-118)を置き換える | 起草(2026-11-04)。未実装(mozc-readable 側のフィールド追加が前提) |
 | [288](288-mozc-compose-check-chrome-exclusion-disproven.md) | Mozc の compose-check が Chrome を除外する前提(期限超過後の Backspace が確定済み文字を壊しうる)を、mozc-readable の CI 専用フックで症状を再現し、実機 TIP + 実際の Mozc サーバーで反証する | 提案・検証済み(2026-11-06)。本番コード(Chrome 除外を外す変更)は未実装 |
 | [290](290-half-width-alnum-exit-via-mode-key-and-gji-confirm.md) | 半角英数トグルをモードキー(ひらがなキー等)で抜けたときも toggle_held を正しく解除し、GJI 側の抜け出し送信にも Mozc の実際の切替完了の確認を足す(BUG-230) | D1″実装済み・Opusレビューround1〜3通過・developマージ済み(2026-11-10、#933)。D2(GJI確認)は未着手、実機確認は未着手(新しい遅延をBUG-231で観測) |
-| [291](291-mozc-shm-push-notify-and-engine-recheck.md) | belief_v2(候補Z)にmozc-shm追随の手放しを反映させ、Engineの活性再評価を明示的に呼ぶ(BUG-231)。mozc-shmのsettle機構の穴を塞ぐ(BUG-232) | D1′(BUG-231)は設計確定・実装未着手。D5(BUG-232)はコード実装・Linux単体テスト済み、GitHub Windows CI(実機mozc-readable)で再現確認済み(PR #934、未マージ、2026-11-12) |
+| [291](291-mozc-shm-push-notify-and-engine-recheck.md) | belief_v2(候補Z)にmozc-shm追随の手放しを反映させ、Engineの活性再評価を明示的に呼ぶ(BUG-231)。mozc-shmのsettle機構の穴を塞ぐ(BUG-232) | D1′(BUG-231)は設計確定・実装未着手。D5(BUG-232)はdevelopマージ済み(PR #935、`97d849bfe`、2026-11-12)。`tickchurn`CIシナリオもマージ済み(PR #934、`6b29383d8`) |
+| [292](292-key-effect-prediction-vs-observation-priority.md) | KeyEffectPredictionがmozc-shm実測の裏取り前にローマ字を送りリテラル化する(BUG-233)。settle起点の訂正(G3)と未照合の物理キー保留(P) | G3・Pともコード実装・developマージ済み(PR #936、`6439bc7d2`、2026-11-12)。round5 Opusレビューで、Pの既知の限界(cold Mozcが`tsf_open`公開に遅れる場面で保持した打鍵を誤変換かなにしてしまう、BUG-233とは逆の症状)を発見・記録。R6(i)「開き直し」・実機確認(dragonflyg4、現在オフライン)・本ADRドキュメント自体のマージは未着手 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

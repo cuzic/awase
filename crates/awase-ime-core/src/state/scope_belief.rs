@@ -234,8 +234,7 @@ impl ScopeBelief {
         self.rows
             .iter()
             .find(|(k, _)| *k == scope)
-            .map(|(_, r)| *r)
-            .unwrap_or_default()
+            .map_or_else(ScopeRow::default, |(_, r)| *r)
     }
 
     fn row_mut(&mut self, scope: ScopeKey) -> &mut ScopeRow {
@@ -557,7 +556,9 @@ impl ScopeBelief {
     /// フォーカス中のスコープの belief。主張なしは ON・かな(O2)。開で入力モードの主張が無ければかな(§4.6)。
     #[must_use]
     pub fn view(&self) -> ScopeView {
-        let row = self.focused.map(|(k, _)| self.row(k)).unwrap_or_default();
+        let row = self
+            .focused
+            .map_or_else(ScopeRow::default, |(k, _)| self.row(k));
         let on_lean = self.focused.is_none_or(|(_, f)| f.on_lean);
         let default = if on_lean {
             (true, "z-default")
