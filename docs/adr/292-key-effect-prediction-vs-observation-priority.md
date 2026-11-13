@@ -64,15 +64,18 @@ summary: |-
   G3・Pはコード実装済み、[PR #936](https://github.com/cuzic/awase/pull/936)として
   developへマージ済み(`6439bc7d2`、2026-11-12T14:15:43Z。PRの件名・本文はG3のみ言及
   しているが、実際の差分にはP〈19ファイルの大半〉も含まれる)。マージ後のround5 Opus
-  レビュー(全文: [round5.md](review/292-opus-review-round5.md))で、Pに**境界が明確な
-  既知の限界**が見つかった: Mozcがsettle_ms(170ms)より遅く、かつ保持の期限(300ms)より
-  早く開く場面では、Pは保持していた打鍵を「閉で確定」と誤判定し、取り消せない形で
-  qwerty生文字として確定させてしまう(詳細は下記「決定」節の既知の限界)。Pの導入前は
-  この場面でも(確実ではないが)ローマ字が送られていたため、狭い範囲で**正しい出力を
-  誤った出力に変える可能性がある**。原因はP固有の判定ではなく、ADR-191決定3の
-  `reconcile_key_effect_open`がsettle_ms経過時点で予測を無条件に消費すること自体
-  にあり、Pの保持の仕組みだけでは塞げない。是正(`KEY_EFFECT_SETTLE_MS`自体の見直し等)
-  は実測(CI確証計画項目5)を待って判断する、既知の限界として記録する。
+  レビュー(全文: [round5.md](review/292-opus-review-round5.md)・
+  [round5followup.md](review/292-opus-review-round5-followup.md))で、Pに既知の限界が
+  見つかった: cold Mozcがモードキーを処理してから`tsf_open`を共有メモリへ公開する
+  まで、settle_ms(170ms)+読みの周期より遅れる場面では、Pは保持していた打鍵を「閉で
+  確定」と誤判定し、その時点で即座にqwerty生文字として再生してしまう。モードキーと
+  後続のローマ字は同じ入力キューで順番に処理されるため、Pが無ければ内部的には正しく
+  合成されていた場面であり、Pの再生後にMozcの公開が追いついて実際に開くと、既に
+  送った生文字がローマ字として誤変換される(BUG-233の`kore,`型リテラルとは逆の
+  症状。詳細は下記「決定」節の既知の限界)。害は`judge()`が閉の確定を根拠に**即座に**
+  再生する判断にあり(ADR-191決定3の既存reconciliation自体は無害)、是正
+  (再生までの待ち時間をP専用に設ける等)は実測(CI確証計画項目5、cold Mozcの
+  `tsf_open`公開までの遅延分布)を待って判断する、既知の限界として記録する。
 status: |-
   調査完了、round1〜round4 Opusレビューで原因の帰属・有力候補の設計を複数回訂正
   (2026-11-12)。G3・R6・Pともround4で収束と判定。G3・Pはコード実装済み、
@@ -81,12 +84,12 @@ status: |-
   R6(観測が閉と確定したときの行動)は(iv)(belief修正+流し直し+警告ログのみ、
   利用者へのUI通知は未実装)をデフォルトとして実装済み、(i)開き直しは原因特定
   (CI確証計画1)待ちで未実装。マージ後のround5 Opusレビューで、Pの既知の限界
-  (上記summary参照、CI確証計画項目4で想定していたリスクが実際に起きることを確認)
-  と、本ADR・[BUG-233](../known-bugs/BUG-233.md)の記述が実装・マージ後の事実と
-  食い違っていた複数箇所を修正(本コミットで反映)。残りのCI確証計画(項目1・3・5)・
-  実機確認(dragonflyg4、現在オフライン)・**本ADRドキュメントブランチ自体のdevelopへの
-  マージ**(コードは既にマージ済みだがドキュメントは本PRで初めてマージされる)は
-  未着手。
+  (上記summary参照、CI確証計画項目4で想定していたリスクが机上の検討で起きうると
+  判明〈実測は未〉)と、本ADR・[BUG-233](../known-bugs/BUG-233.md)の記述が実装・
+  マージ後の事実と食い違っていた複数箇所を修正(本コミット+round5followup反映の
+  追随コミットで反映)。残りのCI確証計画(項目1・3・4・5)・実機確認(dragonflyg4、
+  現在オフライン)・**本ADRドキュメントブランチ自体のdevelopへのマージ**(コードは
+  既にマージ済みだがドキュメントは本PRで初めてマージされる)は未着手。
 related_adr:
   - "ADR-191"
   - "ADR-268"
@@ -371,8 +374,10 @@ runtime層(`key_pipeline.rs`相当)で判断する——`output/`は層境界に
   「無断で文字が消える」から実質的には抜け出せていない——利用者へのUI通知(バルーン等)は
   未実装のまま残る(下記「未解決として残るもの」)。上限(`KEY_EFFECT_OPEN_HOLD_CAP=8`、
   `FOCUS_SWITCH_HOLD_CAP`と同値)に達したときのbeliefは「変えずに流す」(`ReleaseReason::
-  Cap`、`needs_notice()`は偽でログもinfoのみ)に決定済みだが、この決定自体が下記「決定」
-  節の既知の限界(Mozcが遅れて開く場面での誤ったリテラル確定)と同種のリスクを持つ。
+  Cap`、`needs_notice()`は偽でログもinfoのみ)に決定済み。**round5 followupの訂正**:
+  `Cap`は下記「決定」節の既知の限界(Mozcが遅れて開く場面での誤変換かな)とは**逆側**の
+  限界を持つ(belief=開のまま再生するため遅れて開く場面はむしろ正しく入り、本当に
+  閉のまま〈BUG-233そのもの〉の場面でPなしと同じリテラルになる、`Deadline`と同じ側)。
 - **開始条件・期限・タイマー定数(T4、新規)**: Pを始めるのは次が**全て**揃ったときだけ:
   (a) `gji_evidence_absent`、(b) 前面窓のスレッドに読めるmozc-shmブロックがある
   (直前の読みが`Outcome::Accepted`かつ`active`、詳細はU5)、(c) 予測の開が未照合
@@ -394,13 +399,13 @@ runtime層(`key_pipeline.rs`相当)で判断する——`output/`は層境界に
 - **defer/replayファミリーへの登録(S5)**: `fix-requires-evidence.md`の「defer/replay
   キューの解放条件」ファミリーに入る。フォーカス変更・panic・設定再読み込み・期限・
   Engine非活性化の全ての解放窓口への配線、既存2つのholdとの同時保留時の順序は実装済み
-  (`hold_on_delivery`は窓切替直後→戻り待ち→Pの順)。**round5で判明(未修正)**:
-  `fix-requires-evidence.md`の表と`.githooks/pre-push`の正規表現には
-  `key_effect_open_hold`が登録されていない(純粋側は`state/key_effect_`接頭辞に
-  たまたま一致して拾われているだけ)——BUG-116と同型の「判断の殻が自動チェックの外に
-  ある」穴。残作業として記録する(下記「未解決として残るもの」)。「Engine非活性化」の
-  解放窓口は専用配線が無く、次の短周期タイマー(20ms以内)で`read=None`→`Unreadable`と
-  して拾われる形に留まる。
+  (`hold_on_delivery`は窓切替直後→戻り待ち→Pの順)。**round5で判明、本コミットで対応
+  済み**: `fix-requires-evidence.md`の表と`.githooks/pre-push`の正規表現に
+  `key_effect_open_hold`が登録されていなかった(純粋側はたまたま`state/key_effect_`
+  接頭辞に一致して拾われているだけだった)——BUG-116と同型の「判断の殻が自動チェックの
+  外にある」穴だったため、両方に追加登録した。「Engine非活性化」の解放窓口は専用配線が
+  無く、次の短周期タイマー(20ms以内)で`read=None`→`Unreadable`として拾われる形に
+  留まる。
 - **round4で実装PRへ持ち越した小項目(U3〜U5)**: (U3)再生したモードキーがT2の規則どおり
   「再生の時点」で予測されるかは、`focus_switch_hold`(既にモードキーを保持対象にしている
   `focus_switch_hold.rs:19,56`)の実経路(`enrich_key_role`→`apply_key_effect_prediction`
@@ -486,64 +491,83 @@ CI確証計画の項目2(閉のMozcでも`update_tick_ms`が進むか)は実施�
   `focus_switch_hold`/`half_width_resume_hold`と同じ形の「第3のhold」)を新設し、
   `key_pipeline.rs`へ配線。モードキー予測で開を信じた直後(自動リピートのKeyDownからも、
   `/code-review high`指摘1を反映)次の打鍵から保持し、専用の20ms周期タイマーで
-  `decide_use`(保持専用の非ローリングbaseline、round3 T1反映——`hold_baseline_ms`
-  関数名。round4ではない、round4は`T1反映後`の意)を呼んで解放判定する。開いたと確認
-  できたら再生、閉で確定したらbeliefを閉に直し`notify_engine_refresh`を呼んでから再生
-  (R6(iv)、`tracing::warn!`のログのみ)、読めなくなったら即座解放。解放理由は全9種類
-  (`ConfirmedOpen`・`ObservedClosed`・`Unreadable`・`PredictionSettled`・`Deadline`・
-  `Cap`・`FocusChanged`・`PanicReset`・`ConfigReload`、`needs_notice()`は
-  `ObservedClosed`/`Deadline`のみ真)。武装には期限(`KEY_EFFECT_OPEN_HOLD_ARM_TTL_MS=700ms`)
-  があり、期限切れで来た打鍵では保持を始めずPなしの挙動に戻る。round3 T2(保持中の
-  モードキー再押下)・T3(フォーカス変更時はDiscard+警告ログ、下記既知の限界参照)・
-  round4 U1/U2(即座解放条件・予測ごとに1回)を反映済み。
+  `decide_use`(保持専用の非ローリングbaseline`hold_baseline_ms`、round3 T1を反映)を
+  呼んで解放判定する。開いたと確認できたら再生、閉で確定したらbeliefを閉に直し
+  `notify_engine_refresh`を呼んでから再生(R6(iv)、`tracing::warn!`のログのみ)、
+  読めなくなったら即座解放。解放理由は全9種類(`ConfirmedOpen`・`ObservedClosed`・
+  `Unreadable`・`PredictionSettled`・`Deadline`・`Cap`・`FocusChanged`・`PanicReset`・
+  `ConfigReload`、`needs_notice()`は`ObservedClosed`/`Deadline`のみ真)。武装には期限
+  (`KEY_EFFECT_OPEN_HOLD_ARM_TTL_MS=700ms`)があり、期限切れで来た打鍵では保持を
+  始めずPなしの挙動に戻る。round3 T2(保持中のモードキー再押下)・T3(フォーカス変更時は
+  Discard+警告ログ、UI通知は未実装——下記「未解決として残るもの」参照)・round4 U1/U2
+  (即座解放条件・予測ごとに1回)を反映済み。
 - **レビュー**: `/code-review high`で実装全体を検証、重大な指摘4件
   (armed状態の無期限待機・cap未適用経路・ime-off-rescue除外の実態不一致・タイマー
   二重起動)を修正し再レビューで指摘ゼロ。Linux単体テスト(hook-core 167件・
   ime-core 775件・architecture_guard 176件・layer_boundary_guard 17件・
   awase-windows lib 339件)、windows target check/clippy/fmtすべてグリーン。
 
-### Pの既知の限界(round5、マージ後の最終Opusレビューで発見)
+### Pの既知の限界(round5、マージ後の最終Opusレビューで発見・round5追確認で機序を訂正)
 
-**[高]Pは「Mozcがsettle_ms(170ms)より遅れて開く」場面で、正しい出力を誤った出力に
-変える可能性がある。** 機序:
+**[高]Pは「Mozcがモードキーの処理からtsf_openの共有メモリ公開まで、settle_ms(170ms)+
+読みの周期(≤20ms)より遅れる」場面で、正しい出力を誤った出力に変える。** 機序(round5
+追確認〈followup〉で訂正):
 
-1. 保持中、短周期タイマーの読みが保持専用baseline(`pred.at_ms`とS1打刻の大きい方)から
-   `KEY_EFFECT_SETTLE_MS`(170ms)経過した時点で、まだMozcが閉のままなら`decide_use`が
-   `Use{open:false, disagrees:true}`を返す。
-2. この読みは`report_mozc_shm`経由で`ImeModel::reconcile_key_effect_open`を発火させ、
-   **`now_ms.saturating_sub(pred.at_ms) >= KEY_EFFECT_SETTLE_MS`を満たした時点で
-   問答無用に`key_effect`予測を消費する**(ADR-191決定3の既存仕様、Pの追加ではない)。
-   belief は即座に閉へ確定する。
-3. Pの`judge()`はこの`Use{open:false}`を`ReleaseReason::ObservedClosed`として即座に
-   解放対象にする。保持していた打鍵は、確定した閉のbeliefでqwerty生文字として
-   **取り消せない形で再生される**。
-4. もしMozcがこの170ms経過直後(settle_msとPの保持期限300msの間、例えば200msの時点)に
-   実際に開いた場合——この遅延はBUG-225/226(cold Mozcの最初の1キー遅延、ADR-284/285)と
-   同じ類型であり、起きても不自然ではない——**Pが無ければ、物理キーはまだ送信されて
-   いない可能性があり**(通常の打鍵間隔次第)、結果的に正しくローマ字が入ることが
-   あった。Pはこの打鍵を170ms時点で早々に「閉で確定」と解放してしまうため、Mozcが
-   実際に開くタイミングより先回りして誤った出力を確定させる。
+1. **Pが無ければ正しく入る理由は「送信がまだ届いていないから」ではない**。モードキー
+   (VK_CONVERT)とそれに続くローマ字キーは、同じ対象スレッドの入力キューへ**順番に**
+   送られる。Mozc(TIP)の処理自体が遅れても(cold起動でスレッドが混んでいる等)、
+   TIPはキューの順でまずモードキーを処理して開いてから後続のローマ字を処理するため、
+   内部的には正しく合成される。共有メモリの`tsf_open`はこの内部処理の**結果の公開**
+   でしかなく、公開(flush)が遅れているだけで内部状態はもう開いている、という
+   ずれが起こり得る。
+2. 保持中、短周期タイマーの読みが保持専用baseline(`pred.at_ms`とS1打刻の大きい方)から
+   `KEY_EFFECT_SETTLE_MS`(170ms)+読みの周期経過した時点で、公開がまだ追いついて
+   おらず`tsf_open=0`のままなら、`decide_use`が`Use{open:false, disagrees:true}`を
+   返す。これが`report_mozc_shm`経由でbeliefを閉へ確定させる(ADR-191決定3の既存の
+   `reconcile_key_effect_open`。この段階自体は害が無い——次の読みで開が見えれば
+   belief はまた戻る)。
+3. **取り消せない害を生むのは、この後にPの`judge()`がそれを`ReleaseReason::
+   ObservedClosed`として、その場で即座に保持を解放・再生すること**。保持していた
+   物理キーが、確定した閉のbeliefの下でqwerty生文字(NICOLA変換を経ない直接入力)
+   として**その時点で**`INPUT_DEFER.replay_later`を通じて送信される。
+4. その直後(あるいはさらに後、何ms後であっても上限は無い)にMozcの公開が追いつき
+   実際に開いても、**すでに送信済みの生文字キー列が開いたMozcの手前(入力キューの
+   モードキーの後ろ)に並ぶ**ため、Mozcはこれをローマ字として直接読み、NICOLAの
+   変換を経ていない誤ったかなに変換してしまう。**症状はBUG-233の`kore,`型の
+   リテラル(IMEが閉のまま生文字が出る)ではなく、逆に「開いたMozcが生のqwertyを
+   誤ってローマ字と解釈した結果の誤変換かな」になる**。
 
-**この限界はPの保持ロジック自体の欠陥ではなく、ADR-191決定3の
-`reconcile_key_effect_open`がsettle_ms経過時点で予測を無条件に消費する既存仕様に起因
-する**。`judge()`側で`ObservedClosed`の解放を遅らせても、`reconcile_key_effect_open`が
-同じタイミングで予測を既に消費済みのため意味がない(round5で確認)。したがって範囲は
-限定される: 発生するのは(1)`Split`(`tsf_open != effective_open`)が続く窓、または
-(2)保持中に食い違いの起点(`ime_actuation_send_tick_ms`等)が drift correction 等の
-awase自身の送信で前へ押される場合、かつMozcの実際の開のタイミングがsettle_msと保持
-期限(300ms)の間に入る場合に限られる。出力の悪化は招くが、保持期限(`Cap`による解放も
-同様の限界を持つ)に達するまでの間だけで、Pが無い場合と比べて「常に悪化する」わけでは
-ない(Mozcがsettle_ms以内に開くか、保持期限を超えて開かない場合はPの方が正しい)。
+**範囲**: `Split`(`tsf_open != effective_open`)が続く窓や、保持中に食い違いの起点が
+drift correction等で前へ押される場合は、むしろ`judge()`が`Keep`→`Deadline`に進み
+belief を変えずに(予測の開のまま)再生するため、この限界は**起きない**(round5
+followupで訂正)。この限界が起きる条件は1つだけ:**cold Mozcがモードキーを処理して
+`tsf_open`を公開するまでの遅れが、settle_ms+読みの周期を超えること**(Split・起点の
+押し戻しは不要)。発生後の影響に300msの上限は無い——`ObservedClosed`は判定した
+瞬間(約170〜190ms)に即座に解放されるため、Mozcがその後いつ公開しても遅い。さらに
+belief が閉に追随したことで、Mozcが実際に開いた後の「開」の読みも`decide_use`の
+settleをもう一度要求するため追加で遅れ、保持の解放で`TIMER_MOZC_SHM`を張り直す
+(次の通常の読みは最大500ms後)ので、その間の後続の打鍵もqwerty素通しになり得る。
 
-**是正しない理由**: `KEY_EFFECT_SETTLE_MS`自体を上げると、D1のフェンス・D3の
-reconciliation・G3のbaselineすべてに影響し、既存の挙動(D1bの訂正速度等)を壊す
-リスクが大きい。実際のcold Mozcの開くまでの時間分布(CI確証計画項目5で測定予定)を
-見ないまま値を動かすのは`tuning-constants.md`の「実測なしのエスカレーション」禁止に
-反する。既知の限界として記録し、是正は分布の実測後に判断する。
+**ADR-191決定3の`reconcile_key_effect_open`自体のせいではない**(round5 followupで
+訂正)。belief が閉に確定すること自体は無害——取り消せない害は、Pの`judge()`がその
+belief確定を根拠に**即座に**再生する判断にある。打鍵がどのbeliefで変換されるかは
+再生**時点**のbeliefで決まるため、`KEY_EFFECT_SETTLE_MS`を動かさずとも、P専用の
+判断(例: 予測から別途の待ち時間が経つまで再生しない、または保持の読みの食い違いの
+起点をP専用にしてbeliefの追随自体を遅らせる)で対策できる余地がある。
+
+**是正しない理由**: 本当の二律背反は、P内部の「閉の確定(=再生)を早めるか遅らせるか」
+にある——早めると上記の誤変換リスクを負う一方、遅らせると本当に閉のまま(BUG-233
+そのもの)の場面で保持が延び、リテラル露出の時間が伸びる。どちらに寄せるべきかは、
+cold Mozcでモードキーから`tsf_open`公開までの実際の遅延分布を測ってから決める
+べきで(`tuning-constants.md`の実測なしのエスカレーション禁止)、今回は実測
+(CI確証計画項目5)を待って据え置く。
 
 **未解決として残るもの(実装のTODO)**:
-- 上記Pの既知の限界(settle_ms〜保持期限の間にMozcが開く場面での誤ったリテラル確定)。
-  `Cap`による解放(保持8件、実効約4打鍵)も同じ限界を持つ。
+- 上記Pの既知の限界(cold Mozcのtsf_open公開がsettle_ms+読みの周期より遅れる場面での
+  誤変換かな)。**`Cap`による解放は同じ限界を持たない**(round5 followupで訂正)——
+  `Cap`はbeliefを変えずに(予測の開のまま)再生するため、遅れて開く場面ではむしろ
+  正しく入る。`Cap`が持つ限界は`Deadline`と同じ側(本当に閉のまま〈BUG-233そのもの〉
+  の場面で、Pが無い場合と同じリテラルになる)。
 - 保持の期限(`KEY_EFFECT_OPEN_HOLD_MAX_MS=300`)に達しても読みが`Held`/`Split`のままの
   場合、観測の裏付けなしにbeliefを閉にする正当な入口が無い(`ime-belief-architecture.md`
   が禁止するヒューリスティックな書き込みに当たるため)ため、beliefを変えず再生+warnログ
@@ -558,18 +582,17 @@ reconciliation・G3のbaselineすべてに影響し、既存の挙動(D1bの訂�
 - T3: フォーカス変更時の破棄は`tracing::warn!`ログのみで利用者へのUI通知は未実装
   (上記R6節参照)。
 - S1: shift-conv-guardの`VK_DBE_HIRAGANA`直接注入(`key_pipeline.rs`)に打刻が無い
-  (上記S1節参照)。
-- S5: `fix-requires-evidence.md`・`.githooks/pre-push`への`key_effect_open_hold`
-  登録が未了(上記S5節参照)。
+  (上記「G3の詳細」節参照)。
 - R6の(i)「開き直し」は未実装(原因特定〈CI確証計画項目1〉待ち)。
 - S6'(予測が閉で実は開いている逆向きのケース)は対象外(`arm`は`open==Some(true)`の
   ときのみ)。
-- round5で判明: ADR-268・ADR-291の本文にG3によるbaseline変更への言及が無い
-  (下記「関連ADRとの関係」で追記)。
-- round5で判明: 保持中にdrift correctionが発火し食い違いの起点を押す相互作用は未確認
-  (上記Pの既知の限界の原因(2)そのもの)。
+- 保持中にdrift correctionが発火し食い違いの起点を押す相互作用は未確認。
 
-残りのCI確証計画(項目1・3・5、下記)・実機確認(dragonflyg4、現在オフライン)・
+**本コミットで対応済み**: S5(`fix-requires-evidence.md`・`.githooks/pre-push`への
+`key_effect_open_hold`登録)、ADR-268・ADR-291本文へのG3によるbaseline変更への
+言及(下記「関連ADRとの関係」参照)。
+
+残りのCI確証計画(項目1・3・4・5、下記)・実機確認(dragonflyg4、現在オフライン)・
 **本ADRドキュメントブランチ自体のdevelopへのマージ**は、実装のPR(#936、マージ済み)
 とは別に進める。
 
@@ -596,12 +619,13 @@ TIPへ入力を渡していない可能性が高く、「フォーカス直後�
    - **未着手**: S1の退行確認(単体テストでは検出不可、CIシナリオが必須)。明示OFFの後、
      cold GjiDirectの送信が170ms以上遅れる状況で、古い開の読みが`Use`されないこと
      (`tickchurn`の変種に送信遅延を入れたCIシナリオを新設)。
-   - **【round5で確認、悪い方向に当たった】** 予測が正しくMozcが100〜300ms遅れて開く
-     場合に、Pの短い周期の読みによってbeliefが一時的に閉へ誤って倒れないこと——belief
-     自体は倒れる(ADR-191決定3の既存仕様どおり)。問題はそれ以上に、**保持していた
-     物理キーが取り消せない形でqwerty生文字として確定される**こと(上記「決定」節
-     「Pの既知の限界」参照)。実際のcold Mozcの開くまでの時間分布を測るまで、この
-     既知の限界がどの程度の頻度で起きるかは不明。
+   - **【round5の机上の検討で、起きうると判明。実測はまだ】** 予測が正しくMozcが
+     settle_ms+読みの周期より遅れて`tsf_open`を公開する場合に、Pの短い周期の読みに
+     よってbeliefが一時的に閉へ倒れること自体は無害(ADR-291 D5以前と同じ、次の読みで
+     戻る)。問題はそれ以上に、**保持していた物理キーがその時点で即座にqwerty生文字
+     として再生され、後から開いたMozcにローマ字として誤変換される**こと(上記「決定」
+     節「Pの既知の限界」参照)。実際のcold Mozcの`tsf_open`公開までの時間分布を測るまで、
+     この既知の限界がどの程度の頻度で起きるかは不明。
    - **未着手**: ADR-245半角英数トグル・ADR-255 Space置換・drift correctionの書き込みが
      `last_mode_key_tick_ms`/S1の打刻対象から漏れていないこと(shift-conv-guardの
      `VK_DBE_HIRAGANA`注入の漏れは判明済み、上記S1節参照)。
@@ -634,11 +658,11 @@ TIPへ入力を渡していない可能性が高く、「フォーカス直後�
 - **ADR-270/285/288**: H1は却下したため、`judge_compose`の`ImeNotActive`判定(ADR-270の
   意図的な「キーがアプリに届いたかIMEが受けたかを言えない」という判断)はそのまま維持
   される。
-- **ADR-268/ADR-291への追記(round5で判明、要対応)**: `decide_use`の食い違う読みの
-  settle起点はADR-268 D3(R3')・ADR-291 D5が定義したものだが、両ADRの本文はG3による
-  この変更(`disagree_baseline_ms`の新設)に触れていない。本ADRのマージ時に、両ADRへ
+- **ADR-268/ADR-291への追記(round5で判明、本コミットで対応済み)**: `decide_use`の
+  食い違う読みのsettle起点はADR-268 D3(R3')・ADR-291 D5が定義したものだが、両ADRの
+  本文はG3によるこの変更(`disagree_baseline_ms`の新設)に触れていなかった。両ADRへ
   「食い違いの起点はADR-292 G3で変更(IME開閉/モード送信だけに限定)」と1行ずつ
-  追記する。
+  追記し、`related_adr`にもADR-292を追加した。
 - **ADR-191決定3**: Pの保持中の読みが170ms未満でも「開」として`Use`になっても、
   `reconcile_key_effect_open`の柵(予測を消すのはsettle_ms経過後のみ)自体は変えておらず、
   「予測ごとに1回」(U2)で整合を取っている。ただし上記「Pの既知の限界」が示すとおり、
