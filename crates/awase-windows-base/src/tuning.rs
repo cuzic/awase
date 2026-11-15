@@ -87,9 +87,35 @@ pub const MOZC_COMPOSE_RESPONSE_CHECK_MS: u64 = 20;
 /// あと、belief が古い値を採り続けないための期限。IME リフレッシュの tick の**最大間隔**より長くすること:
 /// tick のタイマー 500ms + prefetch（`run_with_timeout`）の最大待ち 300ms + ジッターの余裕 200ms = 1000ms。
 /// 500ms + 小さな余裕では、prefetch がタイムアウトした tick で期限が切れ、belief が一瞬フォールバックへ反転する。
-/// 実測根拠は未取得（tick 間隔の分布を実機の `awase.log` から測って、値を見直す）ので pending。
+///
+/// ADR-293(BUG-234、2026-11-15、Opusレビュー指摘2-a): `decide_use`/`report_mozc_shm`が
+/// `own_send`のPendingで`ShmUse::Held`を強制する間(最長`MOZC_OPEN_CLOSE_SETTLE_MS`)、
+/// `ObserverReported`をdispatchしないため、この観測の鮮度は更新されない。元の1000msの導出
+/// (500+300+200ms)に`MOZC_OPEN_CLOSE_SETTLE_MS`(2000ms)を加えた3000msに引き上げ、Held中に
+/// この観測自体が失効してより弱い証拠源に落ちることを防ぐ。実測根拠は未取得(tick間隔の分布を
+/// 実機の`awase.log`から測って、値を見直す)なのでpending。
 #[measured_macro::measured(pending = true)]
-pub const MOZC_SHM_OBSERVATION_TTL_MS: u64 = 1_000;
+pub const MOZC_SHM_OBSERVATION_TTL_MS: u64 = 3_000;
+
+/// ADR-293(BUG-234): awase自身が送った開閉要求(`OwnSend`)の方向と食い違う`mozc-shm`の読みを保留し続ける柵 (ms)。
+///
+/// 「Mozcがまだ切替を処理し終えていないだけ」として保留する。`KEY_EFFECT_SETTLE_MS`
+/// (170ms)は物理モードキー予測と同期的な観測の遅れ用の値で、Mozc自身の非同期な切替完了には
+/// 短すぎる([BUG-234](../../../docs/known-bugs/BUG-234.md))。
+///
+/// **導出(暫定、pending)**: [BUG-230](../../../docs/known-bugs/BUG-230.md)の実機ログ1件で、
+/// **F2(かなロックからひらがなへのモード切替)**の押下から`[mozc-shm]`に`tsf_mode=hiragana`が
+/// 出るまで約2秒かかった例がある——これは`TURN_OFF_IME`/`TURN_ON_IME`(開閉)の完了時間ではなく、
+/// `MOZC_SHM_TIMER_MS`(500ms)周期の読みで観測した時刻なので最大500msの観測遅れを含む上界でも
+/// ある(Opusレビュー指摘6)。2026-11-15のCI遅延注入実験(`ci/bug234-publish-delay`、ADR-293 8節)の
+/// 700ms/2000msは**注入した**遅延であり、2000msを選ぶ根拠ではなく「長い遅延なら必ず再現する」
+/// ことの確認に過ぎない。したがってこの2000msは「約2秒」の単一点にマージン0を付けた暫定値で、
+/// `tuning-constants.md`が求める「実測最大+マージン」の形にまだなっていない——
+/// dragonflyg4実機でのTURN_OFF_IME/TURN_ON_IME(開閉)自体のcold/warm分布測定が終わるまで
+/// この値は見直す前提のまま`pending`とする([ADR-293](../../../docs/adr/293-mozc-direct-actuation-closed-loop.md)
+/// 11節2番)。
+#[measured_macro::measured(pending = true)]
+pub const MOZC_OPEN_CLOSE_SETTLE_MS: u64 = 2_000;
 
 // === TSF warmup タイミング ===
 

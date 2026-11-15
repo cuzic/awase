@@ -30,6 +30,10 @@ pub(crate) struct FocusFacts<'a> {
     /// （ADR-089 §6 Phase C item 12）。`ime_controller.rs` は Runtime/Output の
     /// 内部状態を直接読めないため、view のフィールドとして運ぶ。
     pub focus_gen: crate::state::focus_gen::FocusGen,
+    /// ADR-293(BUG-234): フォーカス中スレッドの`(tid,pid)`——mozc-shm v6ブロックの所有スレッド
+    /// (`OwnSend`のスタンプ先、5-2節)。`apply_mechanism`はOSから自前取得せず、ここ経由で受け取る
+    /// (`ime_controller.rs:27-30`の制約)。フォーカス未取得・スレッドが取れない場合は`None`。
+    pub mozc_target: Option<(u32, u32)>,
 }
 
 /// OS から直接観測した揮発性状態（tick 境界でアトミックをロードしてスナップショット化）。
