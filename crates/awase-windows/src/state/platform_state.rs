@@ -4632,7 +4632,11 @@ mod tests {
     fn report_mozc_shm_bug234_n2_drift_correction_pending_is_held_despite_matching_effective() {
         use crate::state::mozc_shm::{OwnSend, ShmUse};
         let mut ps = ps_with_open_intent_and_applied(); // effective=desired=true、明示意図 tick=100
-                                                        // drift correction: desiredだけを閉へ書き換える(effectiveはまだ開のまま、belief未確定)。
+                                                        // round3レビュー指摘R2: drift correctionは明示意図が無い窓で走ることが多い
+                                                        // (意図があればeffectiveは意図で決まる)。明示意図を外し、desiredだけを閉へ書き換える
+                                                        // (effectiveはまだ開のまま、belief未確定)ことで、docの「drift correction中」という
+                                                        // 説明と状態を一致させる。
+        ps.ime.clear_last_intent_for_test();
         ps.ime.set_desired_open_for_test(false);
         let own_send = OwnSend {
             open: false, // desiredと同じ方向(閉)をdrift correctionとして送信した

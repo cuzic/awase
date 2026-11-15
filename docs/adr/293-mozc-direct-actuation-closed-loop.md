@@ -307,7 +307,8 @@ R8(判定条件はbeliefではなくown-requestそのものと比較する)の�
   `own_send.open`とは不一致でもbeliefとは一致していることがあり、その場合はHeldを強制せず
   `decide_use`に委ねる——beliefと一致する読みを保留する理由は無く、`ObserverReported`の
   dispatchを止めてMozcShm観測のTTLを消費するだけになる。
-- **`MOZC_SHM_OBSERVATION_TTL_MS`を1000ms→3000msに引き上げた(round1指摘2-a)。** Pendingで
+- **`MOZC_SHM_OBSERVATION_TTL_MS`を1000ms→3000msに引き上げた(round1指摘2-a、
+  round2 N1で撤回・1000msに戻した——下記「round2レビューの反映」参照)。** Pendingで
   `Held`を強制する間は`ObserverReported`をdispatchしないため、Held中にこの観測自体のTTLが
   切れてより弱い証拠源に落ちるおそれがある。元の導出(500+300+200ms)に
   `MOZC_OPEN_CLOSE_SETTLE_MS`(2000ms)を加えた。
@@ -754,4 +755,10 @@ Zの`Explicit claim`fence・`decide_use`双方への適用——これにより*
    GjiDirect(同期)が逆方向をスタンプすると、後から完了したdrift correctionが古い方向で
    上書きする(round2 N2の修正後はbelief/desiredと一致する読みが通るため害は限定的)。
    `own_send`のPending中にMozcShm観測が失効して他の証拠源に反転しないか(round2 N1)も
-   未検証。いずれも実害が報告された時点で着手する。
+   未検証。(d)(round3レビュー指摘R1)round2 N2の修正で、`Pending`は「送信前からの古い
+   一致読み」(項目2を満たさない、`update_tick_ms <= send.tick_ms`)でも、その読みが
+   `own_send.open`と一致していても`desired`とは食い違っていれば保留するようになった——
+   `last_mode_key_tick_ms`を進めない経路(`pass_through_observed`による揃え直し・字形の観測
+   による追随等)でdesiredが送信後に変わった稀な組み合わせでは、修正前なら`decide_use`が
+   desiredへ揃え直していたのが、修正後は最長capまでHeldになる。capの受容済みのコスト
+   (最長2秒の保留)の範囲内。いずれも実害が報告された時点で着手する。
