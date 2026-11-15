@@ -3,7 +3,7 @@
 # 窓にキーを送るので、コンソール窓を作るプロセスを並行して起動しない(窓が前面を奪って、キーが別の窓に行く)。
 # python のヘルパーは shmci.py の中で CREATE_NO_WINDOW で起動する。ここでは Start-Process -Wait を使わない
 # (TIP を読み込んだプロセスが起動する mozc_server が子孫として残り、-Wait が戻らない)。
-param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'stale', 'flip', 'tidreuse', 'tickchurn')][string]$Scenario,
+param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'stale', 'flip', 'tidreuse', 'tickchurn', 'directact')][string]$Scenario,
       [Parameter(Mandatory)][string]$Msi,
       [string]$Dist = 'dist',
       [string]$MozcCiDir = 'mozc-readable\readable\ci',
@@ -34,6 +34,12 @@ if ($Scenario -eq 'tidreuse') {
   # スレッド ID の再利用は awase を使わず、共有メモリの残りだけを見る(測定のみ。判定はしない)
   Write-Host '== tidreuse (no awase)'
   python "$here\shmci.py" tidreuse --threads 60
+  exit $LASTEXITCODE
+}
+if ($Scenario -eq 'directact') {
+  # [ADR-293 実装前の確認] version 6 の直接 actuation(nonce/ack)と、入力中の OFF の等価性(awase は使わない)。
+  Write-Host '== directact (no awase, ADR-293 pre-implementation check)'
+  python "$here\shmci.py" directact --out (Join-Path $OutDir 'directact.json')
   exit $LASTEXITCODE
 }
 if ($Scenario -eq 'tickchurn') {

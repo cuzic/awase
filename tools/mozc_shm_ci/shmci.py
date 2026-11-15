@@ -336,6 +336,17 @@ def cmd_selftest(_args):
     recs = parse_records([line, "noise", ""])
     assert len(recs) == 1 and recs[0][1]["thread_id"] == 7, recs
     assert abs(recs[0][0] - 1792305031.25) < 1e-6, recs[0][0]
+    # [ADR-293] version 6 のブロックの解析
+    import struct
+    blk = bytearray(V6_SIZE)
+    struct.pack_into("<10I", blk, 0, 0x5A52444D, 6, 4, 0, 4, 0, 4, 77, 88, 1)
+    struct.pack_into("<Q", blk, 40, 123456)
+    struct.pack_into("<3I", blk, 48, 1, 0, 1)
+    struct.pack_into("<2I", blk, 160, 9, 1)
+    struct.pack_into("<Q", blk, 168, 0xABCD)
+    pv = parse_v6(bytes(blk))
+    assert (pv["version"], pv["thread_id"], pv["update_tick_ms"], pv["phase"], pv["last_cmd_nonce"],
+            pv["last_cmd_result"], pv["cmd_window_handle"]) == (6, 77, 123456, 1, 9, 1, 0xABCD), pv
     print("selftest OK")
     return 0
 
@@ -940,6 +951,188 @@ def cmd_tickchurn(args):
     return 0 if ok else 1
 
 
+V6_SIZE = 176
+DIRECT_ACTUATION_MESSAGE = "mozcreadable.direct_actuation.message"
+DA_RESULTS = {0: "none", 1: "applied", 2: "no_focused_context", 3: "send_command_failed", 4: "reserved_bits_set"}
+
+
+def parse_v6(b):
+    """version 6 の 176 バイトのブロックから、この検証で使う項目を取り出す(Linux でも動く)。"""
+    import struct
+    (magic, version, seq, eff_open, eff_mode, tsf_open, tsf_mode, tid, pid, active) = struct.unpack_from("<10I", b, 0)
+    (update_tick,) = struct.unpack_from("<Q", b, 40)
+    (phase, cand, preedit_len) = struct.unpack_from("<3I", b, 48)
+    (nonce, result) = struct.unpack_from("<2I", b, 160)
+    (cmd_hwnd,) = struct.unpack_from("<Q", b, 168)
+    return {"magic": magic, "version": version, "seq": seq, "effective_open": eff_open, "effective_mode": eff_mode,
+            "tsf_open": tsf_open, "tsf_mode": tsf_mode, "thread_id": tid, "process_id": pid, "active": active,
+            "update_tick_ms": update_tick, "phase": phase, "candidate_category": cand, "preedit_utf16_len": preedit_len,
+            "last_cmd_nonce": nonce, "last_cmd_result": result, "cmd_window_handle": cmd_hwnd}
+
+
+def cmd_directact(args):
+    """[ADR-293 実装前の確認] Mozc Readable version 6 の直接 actuation(nonce/ack)を、awase 無しで確かめる。
+
+    A: PostMessage で開閉を要求すると、Mozc が実際に切り替えて ack(last_cmd_nonce/last_cmd_result)を書くか。
+       送信から ack までの時間(ack を書いた flush の update_tick_ms − 送信時の GetTickCount64)も測る。
+       予約ビット(kReservedBitsSet)と nonce 0(無視される)も確かめる。
+    B: 入力中(未確定の「か」)に OFF にしたとき、直接 actuation と VK_IME_OFF で結果(確定・破棄・その後の直接入力)が同じか。
+    窓はこのプロセス自身が作る(TIP の窓も同じスレッドなので、メッセージを回しながら待つ)。結果は --out に JSON で書く。
+    """
+    w = win32()
+    ctypes, u32, k32 = w.ctypes, w.u32, w.k32
+    k32.GetTickCount64.restype = ctypes.c_uint64
+    u32.RegisterWindowMessageW.argtypes = [w.wt.LPCWSTR]
+    u32.RegisterWindowMessageW.restype = w.wt.UINT
+    u32.GetWindowTextW.argtypes = [w.wt.HWND, w.wt.LPWSTR, ctypes.c_int]
+    u32.SetWindowTextW.argtypes = [w.wt.HWND, w.wt.LPCWSTR]
+    views = {}
+
+    def read6(tid):
+        v = views.get(tid)
+        if v is None:
+            h = k32.OpenFileMappingW(4, False, f"Local\\mozc-readable-ime-{tid}")
+            if not h:
+                return None
+            v = k32.MapViewOfFile(h, 4, 0, 0, V6_SIZE)
+            if not v:
+                return None
+            views[tid] = v
+        for _ in range(50):
+            a = ctypes.string_at(v, V6_SIZE)
+            if a == ctypes.string_at(v, V6_SIZE) and parse_v6(a)["seq"] % 2 == 0:
+                return parse_v6(a)
+        return None
+
+    def text_of(hwnd):
+        buf = ctypes.create_unicode_buffer(512)
+        u32.GetWindowTextW(hwnd, buf, 512)
+        return buf.value
+
+    win = Window(w, "DA", "DA")
+    win.create()
+    out = {"setup": {}, "loop": [], "reserved": None, "zero_nonce": None, "preedit": []}
+    if not win.set_open(1):
+        print("::error::could not set IME to ON (setup failed)")
+        return 1
+    win.focus()
+    w.pump(0.5)
+    blk = read6(win.tid)
+    if blk is None or blk["version"] < 6:
+        print(f"::error::no version 6 block: {blk}")
+        return 1
+    msg = u32.RegisterWindowMessageW(DIRECT_ACTUATION_MESSAGE)
+    cmd = blk["cmd_window_handle"]
+    owner = w.tid_pid(cmd) if cmd else (0, 0)
+    out["setup"] = {"version": blk["version"], "cmd_window_handle": cmd, "message": msg,
+                    "cmd_window_owner": owner, "self": (win.tid, os.getpid())}
+    print("setup: " + json.dumps(out["setup"]))
+    if not cmd or tuple(owner) != (win.tid, os.getpid()):
+        print("::error::cmd_window_handle is missing or not owned by this thread")
+        return 1
+
+    def post_and_wait(nonce, lparam, timeout=5.0):
+        before = read6(win.tid)
+        t0 = k32.GetTickCount64()
+        ok = bool(u32.PostMessageW(cmd, msg, nonce, lparam))
+        end = time.time() + timeout
+        while time.time() < end:
+            w.pump(0.005)
+            b = read6(win.tid)
+            if b and b["last_cmd_nonce"] == nonce and b["seq"] != before["seq"]:
+                return ok, t0, b
+        return ok, t0, None
+
+    # A: 開閉の閉ループ(OFF/ON を交互に)
+    nonce = 0
+    for i in range(args.trials):
+        want = 0 if i % 2 == 0 else 1
+        win.focus()
+        w.pump(0.3)
+        nonce += 1
+        ok, t0, b = post_and_wait(nonce, want)
+        row = {"trial": i, "nonce": nonce, "want_open": want, "posted": ok, "acked": b is not None}
+        if b:
+            row.update({"result": DA_RESULTS.get(b["last_cmd_result"], b["last_cmd_result"]),
+                        "ack_latency_ms": b["update_tick_ms"] - t0, "tsf_open": b["tsf_open"],
+                        "effective_open": b["effective_open"], "effective_mode": b["effective_mode"],
+                        "state_matches": b["tsf_open"] == want and b["effective_open"] == want})
+        out["loop"].append(row)
+        print("loop: " + json.dumps(row))
+        w.pump(0.5)
+
+    # 予約ビット: kReservedBitsSet が返り、状態は変わらない
+    nonce += 1
+    before = read6(win.tid)
+    ok, t0, b = post_and_wait(nonce, 2)
+    out["reserved"] = {"acked": b is not None, "result": DA_RESULTS.get(b["last_cmd_result"]) if b else None,
+                       "state_unchanged": bool(b) and b["tsf_open"] == before["tsf_open"]}
+    print("reserved: " + json.dumps(out["reserved"]))
+
+    # nonce 0: 何も書かれない(last_cmd_nonce が変わらない)
+    before = read6(win.tid)
+    u32.PostMessageW(cmd, msg, 0, 0)
+    w.pump(1.0)
+    after = read6(win.tid)
+    out["zero_nonce"] = {"nonce_unchanged": after["last_cmd_nonce"] == before["last_cmd_nonce"],
+                         "state_unchanged": after["tsf_open"] == before["tsf_open"]}
+    print("zero_nonce: " + json.dumps(out["zero_nonce"]))
+
+    # B: 入力中に OFF(直接 actuation と VK_IME_OFF を交互に)
+    for i in range(args.preedit_trials * 2):
+        method = "direct" if i % 2 == 0 else "vk_ime_off"
+        u32.SetWindowTextW(win.edit, "")
+        if not win.set_open(1):
+            out["preedit"].append({"trial": i, "method": method, "setup_failed": True})
+            continue
+        win.focus()
+        w.pump(0.3)
+        for vk in (0x4B, 0x41):  # K, A → 「か」(未確定)
+            w.send_vk(vk)
+            w.pump(0.05)
+        w.pump(0.6)
+        b0 = read6(win.tid)
+        before = {"text": text_of(win.edit), "phase": b0["phase"], "preedit_utf16_len": b0["preedit_utf16_len"]}
+        if method == "direct":
+            nonce += 1
+            ok, t0, b = post_and_wait(nonce, 0)
+            acked = None if b is None else DA_RESULTS.get(b["last_cmd_result"])
+        else:
+            w.send_vk(0x1A)  # VK_IME_OFF
+            acked = None
+        w.pump(1.5)
+        b1 = read6(win.tid)
+        after_off = {"text": text_of(win.edit), "phase": b1["phase"], "tsf_open": b1["tsf_open"],
+                     "effective_open": b1["effective_open"]}
+        w.send_vk(0x58)  # X: OFF の後に直接入力になっているか
+        w.pump(0.5)
+        row = {"trial": i, "method": method, "ack": acked, "before": before, "after_off": after_off,
+               "after_x": text_of(win.edit)}
+        out["preedit"].append(row)
+        print("preedit: " + json.dumps(row, ensure_ascii=False))
+
+    loop_ok = [r for r in out["loop"] if r.get("acked") and r.get("result") == "applied" and r.get("state_matches")]
+    by_method = {}
+    for r in out["preedit"]:
+        if not r.get("setup_failed"):
+            by_method.setdefault(r["method"], set()).add((r["after_off"]["text"], r["after_off"]["tsf_open"], r["after_x"]))
+    equivalent = len(by_method) == 2 and by_method["direct"] == by_method["vk_ime_off"]
+    out["summary"] = {
+        "loop_applied_and_matching": f"{len(loop_ok)}/{len(out['loop'])}",
+        "ack_latency_ms": sorted(r["ack_latency_ms"] for r in out["loop"] if r.get("acked")),
+        "reserved_ok": bool(out["reserved"]["acked"] and out["reserved"]["result"] == "reserved_bits_set"
+                            and out["reserved"]["state_unchanged"]),
+        "zero_nonce_ok": out["zero_nonce"]["nonce_unchanged"] and out["zero_nonce"]["state_unchanged"],
+        "preedit_outcomes": {k: sorted(map(list, v)) for k, v in by_method.items()},
+        "preedit_equivalent": equivalent,
+    }
+    print("summary: " + json.dumps(out["summary"], ensure_ascii=False))
+    with open(args.out, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, indent=1)
+    # 失敗にするのは、閉ループそのものが 1 回も成り立たなかったときだけ(等価性は観測として報告する)。
+    return 0 if loop_ok else 1
+
+
 def cmd_drive(args):
     w = win32()
     here = os.path.dirname(os.path.abspath(__file__))
@@ -1117,9 +1310,15 @@ def main(argv=None):
     tc.add_argument("--vks", type=lambda s: [int(x, 0) for x in s.split(",")], default=[0x41, 0x42, 0x43],
                     help="tsf_open/tsf_mode を変えずに打つ VK のカンマ区切り(既定: A,B,C。かな変換される文字キー)")
 
+    da = sub.add_parser("directact")
+    da.add_argument("--out", required=True)
+    da.add_argument("--trials", type=int, default=20, help="開閉の閉ループの試行回数(OFF/ON を交互に)")
+    da.add_argument("--preedit-trials", type=int, default=4, help="入力中の OFF の試行回数(方法ごと)")
+
     args = ap.parse_args(argv)
     return {"host": cmd_host, "drive": cmd_drive, "analyze": cmd_analyze, "selftest": cmd_selftest,
-            "burn": cmd_burn, "tidreuse": cmd_tidreuse, "tickchurn": cmd_tickchurn}[args.cmd](args)
+            "burn": cmd_burn, "tidreuse": cmd_tidreuse, "tickchurn": cmd_tickchurn,
+            "directact": cmd_directact}[args.cmd](args)
 
 
 if __name__ == "__main__":
