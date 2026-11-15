@@ -297,7 +297,7 @@
 | [290](290-half-width-alnum-exit-via-mode-key-and-gji-confirm.md) | 半角英数トグルをモードキー(ひらがなキー等)で抜けたときも toggle_held を正しく解除し、GJI 側の抜け出し送信にも Mozc の実際の切替完了の確認を足す(BUG-230) | D1″実装済み・Opusレビューround1〜3通過・developマージ済み(2026-11-10、#933)。D2(GJI確認)は未着手、実機確認は未着手(新しい遅延をBUG-231で観測) |
 | [291](291-mozc-shm-push-notify-and-engine-recheck.md) | belief_v2(候補Z)にmozc-shm追随の手放しを反映させ、Engineの活性再評価を明示的に呼ぶ(BUG-231)。mozc-shmのsettle機構の穴を塞ぐ(BUG-232) | D1′(BUG-231)はdevelopマージ済み(PR #938、`96fa5e40d`、2026-11-13)。D5(BUG-232)はdevelopマージ済み(PR #935、`97d849bfe`、2026-11-12)。`tickchurn`CIシナリオもマージ済み(PR #934、`6b29383d8`)。実機デプロイ後の再確認は未着手 |
 | [292](292-key-effect-prediction-vs-observation-priority.md) | KeyEffectPredictionがmozc-shm実測の裏取り前にローマ字を送りリテラル化する(BUG-233)。settle起点の訂正(G3)と未照合の物理キー保留(P) | G3・Pともコード実装・developマージ済み(PR #936、`6439bc7d2`、2026-11-12)。round5 Opusレビューで、Pの既知の限界(cold Mozcが`tsf_open`公開に遅れる場面で保持した打鍵を誤変換かなにしてしまう、BUG-233とは逆の症状)を発見・記録。R6(i)「開き直し」・実機確認(dragonflyg4、現在オフライン)・本ADRドキュメント自体のマージは未着手 |
-| [293](293-mozc-direct-actuation-closed-loop.md) | BUG-234の恒久修正: awase自身の開閉送信(OwnSend)を観測入力にしてdecide_useとZの柵をoriginで延長し、Mozc Readable版6のnonce/ackで早期確定する | 検討中(実装前)。Opusレビューround1〜7で設計・仕様とも収束。残りは実測(MOZC_OPEN_CLOSE_SETTLE_MSの分布・preedit等価性・拒否率) |
+| [293](293-mozc-direct-actuation-closed-loop.md) | BUG-234の恒久修正: awase自身の開閉送信(OwnSend)を観測入力にしてdecide_useの柵をoriginで延長する | PR #941でstep1(柵の分離)を実装、コードレビューround1の指摘を反映し round2 中。Zのfence拡張は見送り確定。direct-actuationのnonce/ack(step2〜6)は未着手、実機の分布測定も未了 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

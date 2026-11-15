@@ -76,6 +76,16 @@ struct HookState {
     /// 限定する必要がある（BUG-233: KeyEffectPredictionだけで開を信じた直後、未確認の打鍵/Backspace自体が
     /// settleの基準点を押し出し訂正が遅れる悪循環を避けるため）。
     ime_actuation_send_tick_ms: AtomicU64,
+    /// ADR-293(BUG-234): awase自身が実際に送信できた、開閉方向を持つ最新の送信(単一スロット、
+    /// `OwnSend`、5-2節)。`own_send_present`が真のときだけ有効。開閉方向を持つ送信が実際に
+    /// 送信できたときだけ記録する(`note_own_send`。モード切替のみの送信では記録しない、round6 V2)。
+    own_send_present: AtomicBool,
+    own_send_open: AtomicBool,
+    own_send_tick_ms: AtomicU64,
+    own_send_tid: AtomicU32,
+    own_send_pid: AtomicU32,
+    /// `0` = nonce無し(`None`。direct postの送信経路が無い本PRでは常に0)。
+    own_send_nonce: AtomicU32,
     /// `install_hook` がフックスレッドからの TID 通知を待つスロット。
     /// 0 = 待機中、`u32::MAX` = `SetWindowsHookExW` 失敗、それ以外 = フックスレッド TID。
     hook_tid_init_slot: AtomicU32,
@@ -171,6 +181,12 @@ impl HookState {
             hook_physical_key_tick_ms: AtomicU64::new(0),
             imm_cross_write_tick_ms: AtomicU64::new(0),
             ime_actuation_send_tick_ms: AtomicU64::new(0),
+            own_send_present: AtomicBool::new(false),
+            own_send_open: AtomicBool::new(false),
+            own_send_tick_ms: AtomicU64::new(0),
+            own_send_tid: AtomicU32::new(0),
+            own_send_pid: AtomicU32::new(0),
+            own_send_nonce: AtomicU32::new(0),
             hook_tid_init_slot: AtomicU32::new(0),
             physical_key_state: [const { AtomicBool::new(false) }; 256],
             physical_key_down_at_ms: [const { AtomicU64::new(0) }; 256],
@@ -378,6 +394,48 @@ pub fn ime_actuation_send_tick_ms() -> u64 {
     HOOK_STATE
         .ime_actuation_send_tick_ms
         .load(Ordering::Relaxed)
+}
+
+/// ADR-293(BUG-234): 開閉方向を持つ送信が実際に送信できたときに呼ぶ(5-2節の送信元3箇所、
+/// `apply_mechanism`のSendVk arm×2・`imm_cross_write`・`set_ime_open`の完了ブロック)。
+/// `(tid, pid)`は`apply_mechanism`等へviewで届く「Mozcのターゲット」、または発行前に同じ式で
+/// 捕獲した値(OSから自前取得しない、round6 V4-2)。新しい開閉方向の送信は、方向を問わず常に
+/// このスロットを上書きする(単一スロット)。
+pub(crate) fn note_own_send(open: bool, tid: u32, pid: u32, nonce: Option<u32>) {
+    let tick_ms = current_tick_ms();
+    HOOK_STATE.own_send_open.store(open, Ordering::Relaxed);
+    HOOK_STATE
+        .own_send_tick_ms
+        .store(tick_ms, Ordering::Relaxed);
+    HOOK_STATE.own_send_tid.store(tid, Ordering::Relaxed);
+    HOOK_STATE.own_send_pid.store(pid, Ordering::Relaxed);
+    HOOK_STATE
+        .own_send_nonce
+        .store(nonce.unwrap_or(0), Ordering::Relaxed);
+    HOOK_STATE.own_send_present.store(true, Ordering::Release);
+}
+
+/// 記録されている`OwnSend`(無ければ`None`)。`mozc_shm_shadow.rs`が`report_mozc_shm`へ渡す。
+#[must_use]
+pub fn own_send() -> Option<crate::state::mozc_shm::OwnSend> {
+    if !HOOK_STATE.own_send_present.load(Ordering::Acquire) {
+        return None;
+    }
+    let nonce = HOOK_STATE.own_send_nonce.load(Ordering::Relaxed);
+    Some(crate::state::mozc_shm::OwnSend {
+        open: HOOK_STATE.own_send_open.load(Ordering::Relaxed),
+        tick_ms: HOOK_STATE.own_send_tick_ms.load(Ordering::Relaxed),
+        tid: HOOK_STATE.own_send_tid.load(Ordering::Relaxed),
+        pid: HOOK_STATE.own_send_pid.load(Ordering::Relaxed),
+        nonce: if nonce == 0 { None } else { Some(nonce) },
+    })
+}
+
+/// `report_mozc_shm`の`classify_own_request`が消すべきと判定したときに呼ぶ
+/// (`platform_state.rs`は`#[cfg(windows)]`のここを直接呼べないため、呼び出し元
+/// `mozc_shm_shadow.rs`経由で伝え返される)。
+pub(crate) fn clear_own_send() {
+    HOOK_STATE.own_send_present.store(false, Ordering::Relaxed);
 }
 
 fn hook_tid_reset() {

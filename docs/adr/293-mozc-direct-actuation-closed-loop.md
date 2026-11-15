@@ -20,7 +20,20 @@ status: |-
   ない文面・テスト一覧の修正として反映済み。round7で、残っていた1件の文面矛盾(W1:
   (tid,pid)不一致時は「無視するだけ」が正しいのに別の2箇所が「破棄する」と書いていた)を
   指摘・修正し、**設計・仕様とも収束(新規の設計/仕様レベルの指摘なし、残るは8節/11節に
-  記載済みの実測作業のみ)と判定された**。次のアクションは実装(10節の順序どおり)。
+  記載済みの実測作業のみ)と判定された**。2026-11-15、10節step1(柵の分離、origin-scoped)を
+  実装し、PR #941としてOpusの敵対的コードレビュー(`opus-review-pr941`)round1を受けた。
+  round1はH3件(EXPERIMENTAL`acf1a2594`を含めてPRを作っていた・drift correctionの
+  `set_ime_open_ordered()==true`は「書けた」ではなく「dispatchできた」の意味だった・統合テストが
+  BUG-234の状態を作っていなかった)・M多数(項目2が送信前の古い読みも消費してしまう・
+  `imm_cross_write`の`(tid,pid)`をawait後の現フォーカスから取っていた・Pendingがbeliefと一致
+  する読みもHeldにしていた・テストのラベルと中身の不一致・`MOZC_OPEN_CLOSE_SETTLE_MS`の導出
+  根拠の精度)を指摘。**すべて反映済み**: PRをEXPERIMENTAL抜きで作り直し(`ack`/nonce+ack確認
+  〈項目1〉はdirect postの送信経路が無い本PRでは実装しない形に簡素化)、項目2に
+  `read_update_tick_ms > send.tick_ms`を追加、`set_ime_open`の中で実completion後にスタンプする
+  よう移動、`imm_cross_write`の`(tid,pid)`を発行前に捕獲するよう修正、`report_mozc_shm`の
+  `forced_held`をbeliefと食い違うときだけに限定、`MOZC_SHM_OBSERVATION_TTL_MS`を
+  `MOZC_OPEN_CLOSE_SETTLE_MS`分引き上げ、BUG-234を実際に再現する統合テストに差し替え、
+  `architecture_guard`に`note_own_send(`呼び出し元の走査を追加。round2のレビューで収束を確認中。
 related_adr: ["ADR-089", "ADR-163", "ADR-171", "ADR-191", "ADR-208", "ADR-241", "ADR-265", "ADR-268", "ADR-291", "ADR-292"]
 ---
 
@@ -257,6 +270,51 @@ R8(判定条件はbeliefではなくown-requestそのものと比較する)の�
 `own_send`を誤って消費・消去しないため(round6 V4-1)。`own_send`自体は、対応する
 (tid,pid)のブロックを次に読んだときに通常の経路(項目1〜4)で消費されるか、新しい開閉送信で
 上書きされるまで残る(6節)。
+
+**実装後の補正(2026-11-15、PR #941、Opusコードレビュー`opus-review-pr941` round1)**:
+
+- **項目1(nonce+ackの確認)は本PRでは実装しない。** direct post(5-1節)の送信経路
+  (`WriteMechanism::MozcDirect`)自体が未実装のため、`own_send.nonce`は常に`None`——項目1は
+  到達しない死んだ分岐になる。設計の正確さを保つため、`classify_own_request`の引数から`ack`を
+  落とし、項目1自体をコードから削除した(PRにEXPERIMENTAL`acf1a2594`〈`DirectActuationAck`/
+  `direct_actuation_plan.rs`等〉を含めないため、round1指摘0)。direct postの送信経路を実装する
+  別PRで項目1を復元する。
+- **項目2に`read_update_tick_ms > send.tick_ms`を追加(round1指摘1-a)。** 単一スロット+値一致
+  だけでは、OFF→ONのように方向を素早く切り替えたとき、2回目の送信(ON)の直前にMozcがまだ
+  1回目(OFF)を処理しておらず`tsf_open`がON方向のまま残っていた場合、この**送信前からの古い
+  読み**が「ONへの確認」として誤って消費されてしまう(BUG-234の再発経路)。この条件を満たさない
+  一致読みは項目3/4と同じ扱いに落ちる。
+- **`imm_cross_write`・`set_ime_open`の`(tid,pid)`は、`.await`より前(発行時点)に捕獲する
+  (round1指摘3-b)。** 設計の「発行時点の同じplatform側ターゲットを使う」という記述を、
+  実装が当初「`.await`完了後の現在のフォーカス」から取っていたために満たせていなかった
+  (await中にフォーカスが変わると、書いた窓と違う窓にスタンプが付く)。
+- **drift correctionの`SendPath::ImmCross`のスタンプは、`set_ime_open`の中で実completion後に
+  移した(round1指摘3-a)。** `set_ime_open_ordered() == true`は「`spawn_local`できた」(= profile
+  互換)の意味でしかなく、実際に`SendMessageTimeoutW`が成功したかは示さない——このため当初の
+  実装は書けなくてもスタンプしてしまっていた。
+- **`report_mozc_shm`の`forced_held`(5-4節1)は、読みがbeliefと食い違うときだけに限定する
+  (round1指摘2-a)。** `own_send.open`とbeliefの`effective_open`が食い違う(稀な)場合、読みが
+  `own_send.open`とは不一致でもbeliefとは一致していることがあり、その場合はHeldを強制せず
+  `decide_use`に委ねる——beliefと一致する読みを保留する理由は無く、`ObserverReported`の
+  dispatchを止めてMozcShm観測のTTLを消費するだけになる。
+- **`MOZC_SHM_OBSERVATION_TTL_MS`を1000ms→3000msに引き上げた(round1指摘2-a)。** Pendingで
+  `Held`を強制する間は`ObserverReported`をdispatchしないため、Held中にこの観測自体のTTLが
+  切れてより弱い証拠源に落ちるおそれがある。元の導出(500+300+200ms)に
+  `MOZC_OPEN_CLOSE_SETTLE_MS`(2000ms)を加えた。
+- **panic resetは古い`OwnSend`を消す(round1指摘3-e)。** `panic_reset`の OFF→ON は
+  `set_ime_open`を経由しないためスタンプされないが、直前に残っていた無関係な`OwnSend`が
+  この後の読みを誤って保護しないよう、`clear_own_send()`を呼ぶ。
+- **既知の残る限界(round1指摘3-c・3-f、未修正・受容)**:
+  - `imm_cross_write`はスタンプを書き込み成功**後**に行う。発行(`note_imm_cross_write()`)から
+    スタンプまでの間(`.await`の間)に食い違う読みが来ると、`own_send`がまだ無いので従来の
+    170ms判定で追随してしまう。`SendMessageTimeoutW`が遅い(タイムアウト近辺)窓で、まれに
+    BUG-234が残る。
+  - 「v6ブロックが無いスレッドではスタンプしない」は未実装——`(tid,pid)`はフォーカス中スレッド
+    から機械的に計算するだけで、そのスレッドにmozc-shmのv6ブロックが実在するかは見ていない。
+    単一スロットなので、Mozc窓Aへ送信した直後に別窓B(MS-IME等)へ何か送信すると、Aの保留中の
+    スタンプがBに上書きされ、Aの保護が消える。`Runtime.mozc_shm.accepted_for`がこの情報を
+    持つが、`WindowsPlatform`からは参照できない(層の境界)。実害が確認されたら、この情報を
+    `ImeControlView`へ渡す経路を別途設計する。
 
 ### 5-3. mozc-readable fork側の改修: スコープを絞り、計測結果が出るまで着手しない(round3 S2、変更なし)
 
@@ -569,6 +627,29 @@ Zの`Explicit claim`fence・`decide_use`双方への適用——これにより*
      マークは立たないこと、`nonce`が`Some`なら立つこと(round6 V3)。(i) 読んでいるブロックの
      `(tid,pid)`不一致は、全順序の先頭(項目0)で判定され、無関係なスレッドのスタンプを
      消費・消去しないこと(round6 V4-1)。
+
+   **実装状況(2026-11-15、PR #941、`opus-review-pr941` round1の指摘を反映済み)**:
+   `classify_own_request`(5-2節「実装後の補正」参照、`ack`/項目1は本PRでは実装しないため
+   引数から削除)と`report_mozc_shm`(`platform_state.rs`)への配線、`OwnSend`のスタンプ
+   (`hook.rs::note_own_send`/`own_send`/`clear_own_send`、単一スロット)、3か所の呼び出し元
+   (`ime_controller.rs`のGjiDirect/MsImeDirect armの`Applied`時、`open_chain.rs::imm_cross_write`
+   の`ActuationOutcome::Written`時、`platform.rs::set_ime_open`のspawnしたasyncブロック内で
+   実completion後)、`(tid,pid)`の取得元(`WindowsPlatform::mozc_target()`、round1指摘3-gで
+   5箇所の重複計算を1関数へ集約)を実装済み。Zの柵拡張(5-4節2)は11節4番のとおり見送り。
+   単体テストは(a)(d)(g)を除く(a)はZ見送りのため対象外、(d)(g)はスタンプ側〈成功時のみ
+   呼ぶコード構造〉の話なので`classify_own_request`自体のテストにはならず、代わりに
+   `architecture_guard.rs::note_own_send_call_sites_are_pinned_to_successful_open_close_writes`
+   でスタンプ呼び出し元の件数と「成功時のみ」の分岐をソース走査で固定した(round1指摘5-c)。
+   `classify_own_request`のテストは(b)(c)(e)(f)(h)(i)相当+項目2の送信前古い読みの非消費
+   (round1指摘1-a)+cap境界(5-d-3)+supersede×cap超過(5-d-4)。`report_mozc_shm`レベルでは
+   BUG-234を実際に再現する統合テスト2本(cap内はHeldのまま・cap超過後は従来判定で追随)と
+   項目2の消費を固定する統合テスト1本を追加(round1指摘5-a)。ADR-292 P
+   (`key_effect_open_hold`)との相互作用は`judge`が`Held`の理由を区別しないため既存の
+   `judge_table`がそのまま固定していることを確認(round1指摘2-b、新規テストは追加していない)。
+   `cargo test -p awase-ime-core -p awase-windows -p awase-hook-core --lib`・`cargo test -p
+   awase-windows --test architecture_guard`・`cargo nextest run --workspace --lib`(3393件)・
+   `cargo clippy --target x86_64-pc-windows-msvc -p awase-windows`・`cargo fmt -- --check`で
+   確認済み。
 2. **核のみのPR(direct-actuation、round1〜3)**: `classify_own_request`(純粋関数、5-2節の
    全順序どおり)と`decide_use(…, own_request)`。`Split`早期returnより前にack処理。BUG-234の
    タイムラインテスト(capまで未ackなら`Held`、ack後は通常判定、`Rejected`は既存の「失われた
@@ -605,6 +686,10 @@ Zの`Explicit claim`fence・`decide_use`双方への適用——これにより*
    170ms境界での再現率変化は確認済みだが、これは注入遅延であり、dragonflyg4実機でMozcが
    自然に示すcold/warmの遅延分布の実測はまだ残っている——実装(10節)は
    `#[measured(pending=true)]`のプレースホルダーで進め、この実測が終わってから外す。
+   `opus-review-pr941` round1指摘6: この2000msは[BUG-230](../known-bugs/BUG-230.md)の
+   「モード切替(F2)+500ms周期読みの観測上界」1件にマージン0を付けた値で、
+   `TURN_OFF_IME`/`TURN_ON_IME`(開閉)自体の完了時間ではない——`tuning.rs`のdocにこの精度の
+   注記を追加済み(5-2節「実装後の補正」参照)。
 3. T6-2(物理モードキー押下と同じpressのshadow-toggle送信が重なった場合の訂正速度)は
    round5(5-2節項目3の`own_send.tick_ms >= last_mode_key_tick_ms`、supersession規則)で
    **確定済み**——round6(V1)でtie-break規則を訂正: 両方のtickは同じ`hook::current_tick_ms()`
@@ -613,4 +698,13 @@ Zの`Explicit claim`fence・`decide_use`双方への適用——これにより*
    予測が170msで訂正されるのは、その予測のtickが送信のtickより**真に後**の場合のみ。
    10節1番のテストで固定する(実装時の選択ではない)。
 4. Zの`Explicit claim`fence拡張(5-4節2)をこのPRに含めるか、CIの遅延注入実験の結果が出るまで
-   観測専用(ログのみ)に留めるか(round5 U2のスコープ留保)。
+   観測専用(ログのみ)に留めるか(round5 U2のスコープ留保)。**2026-11-15、見送りで確定**:
+   `OwnSend`をZへ渡す経路が、全`ImeEvent`を駆動する汎用`dispatch_event`/`scope_event_of`を
+   通るため、この1件のためだけに多数の無関係な呼び出し元へ配線を広げることになり、出荷条件
+   (SendVkフォールバック経路が実際に踏まれる証拠)もまだ無い。
+5. **既知の残る限界(2026-11-15、`opus-review-pr941` round1指摘3-c・3-f、未修正・受容)**:
+   詳細は5-2節「実装後の補正」参照。(a) `imm_cross_write`の発行から書き込み成功までの間
+   (`.await`中)の食い違う読みは保護されない。(b) 単一スロットのため、Mozc窓への送信後すぐ
+   別窓(MS-IME等)へ何か送信すると、前者の保護が後者の送信で上書きされ消える——
+   「v6ブロックが実在するスレッドだけスタンプする」制約が未実装。いずれも実害が報告された
+   時点で着手する。

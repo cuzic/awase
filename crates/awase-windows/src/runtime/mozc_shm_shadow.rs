@@ -224,14 +224,24 @@ impl super::Runtime {
             // ここでは生の時刻だけを渡す)。
             let ime_actuation_baseline_ms = crate::hook::imm_cross_write_tick_ms()
                 .max(crate::hook::ime_actuation_send_tick_ms());
-            let used = self.platform_state.ime.report_mozc_shm(
+            // ADR-293(BUG-234): own_sendは単一スロットのグローバルなスタンプ(`hook`)。
+            // `report_mozc_shm`はSplitの早期returnより前にこれを分類し(5-2節冒頭)、
+            // 消すべきと判定したら2つ目の戻り値で伝え返す(`platform_state.rs`は`hook`を
+            // 直接呼べないため)。
+            let own_send = crate::hook::own_send();
+            let (used, clear_own_send) = self.platform_state.ime.report_mozc_shm(
                 *shm,
                 raw.update_tick_ms,
                 now_ms,
                 baseline_ms,
                 ime_actuation_baseline_ms,
+                own_send,
+                (tid, pid),
                 crate::state::TickMs(now_ms),
             );
+            if clear_own_send {
+                crate::hook::clear_own_send();
+            }
             (
                 shm.effective_mode.map(|mode| (mode, raw.update_tick_ms)),
                 Some(used),

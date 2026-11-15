@@ -234,6 +234,11 @@ async fn imm_cross_write(
     // 何も新しく止めない。`inputs` は、その gate が作った記録用の入力を受け取る（`with_app` が `None` だったときは `None`）。
     // ADR-268 D3: 共有メモリの読みが「この書き込みより後の事実か」を判定する基準（ImmCross はフックを通らない）。
     crate::hook::note_imm_cross_write();
+    // ADR-293(BUG-234、Opusレビュー指摘3-b): OwnSendのスタンプ先の`(tid,pid)`は、この後の
+    // `.await`(`SendMessageTimeoutW`を含み得る)の**前**、発行時点のフォーカスで捕獲する。
+    // await後に「今のフォーカス」を読むと、await中にフォーカスが変わった場合に書いた窓と
+    // 違う窓にスタンプが付く(round5 U1のcross-window over-holdをここから再導入してしまう)。
+    let own_send_target = crate::with_app(|runtime| runtime.platform.mozc_target()).flatten();
     let command = match &op {
         ImmCrossOp::Targeted {
             conv_after_open, ..
@@ -294,6 +299,14 @@ async fn imm_cross_write(
             }
         }
     };
+
+    // ADR-293(BUG-234): 開閉方向を持つ書き込みが実際に成功したときだけスタンプする(round6 V2)。
+    // `(tid,pid)`は上で発行前に捕獲した`own_send_target`(3-bの修正)。
+    if matches!(raw, ActuationOutcome::Written) {
+        if let Some((tid, pid)) = own_send_target {
+            crate::hook::note_own_send(open, tid, pid, None);
+        }
+    }
 
     let mut post_failed_reobservation = None;
     let outcome = match raw {
