@@ -33,7 +33,17 @@ status: |-
   よう移動、`imm_cross_write`の`(tid,pid)`を発行前に捕獲するよう修正、`report_mozc_shm`の
   `forced_held`をbeliefと食い違うときだけに限定、`MOZC_SHM_OBSERVATION_TTL_MS`を
   `MOZC_OPEN_CLOSE_SETTLE_MS`分引き上げ、BUG-234を実際に再現する統合テストに差し替え、
-  `architecture_guard`に`note_own_send(`呼び出し元の走査を追加。round2のレビューで収束を確認中。
+  `architecture_guard`に`note_own_send(`呼び出し元の走査を追加。round2レビューでround1の
+  H3件はすべて解消と判定されたが、**新たにH1件(N1)**が見つかった:
+  `MOZC_SHM_OBSERVATION_TTL_MS`を1000ms→3000msに引き上げた対応(round1 2-aの検証依頼への
+  対応として行った)は、TTLがMozcShmの全観測(`Split`・`Rejected(Inactive)`等own_sendと無関係な
+  経路も含む)に効くうえ、BUG-234では送信前の誤ったHigh観測を長く残す方向に働く不適切な変更
+  だったため1000msへ戻した。M1件(N2): `forced_held`が`effective`だけを見ており、`desired`との
+  食い違い(drift correctionの処理待ち)では`decide_use`の一致の高速路を通ってdesiredを元に
+  戻してしまう欠陥があったため、`decide_use`の`disagrees`と同じ条件(`effective`または
+  `desired`と食い違う)に揃えた。N3(項目2の`read_update_tick_ms > send.tick_ms`は必要条件で
+  十分条件ではない)はADRの書き方を訂正、L1〜L5(doc精度・読み側の式の統一・ログ追加)も反映。
+  N1/N2を反映したround3のレビューで収束を確認中。
 related_adr: ["ADR-089", "ADR-163", "ADR-171", "ADR-191", "ADR-208", "ADR-241", "ADR-265", "ADR-268", "ADR-291", "ADR-292"]
 ---
 
@@ -315,6 +325,34 @@ R8(判定条件はbeliefではなくown-requestそのものと比較する)の�
     スタンプがBに上書きされ、Aの保護が消える。`Runtime.mozc_shm.accepted_for`がこの情報を
     持つが、`WindowsPlatform`からは参照できない(層の境界)。実害が確認されたら、この情報を
     `ImeControlView`へ渡す経路を別途設計する。
+
+**round2レビュー(`opus-review-pr941`)の反映(2026-11-15)**:
+
+- **N1(H)、`MOZC_SHM_OBSERVATION_TTL_MS`を1000msへ戻した。** round1 2-aへの対応として一度
+  3000msへ引き上げたが不適切と判定された: このTTLはMozcShmの全観測(`Split`・
+  `Rejected(Inactive)`〈同じスレッドで別のTIPへ切り替え〉・読み取り失敗等、`own_send`の
+  Pendingと無関係な経路も含む)に効くうえ、`OBSERVATION_FRESH_WINDOW_MS`(3000ms)と同じ値に
+  なってADR-268 D1がMozcShmにだけ短いTTLを付けた理由を無くしてしまう。かつBUG-234では、
+  送信前の**誤った**High観測(`open=true`)がPendingの間生き続けるため、TTLを延ばすほどこの
+  誤った観測を長く残す方向に働き、2-aが心配した「弱い証拠源に落ちる」とは逆の害になる。
+  `own_send`のPending中にこの観測が失効して他の証拠源に反転しないかは、実機確認で別途
+  確かめる(11節項目5、TTLの値を動かして対応する問題ではない)。
+- **N2(M)、`forced_held`を`decide_use`の`disagrees`と同じ条件に揃えた。** round1 2-aの修正
+  (`forced_held`を`effective`との食い違いに限定)が、`desired`との食い違いを見落としていた:
+  drift correctionの処理待ち(`desired`と食い違うが`effective`とは一致する読み)が
+  `decide_use`の一致の高速路を通ってしまい、`disagrees: open != desired_open`でdesiredを
+  元に戻す——BUG-234と同じ「送信の処理待ちを外部変化と誤認」が別の経路(desired)で起きていた。
+  `forced_held = pending && !split && (shm.tsf_open != effective || shm.tsf_open !=
+  desired)`に修正。
+- **N3(L〜M)、項目2の必要十分性を訂正。** 「`read_update_tick_ms > send.tick_ms`を追加した
+  ので直った」という書き方だったが、`update_tick_ms`はブロック全体のdirtyスタンプ
+  (BUG-232 D5)なので、送信後に別の打鍵が1つでも来れば十分条件を満たしてしまう——これは
+  **必要条件**であり、完全に閉じるのはnonce/ack(direct postの送信経路、本PRには無い)。
+  5-2節冒頭の`classify_own_request`のdocを訂正済み。
+- L1〜L5: `key_effect_open_hold.rs`の「訂正速度は保たれる」という不正確な記述を訂正、
+  `architecture_guard`の検査範囲(呼び出し元の件数+条件式の存在、分岐の内側までは検査しない)を
+  doc上も正確化、読み側(`mozc_shm_shadow.rs`)も`WindowsPlatform::mozc_target()`を使うよう
+  統一、`with_app`が使えずスタンプが黙って落ちる経路にデバッグログを追加。
 
 ### 5-3. mozc-readable fork側の改修: スコープを絞り、計測結果が出るまで着手しない(round3 S2、変更なし)
 
@@ -639,16 +677,20 @@ Zの`Explicit claim`fence・`decide_use`双方への適用——これにより*
    単体テストは(a)(d)(g)を除く(a)はZ見送りのため対象外、(d)(g)はスタンプ側〈成功時のみ
    呼ぶコード構造〉の話なので`classify_own_request`自体のテストにはならず、代わりに
    `architecture_guard.rs::note_own_send_call_sites_are_pinned_to_successful_open_close_writes`
-   でスタンプ呼び出し元の件数と「成功時のみ」の分岐をソース走査で固定した(round1指摘5-c)。
-   `classify_own_request`のテストは(b)(c)(e)(f)(h)(i)相当+項目2の送信前古い読みの非消費
-   (round1指摘1-a)+cap境界(5-d-3)+supersede×cap超過(5-d-4)。`report_mozc_shm`レベルでは
-   BUG-234を実際に再現する統合テスト2本(cap内はHeldのまま・cap超過後は従来判定で追随)と
-   項目2の消費を固定する統合テスト1本を追加(round1指摘5-a)。ADR-292 P
-   (`key_effect_open_hold`)との相互作用は`judge`が`Held`の理由を区別しないため既存の
-   `judge_table`がそのまま固定していることを確認(round1指摘2-b、新規テストは追加していない)。
-   `cargo test -p awase-ime-core -p awase-windows -p awase-hook-core --lib`・`cargo test -p
-   awase-windows --test architecture_guard`・`cargo nextest run --workspace --lib`(3393件)・
-   `cargo clippy --target x86_64-pc-windows-msvc -p awase-windows`・`cargo fmt -- --check`で
+   でスタンプ呼び出し元の件数と「成功時のみ」を示す条件式の存在をソース走査で固定した
+   (round1指摘5-c。round2 L3の訂正: 条件式の**分岐の内側**にあることまでは検査しない、件数と
+   条件式の存在が目的)。`classify_own_request`のテストは(b)(c)(e)(f)(h)(i)相当+項目2の送信前
+   古い読みの非消費(round1指摘1-a、round2 N3で必要条件であり十分条件ではないと訂正)+
+   cap境界(5-d-3)+supersede×cap超過(5-d-4)。`report_mozc_shm`レベルではBUG-234を実際に
+   再現する統合テスト2本(cap内はHeldのまま・cap超過後は従来判定で追随)、項目2の消費を
+   固定する統合テスト1本、drift correctionの処理待ち(desiredと食い違うがeffectiveとは
+   一致する読み)がHeldを維持することを固定する統合テスト1本(round2 N2)を追加
+   (round1指摘5-a)。ADR-292 P(`key_effect_open_hold`)との相互作用は`judge`が`Held`の理由を
+   区別しないため既存の`judge_table`がそのまま固定していることを確認(round1指摘2-b、新規
+   テストは追加していない)。`cargo test -p awase-ime-core -p awase-windows -p awase-hook-core
+   --lib`・`cargo test -p awase-windows --test architecture_guard`・`cargo nextest run
+   --workspace --lib`(3394件)・`cargo clippy --target x86_64-pc-windows-msvc -p
+   awase-windows`・`cargo fmt -- --check`で
    確認済み。
 2. **核のみのPR(direct-actuation、round1〜3)**: `classify_own_request`(純粋関数、5-2節の
    全順序どおり)と`decide_use(…, own_request)`。`Split`早期returnより前にack処理。BUG-234の
@@ -702,9 +744,14 @@ Zの`Explicit claim`fence・`decide_use`双方への適用——これにより*
    `OwnSend`をZへ渡す経路が、全`ImeEvent`を駆動する汎用`dispatch_event`/`scope_event_of`を
    通るため、この1件のためだけに多数の無関係な呼び出し元へ配線を広げることになり、出荷条件
    (SendVkフォールバック経路が実際に踏まれる証拠)もまだ無い。
-5. **既知の残る限界(2026-11-15、`opus-review-pr941` round1指摘3-c・3-f、未修正・受容)**:
-   詳細は5-2節「実装後の補正」参照。(a) `imm_cross_write`の発行から書き込み成功までの間
-   (`.await`中)の食い違う読みは保護されない。(b) 単一スロットのため、Mozc窓への送信後すぐ
-   別窓(MS-IME等)へ何か送信すると、前者の保護が後者の送信で上書きされ消える——
-   「v6ブロックが実在するスレッドだけスタンプする」制約が未実装。いずれも実害が報告された
-   時点で着手する。
+5. **既知の残る限界(2026-11-15、`opus-review-pr941` round1指摘3-c・3-f・round2指摘L2、
+   未修正・受容)**: 詳細は5-2節「実装後の補正」参照。(a) `imm_cross_write`の発行から書き込み
+   成功までの間(`.await`中)の食い違う読みは保護されない。(b) 単一スロットのため、Mozc窓への
+   送信後すぐ別窓(MS-IME等)へ何か送信すると、前者の保護が後者の送信で上書きされ消える——
+   「v6ブロックが実在するスレッドだけスタンプする」制約が未実装。(c) `set_ime_open`・
+   `imm_cross_write`のスタンプは書き込みの完了時に打つため、単一スロットの上書き順は発行順
+   ではなく完了順になる——drift correctionのImmCross(遅い)を発行した直後に明示操作の
+   GjiDirect(同期)が逆方向をスタンプすると、後から完了したdrift correctionが古い方向で
+   上書きする(round2 N2の修正後はbelief/desiredと一致する読みが通るため害は限定的)。
+   `own_send`のPending中にMozcShm観測が失効して他の証拠源に反転しないか(round2 N1)も
+   未検証。いずれも実害が報告された時点で着手する。

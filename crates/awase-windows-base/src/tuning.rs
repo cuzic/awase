@@ -88,14 +88,17 @@ pub const MOZC_COMPOSE_RESPONSE_CHECK_MS: u64 = 20;
 /// tick のタイマー 500ms + prefetch（`run_with_timeout`）の最大待ち 300ms + ジッターの余裕 200ms = 1000ms。
 /// 500ms + 小さな余裕では、prefetch がタイムアウトした tick で期限が切れ、belief が一瞬フォールバックへ反転する。
 ///
-/// ADR-293(BUG-234、2026-11-15、Opusレビュー指摘2-a): `decide_use`/`report_mozc_shm`が
-/// `own_send`のPendingで`ShmUse::Held`を強制する間(最長`MOZC_OPEN_CLOSE_SETTLE_MS`)、
-/// `ObserverReported`をdispatchしないため、この観測の鮮度は更新されない。元の1000msの導出
-/// (500+300+200ms)に`MOZC_OPEN_CLOSE_SETTLE_MS`(2000ms)を加えた3000msに引き上げ、Held中に
-/// この観測自体が失効してより弱い証拠源に落ちることを防ぐ。実測根拠は未取得(tick間隔の分布を
-/// 実機の`awase.log`から測って、値を見直す)なのでpending。
+/// ADR-293(BUG-234、2026-11-15、Opusレビュー`opus-review-pr941`): round1 2-aの検討で
+/// 一度3000msへ引き上げたが、round2(N1)で**不適切と判定され1000msへ戻した**。TTLはMozcShmの
+/// 全観測(`observation_store.rs`、`Split`・`Rejected(Inactive)`・読み取り失敗等も含む)に効き、
+/// own_sendのPendingだけに効く値ではない。かつBUG-234では送信前の**誤った**High観測
+/// (`open=true`)がPendingの間生き続けるため、TTLを延ばすほどこの誤った観測が長く残る方向に
+/// 働き、2-aが心配した「弱い証拠源に落ちる」とは逆の害になる。`own_send`のPending中にこの
+/// 観測が失効して他の証拠源に反転しないかは、実機確認(ADR-293 §11項目5)で別途確かめる
+/// (TTLの値を動かして対応する問題ではない)。実測根拠は未取得(tick間隔の分布を実機の
+/// `awase.log`から測って、値を見直す)なのでpending。
 #[measured_macro::measured(pending = true)]
-pub const MOZC_SHM_OBSERVATION_TTL_MS: u64 = 3_000;
+pub const MOZC_SHM_OBSERVATION_TTL_MS: u64 = 1_000;
 
 /// ADR-293(BUG-234): awase自身が送った開閉要求(`OwnSend`)の方向と食い違う`mozc-shm`の読みを保留し続ける柵 (ms)。
 ///

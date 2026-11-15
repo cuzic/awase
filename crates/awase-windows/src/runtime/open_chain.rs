@@ -305,6 +305,14 @@ async fn imm_cross_write(
     if matches!(raw, ActuationOutcome::Written) {
         if let Some((tid, pid)) = own_send_target {
             crate::hook::note_own_send(open, tid, pid, None);
+        } else {
+            // ADR-293(BUG-234、round2レビュー指摘L5): `with_app`が再入等で使えなかった場合、
+            // 書き込みが成功してもスタンプされず、BUG-234の保護が黙って外れる。実機で
+            // 追跡できるようにログだけ残す(`with_app`が`None`を返す経路自体は既存のまま変えない)。
+            tracing::debug!(
+                "[mozc-direct] own_send not stamped (open={open}): mozc_target unavailable \
+                 (with_app re-entrant or no focused thread)"
+            );
         }
     }
 
