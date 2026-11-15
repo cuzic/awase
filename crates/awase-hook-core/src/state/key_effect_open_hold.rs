@@ -746,10 +746,12 @@ mod tests {
     /// 同じ値になる)ため、`held, true, 300, 300 → Release(Deadline)`
     /// (このテストの直下)が、tie-breakでPendingになった場合の保持上限
     /// (`KEY_EFFECT_OPEN_HOLD_MAX_MS`=300ms)の解放もそのまま固定している——その読みの元が
-    /// `own_send`のPendingであっても、Pはこの300msの期限で先に解放し(BUG-233側の訂正速度は
-    /// 保たれる)、beliefを閉と確定できないまま再生する。その後、own_send自体が消えるまで
-    /// (最長`MOZC_OPEN_CLOSE_SETTLE_MS`)通常の周期読み(`report_mozc_shm`)側が食い違う読みを
-    /// 保留し続けるのは、round6 V1が受容した設計どおり。
+    /// `own_send`のPendingであっても、Pはこの300msの期限で先に解放する(round2レビュー
+    /// 指摘L1で訂正: 期限解放は「閉と確定」していないので、保持していた打鍵はbelief=開のまま
+    /// 再生される——これはBUG-233の症状そのものであり、「訂正速度は保たれる」は不正確。
+    /// tie-breakのtickの偶然の一致に限られるので実害は小さいが、round6 V1が受容した範囲)。
+    /// その後、own_send自体が消えるまで(最長`MOZC_OPEN_CLOSE_SETTLE_MS`)通常の周期読み
+    /// (`report_mozc_shm`)側が食い違う読みを保留し続ける。
     #[test]
     fn judge_table() {
         use ReleaseReason as R;

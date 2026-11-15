@@ -2474,9 +2474,15 @@ impl ImeStateHub {
             OwnRequestVerdict::Pending => (false, true),
         };
         // Splitはown_sendの判定より常に優先する(5-2節冒頭、decide_use自身のSplit判定と同じ条件)。
-        // Pendingは、読みがbeliefと食い違うときだけHeldを強制する(上記doc、2-a)。
-        let forced_held =
-            pending && shm.tsf_open == shm.effective_open && shm.tsf_open != effective;
+        // Pendingは、読みがbeliefまたはdesiredと食い違うときだけHeldを強制する(上記doc、2-a・
+        // round2 N2)。decide_useのdisagrees判定(effective_openまたはdesired_openと食い違う)と
+        // 同じ条件にする——effectiveだけを見ると、drift correctionの処理待ち(desiredと食い違う
+        // がeffectiveとは一致する読み)がdecide_useの一致の高速路を通ってしまい、BUG-234と同じ
+        // 「awase自身の送信の処理待ちを外部変化と誤認」でdesiredを元に戻してしまう(round2 N2の
+        // 失敗シナリオ)。
+        let forced_held = pending
+            && shm.tsf_open == shm.effective_open
+            && (shm.tsf_open != effective || shm.tsf_open != desired);
         let decision = if shm.tsf_open != shm.effective_open {
             ShmUse::Split
         } else if forced_held {
@@ -4612,6 +4618,53 @@ mod tests {
             }
         );
         assert!(clear_own_send, "own_sendは確認できたので消す(項目2)");
+    }
+
+    /// round2レビュー指摘N2の再現防止: drift correction中(belief=effective=開のまま、
+    /// desired=閉へ書き換え中)、own_send(desiredと同じ方向=閉)を送った直後、読みはまだ古い
+    /// 値(開)のまま——effectiveとは一致するがdesiredとは食い違う。`forced_held`が
+    /// effectiveだけを見ていると、この読みはdecide_useの一致の高速路(`open==effective_open`)
+    /// を通ってしまい、`disagrees: open!=desired`でdesiredを元の開に戻してしまう
+    /// (drift correctionの取り消し、BUG-234と同じ「送信の処理待ちを外部変化と誤認」)。
+    /// `forced_held`をdecide_useの`disagrees`と同じ条件(effectiveまたはdesiredと食い違う)に
+    /// 揃えたことで、この読みもHeldのままになり、desiredは変わらない。
+    #[test]
+    fn report_mozc_shm_bug234_n2_drift_correction_pending_is_held_despite_matching_effective() {
+        use crate::state::mozc_shm::{OwnSend, ShmUse};
+        let mut ps = ps_with_open_intent_and_applied(); // effective=desired=true、明示意図 tick=100
+                                                        // drift correction: desiredだけを閉へ書き換える(effectiveはまだ開のまま、belief未確定)。
+        ps.ime.set_desired_open_for_test(false);
+        let own_send = OwnSend {
+            open: false, // desiredと同じ方向(閉)をdrift correctionとして送信した
+            tick_ms: 300,
+            tid: 11,
+            pid: 22,
+            nonce: None,
+        };
+        let (used, clear_own_send) = ps.ime.report_mozc_shm(
+            mozc_shm_state(true), // Mozcはまだopen=trueのまま(effectiveと一致、desiredとは不一致)
+            250,
+            350,
+            0,
+            0,
+            Some(own_send),
+            (11, 22),
+            TickMs(350),
+        );
+        assert_eq!(
+            used,
+            ShmUse::Held,
+            "N2: effectiveと一致する読みでも、desiredと食い違うならHeldを維持する \
+             (修正前はdecide_useの一致の高速路を通ってdesiredを元に戻していた)"
+        );
+        assert!(
+            !clear_own_send,
+            "own_sendはまだPendingのまま(drift correctionの保護が外れていない)"
+        );
+        assert!(
+            !ps.ime.model().desired_open(),
+            "desired(閉)はdrift correctionの意図どおり変わらない"
+        );
     }
 
     fn follow_fence() -> crate::state::probe_admission::AcceptedObservation {

@@ -9830,9 +9830,9 @@ fn mozc_shm_abandon_writes_z_reachable_strategy_and_notifies_engine() {
 }
 
 /// ADR-293(BUG-234、Opusレビュー指摘5-c): `OwnSend`のスタンプ(`crate::hook::note_own_send(`)の
-/// 呼び出し元を、開閉方向を持つ送信が実際に成功した経路の4箇所に固定する。新しい呼び出し元
-/// (round5 U1が警告した「モード切替のみの送信でもスタンプしてしまう」欠陥の再発経路)が
-/// 無断で増えていないかをこのテストで検知する。
+/// 呼び出し元を、開閉方向を持つ送信が実際に成功した経路の4箇所(3ファイル、direct postの
+/// 送信経路は本PRには無い)に固定する。新しい呼び出し元(round5 U1が警告した「モード切替のみの
+/// 送信でもスタンプしてしまう」欠陥の再発経路)が無断で増えていないかをこのテストで検知する。
 #[test]
 fn note_own_send_call_sites_are_pinned_to_successful_open_close_writes() {
     let files = list_src_files();
@@ -9860,9 +9860,14 @@ fn note_own_send_call_sites_are_pinned_to_successful_open_close_writes() {
          (round5 U1/round6 V2が防いだ欠陥の再発経路になります)。"
     );
 
-    // 各呼び出しが、実際に送信が成功したことを示す分岐の中にあることをテキストで確認する
+    // 各関数の中に、実際に送信が成功したことを示す条件式が存在することをテキストで確認する
     // (round6 V2/Opusレビュー指摘3-a: `set_ime_open_ordered()==true`は「dispatchできた」の意味で
     // 「書けた」の意味ではなく、`set_ime_open`の中で実completion後にスタンプする形に直した)。
+    // **注意(round2レビュー指摘L3)**: この下のアサーションが確認するのは「関数の中に
+    // `note_own_send(`の呼び出しが1回」と「関数の中にこの条件式の文字列が存在する」の2点のみで、
+    // `note_own_send(`の呼び出しがその条件式の**分岐の内側**にあることまでは検査しない
+    // (条件式の外に`note_own_send(`を移動しても、この2つのアサーションはどちらも通る)。
+    // 呼び出し元の件数と条件式の存在を固定するのが目的で、分岐構造そのものの検査ではない。
     let ime_controller = read_crate_file("src/ime_controller.rs");
     let apply_mechanism = extract_fn_body(&ime_controller, "fn apply_mechanism(");
     assert_eq!(
