@@ -9828,3 +9828,76 @@ fn mozc_shm_abandon_writes_z_reachable_strategy_and_notifies_engine() {
          書いてからEngineへ再評価させる順序が入れ替わっている)"
     );
 }
+
+/// ADR-293(BUG-234、Opusレビュー指摘5-c): `OwnSend`のスタンプ(`crate::hook::note_own_send(`)の
+/// 呼び出し元を、開閉方向を持つ送信が実際に成功した経路の4箇所に固定する。新しい呼び出し元
+/// (round5 U1が警告した「モード切替のみの送信でもスタンプしてしまう」欠陥の再発経路)が
+/// 無断で増えていないかをこのテストで検知する。
+#[test]
+fn note_own_send_call_sites_are_pinned_to_successful_open_close_writes() {
+    let files = list_src_files();
+    let mut breakdown: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, "note_own_send(");
+        if count > 0 {
+            breakdown.push((path.clone(), count));
+        }
+    }
+    breakdown.sort();
+    assert_eq!(
+        breakdown,
+        vec![
+            ("src/ime_controller.rs".to_string(), 2),
+            ("src/platform.rs".to_string(), 1),
+            ("src/runtime/open_chain.rs".to_string(), 1),
+        ],
+        "`note_own_send(` の呼び出し元はADR-293 5-2節が列挙する、開閉方向を持つ送信が実際に \
+         成功した4箇所(GjiDirect/MsImeDirect送信×2・`set_ime_open`のクロスプロセス書き込み・ \
+         `imm_cross_write`)だけに固定されています。実際: {breakdown:?}\n\
+         モード切替のみの送信や、未送信outcomeの分岐からこの呼び出しを増やさないでください \
+         (round5 U1/round6 V2が防いだ欠陥の再発経路になります)。"
+    );
+
+    // 各呼び出しが、実際に送信が成功したことを示す分岐の中にあることをテキストで確認する
+    // (round6 V2/Opusレビュー指摘3-a: `set_ime_open_ordered()==true`は「dispatchできた」の意味で
+    // 「書けた」の意味ではなく、`set_ime_open`の中で実completion後にスタンプする形に直した)。
+    let ime_controller = read_crate_file("src/ime_controller.rs");
+    let apply_mechanism = extract_fn_body(&ime_controller, "fn apply_mechanism(");
+    assert_eq!(
+        count_real_calls(apply_mechanism, "note_own_send("),
+        2,
+        "apply_mechanismの外にnote_own_sendの呼び出しが漏れていないか"
+    );
+    assert_eq!(
+        count_real_calls(apply_mechanism, "outcome == ImeOpenOutcome::Applied"),
+        2,
+        "apply_mechanismの2箇所のnote_own_sendは、いずれもoutcome==Appliedの分岐の中にあること"
+    );
+
+    let platform = read_crate_file("src/platform.rs");
+    let set_ime_open = extract_fn_body(&platform, "fn set_ime_open(");
+    assert_eq!(
+        count_real_calls(set_ime_open, "note_own_send("),
+        1,
+        "set_ime_openの外にnote_own_sendの呼び出しが漏れていないか"
+    );
+    assert!(
+        set_ime_open.contains("if written {"),
+        "set_ime_openのnote_own_sendは、spawnしたasyncブロック内の実completion(`written`)の \
+         分岐の中にあること(3-a: この関数自体の戻り値はdispatch成功の意味でしかない)"
+    );
+
+    let open_chain = read_crate_file("src/runtime/open_chain.rs");
+    let imm_cross_write = extract_fn_body(&open_chain, "async fn imm_cross_write(");
+    assert_eq!(
+        count_real_calls(imm_cross_write, "note_own_send("),
+        1,
+        "imm_cross_writeの外にnote_own_sendの呼び出しが漏れていないか"
+    );
+    assert!(
+        imm_cross_write.contains("matches!(raw, ActuationOutcome::Written)"),
+        "imm_cross_writeのnote_own_sendは、ActuationOutcome::Writtenの分岐の中にあること"
+    );
+}
