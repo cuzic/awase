@@ -455,10 +455,26 @@ Zの`Explicit claim`fence・`decide_use`双方への適用——これにより*
    `VK_IME_ON`/`VK_IME_OFF`(0x16/0x1A、`ime_controller.rs:19-22`)を送る。この2つの経路が
    「開いている最中の未確定の変換(preedit)がOFFでどう処理されるか」で同じ振る舞いをするかを、
    実装(10節)に入る前にCIで1回確認する。
+   - **結果(2026-11-15、`ci/directact-precheck` commit `60deea90b`、GitHub Actions run
+     [43684518054](https://github.com/cuzic/awase/actions/runs/43684518054)、2 runner並列)**:
+     未確定の「か」がある状態でOFFした場合、direct post(ack `applied`)と`VK_IME_OFF`は
+     完全に同じ結果(`text="か"`・`tsf_open=0`・`effective_open=0`、続く`x`入力も両方
+     `"かx"`)。`preedit_equivalent: true`を両runnerで確認——**検証済み、設計変更不要**。
+     同じrunで、クロスプロセス送信(awaseの実経路相当)でのpost→ack遅延は0〜16ms
+     (`hook::current_tick_ms()`の分解能~15.6msに一致)で、reserved_bits/nonce=0の拒否も
+     設計どおり動作。
 2. (round4で新設)`MOZC_OPEN_CLOSE_SETTLE_MS`の値そのもの——dragonflyg4実機で、awaseの送信
    (direct post〈ack有り〉・SendVk/ImmCross〈ack無し〉)から、`tsf_open`を実際に反転させる
    flushの`update_tick_ms`までの時間を、両方の送信経路×cold/warmで測定し、**単一の約2秒点
    ではなく分布として**報告する(`tuning-constants.md`の実測義務、round4レビューの指摘)。
+   - **関連結果(2026-11-15、`ci/bug234-publish-delay` commit `3636abd20`、run
+     [43684519809](https://github.com/cuzic/awase/actions/runs/43684519809)、遅延注入した
+     mozc-readable fork、各10試行)**: 機構が170msのsettle窓と整合して動くことをCIで確認——
+     注入遅延0ms(実測publish ~72ms)で再現0/10、300ms(実測~381〜392ms)で再現5/10、700ms
+     (実測~764〜790ms)・2000ms(実測~2068〜2090ms)でいずれも再現10/10。170msを境に
+     再現率が上がるという原因モデルの裏付けにはなったが、**これは注入遅延であり
+     dragonflyg4実機でMozcが自然に示す遅延の分布ではない**——本項目が求める実機cold/warm
+     測定はまだ未実施(11節2番参照)。
 
 ## 9. 検討したが不採用
 
@@ -585,7 +601,10 @@ Zの`Explicit claim`fence・`decide_use`双方への適用——これにより*
 2. `MOZC_OPEN_CLOSE_SETTLE_MS`の実測値が確定するまで(8節2番)、Standard profile対応は
    「設計は収束したが未解決」の状態である——測定待ちの定数を置いただけでは解決したことに
    ならない(round4レビューの指摘、T7-4)。実測が終わり、`#[measured(pending=true)]`を
-   外せた時点で解決とする。
+   外せた時点で解決とする。**2026-11-15時点**: CI(遅延注入、8節2番)で機構自体の動作と
+   170ms境界での再現率変化は確認済みだが、これは注入遅延であり、dragonflyg4実機でMozcが
+   自然に示すcold/warmの遅延分布の実測はまだ残っている——実装(10節)は
+   `#[measured(pending=true)]`のプレースホルダーで進め、この実測が終わってから外す。
 3. T6-2(物理モードキー押下と同じpressのshadow-toggle送信が重なった場合の訂正速度)は
    round5(5-2節項目3の`own_send.tick_ms >= last_mode_key_tick_ms`、supersession規則)で
    **確定済み**——round6(V1)でtie-break規則を訂正: 両方のtickは同じ`hook::current_tick_ms()`
