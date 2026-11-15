@@ -512,6 +512,16 @@ pub enum OwnRequestVerdict {
 /// 後から遅れて届くOFFの反映がBUG-234と同じ経路で外部変化と誤認されてしまう。この条件を満たさない
 /// 一致読みは、消費せず項目3/4と同じ扱い（Pendingまたはcap超過でClearNoOverride）に落ちる。
 ///
+/// **この条件は必要条件であり、十分条件ではない**(round2レビュー指摘N3): `update_tick_ms`は
+/// ブロック全体のdirtyタイムスタンプ(BUG-232 D5)なので、送信後に別の打鍵が1つでも来れば
+/// `update_tick_ms`は進む——`tsf_open`自体がまだ1回目の方向のままでも`read_update_tick_ms >
+/// send.tick_ms`を満たしてしまう。1-aの窓は「次の打鍵まで」に狭まるが、完全には閉じない
+/// (nonce/ackで確実に閉じるのはdirect postの送信経路、本PRには無い)。逆方向の副作用:
+/// `GetTickCount64`の分解能(~15.6ms)のため、warmなMozcが送信と同じ目盛りで反映すると
+/// `update_tick_ms == send.tick_ms`になり消費されない——その後本当の外部変化が来ても、
+/// 次の打鍵かcapまで(最長`MOZC_OPEN_CLOSE_SETTLE_MS`)保留される。これはcapの受容済みの
+/// コストの範囲内。
+///
 /// 呼び出し元（`report_mozc_shm`）は、[`ShmUse::Split`]の早期returnより**前**にこれを呼ぶ
 /// （5-2節冒頭）——`own_send`のスタンプ管理（消すかどうか）は読みがSplitかどうかと無関係に
 /// 行う。最終的な`ShmUse`の決定はSplitが優先する（Split自体はこの関数の戻り値を見ない）。
