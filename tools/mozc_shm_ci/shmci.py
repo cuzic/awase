@@ -1109,7 +1109,7 @@ def cmd_directact(args):
         row = {"trial": i, "method": method, "ack": acked, "before": before, "after_off": after_off,
                "after_x": text_of(win.edit)}
         out["preedit"].append(row)
-        print("preedit: " + json.dumps(row, ensure_ascii=False))
+        print("preedit: " + json.dumps(row, ensure_ascii=True))
 
     loop_ok = [r for r in out["loop"] if r.get("acked") and r.get("result") == "applied" and r.get("state_matches")]
     by_method = {}
@@ -1126,7 +1126,7 @@ def cmd_directact(args):
         "preedit_outcomes": {k: sorted(map(list, v)) for k, v in by_method.items()},
         "preedit_equivalent": equivalent,
     }
-    print("summary: " + json.dumps(out["summary"], ensure_ascii=False))
+    print("summary: " + json.dumps(out["summary"], ensure_ascii=True))
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=1)
     # 失敗にするのは、閉ループそのものが 1 回も成り立たなかったときだけ(等価性は観測として報告する)。
