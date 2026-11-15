@@ -1009,9 +1009,52 @@ def cmd_directact(args):
         u32.GetWindowTextW(hwnd, buf, 512)
         return buf.value
 
+    out = {"setup": {}, "cross": [], "loop": [], "reserved": None, "zero_nonce": None, "preedit": []}
+    msg = u32.RegisterWindowMessageW(DIRECT_ACTUATION_MESSAGE)
+
+    # A-cross: awase と同じく、別プロセス(この driver)から、別プロセス(host)の Mozc の窓へ送る。
+    # driver は窓を作らない(host の前面を奪わない)ので、自分の窓を作る A/B より先に測る。host がメッセージを回す。
+    here = os.path.dirname(os.path.abspath(__file__))
+    hp = spawn_host(here, "XP", "1", lifetime=args.cross_trials * 1.5 + 30)
+    evs = read_events_until(hp, 1, 60)
+    truth = next((e for e in evs if e.get("ev") == "truth"), None)
+    if truth and truth.get("confirmed"):
+        htid, hpid = truth["tid"], truth["pid"]
+        hb = read6(htid)
+        hcmd = hb["cmd_window_handle"] if hb else 0
+        owner = w.tid_pid(hcmd) if hcmd else (0, 0)
+        out["setup"]["cross"] = {"host": (htid, hpid), "cmd_window_handle": hcmd, "cmd_window_owner": owner,
+                                 "version": hb["version"] if hb else None}
+        print("cross setup: " + json.dumps(out["setup"]["cross"]))
+        for i in range(args.cross_trials if hcmd and tuple(owner) == (htid, hpid) else 0):
+            want = 0 if i % 2 == 0 else 1
+            nonce = 1000 + i
+            before = read6(htid)
+            t0 = k32.GetTickCount64()
+            ok = bool(u32.PostMessageW(hcmd, msg, nonce, want))
+            b = None
+            end = time.time() + 5
+            while time.time() < end:
+                time.sleep(0.002)
+                cur = read6(htid)
+                if cur and cur["last_cmd_nonce"] == nonce and cur["seq"] != before["seq"]:
+                    b = cur
+                    break
+            t_seen = k32.GetTickCount64()
+            row = {"trial": i, "nonce": nonce, "want_open": want, "posted": ok, "acked": b is not None}
+            if b:
+                row.update({"result": DA_RESULTS.get(b["last_cmd_result"], b["last_cmd_result"]),
+                            "ack_latency_ms": b["update_tick_ms"] - t0, "seen_latency_ms": t_seen - t0,
+                            "state_matches": b["tsf_open"] == want and b["effective_open"] == want})
+            out["cross"].append(row)
+            print("cross: " + json.dumps(row))
+            time.sleep(0.6)
+    else:
+        print(f"::warning::cross-process host did not come up confirmed: {truth}")
+    hp.kill()
+
     win = Window(w, "DA", "DA")
     win.create()
-    out = {"setup": {}, "loop": [], "reserved": None, "zero_nonce": None, "preedit": []}
     if not win.set_open(1):
         print("::error::could not set IME to ON (setup failed)")
         return 1
@@ -1021,11 +1064,10 @@ def cmd_directact(args):
     if blk is None or blk["version"] < 6:
         print(f"::error::no version 6 block: {blk}")
         return 1
-    msg = u32.RegisterWindowMessageW(DIRECT_ACTUATION_MESSAGE)
     cmd = blk["cmd_window_handle"]
     owner = w.tid_pid(cmd) if cmd else (0, 0)
-    out["setup"] = {"version": blk["version"], "cmd_window_handle": cmd, "message": msg,
-                    "cmd_window_owner": owner, "self": (win.tid, os.getpid())}
+    out["setup"].update({"version": blk["version"], "cmd_window_handle": cmd, "message": msg,
+                         "cmd_window_owner": owner, "self": (win.tid, os.getpid())})
     print("setup: " + json.dumps(out["setup"]))
     if not cmd or tuple(owner) != (win.tid, os.getpid()):
         print("::error::cmd_window_handle is missing or not owned by this thread")
@@ -1117,7 +1159,11 @@ def cmd_directact(args):
         if not r.get("setup_failed"):
             by_method.setdefault(r["method"], set()).add((r["after_off"]["text"], r["after_off"]["tsf_open"], r["after_x"]))
     equivalent = len(by_method) == 2 and by_method["direct"] == by_method["vk_ime_off"]
+    cross_ok = [r for r in out["cross"] if r.get("acked") and r.get("result") == "applied" and r.get("state_matches")]
     out["summary"] = {
+        "cross_applied_and_matching": f"{len(cross_ok)}/{len(out['cross'])}",
+        "cross_ack_latency_ms": sorted(r["ack_latency_ms"] for r in out["cross"] if r.get("acked")),
+        "cross_seen_latency_ms": sorted(r["seen_latency_ms"] for r in out["cross"] if r.get("acked")),
         "loop_applied_and_matching": f"{len(loop_ok)}/{len(out['loop'])}",
         "ack_latency_ms": sorted(r["ack_latency_ms"] for r in out["loop"] if r.get("acked")),
         "reserved_ok": bool(out["reserved"]["acked"] and out["reserved"]["result"] == "reserved_bits_set"
@@ -1314,6 +1360,7 @@ def main(argv=None):
     da.add_argument("--out", required=True)
     da.add_argument("--trials", type=int, default=20, help="開閉の閉ループの試行回数(OFF/ON を交互に)")
     da.add_argument("--preedit-trials", type=int, default=4, help="入力中の OFF の試行回数(方法ごと)")
+    da.add_argument("--cross-trials", type=int, default=20, help="別プロセスから送る閉ループの試行回数(OFF/ON を交互に)")
 
     args = ap.parse_args(argv)
     return {"host": cmd_host, "drive": cmd_drive, "analyze": cmd_analyze, "selftest": cmd_selftest,
