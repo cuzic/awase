@@ -881,27 +881,42 @@ R2-2(窓を跨いだ付け外し)・R2-3(大筋、後述)・R2-4(文書の古い
    による追随等)でdesiredが送信後に変わった稀な組み合わせでは、修正前なら`decide_use`が
    desiredへ揃え直していたのが、修正後は最長capまでHeldになる。capの受容済みのコスト
    (最長2秒の保留)の範囲内。いずれも実害が報告された時点で着手する。
-6. **`explicit_press.rs`の全列挙モデル(`PressState`)が`mozc_direct_ready`の軸を持たない**
-   (`opus-review-step2to6` M2、9節R1-iiの訂正と対)。`attempt_write`・
-   `chain_head_is_gji_direct`・`chain_head_is_imm_cross`は`mozc_direct_ready: false`を
-   ハードコードしており、実際のチェーンが`CHAIN_GJI_ONLY`から`CHAIN_MOZC_DIRECT_THEN_GJI`
-   (先頭`MozcDirect`)へ差し替わる場合を一度も列挙していない。`decide_attempt`の
-   MozcDirect armに追加したalready-matched省略(M2)は`decide_attempt`単体のユニット
-   テストでは確認済みだが、ADR-208 L1の不変条件(同一押下で二重送信しない・リピートは
-   追い送りしない)がMozcDirect先頭のチェーン上でも成り立つことを、2000行超のこの
-   全列挙モデルでは未検証のまま出荷する。モデルへの軸追加は非自明な拡張(既存のP1〜P6
-   不変条件それぞれへの影響を洗い出す必要がある)のため、別タスクとして次セッションで
-   着手する。
+6. **(2026-11-16解消)** `explicit_press.rs`の全列挙モデル(`PressState`)が
+   `mozc_direct_ready`の軸を持たなかった(`opus-review-step2to6` M2、9節R1-iiの訂正と対)。
+   `attempt_write`・`chain_head_is_gji_direct`・`chain_head_is_imm_cross`が
+   `mozc_direct_ready: false`をハードコードしており、実際のチェーンが`CHAIN_GJI_ONLY`から
+   `CHAIN_MOZC_DIRECT_THEN_GJI`(先頭`MozcDirect`)へ差し替わる場合を一度も列挙していなかった。
+   `PressState`に`mozc_direct_ready: bool`の軸を追加(全列挙数は120,960→241,920に倍増)、
+   `attempt_write`・`chain_head_is_gji_direct`・`chain_head_is_imm_cross`が
+   `self.mozc_direct_ready`を使うよう配線し、新設`chain_head_is_mozc_direct`で
+   P6のMozcDirect専用クラス(`repeat_rewrites_mozc_direct`)を分類、専用テスト
+   `p6_repeat_never_rewrites_mozc_direct`を追加。**ADR-208 L1の不変条件(P1〜P6)は
+   MozcDirect先頭のチェーン上でも成り立つことを確認した**(同テストで0件、golden再生成後の
+   差分を機械確認: 9クラスすべて旧カウントのちょうど2倍、新規クラスはMozcDirect専用の
+   2件を含めゼロ件増、新しい違反クラスの出現なし)。P5(同一押下の二重送信防止)も
+   `PressState::all()`の新軸を通じて同じ検査範囲に入り、既存の`p5_same_press_sends_once`が
+   そのまま成立を確認した(P5の防御線は`PressLedger`の予約段階にあり機構選択より前で
+   機構非依存のため、新しいテストの追加は不要と判断)。
 
    **`[diagnostics] mozc_direct_actuation`キルスイッチの既定をtrueへ切り替える前提条件
    (round2 R2-5/R2-8、2026-11-15追記)**: M4で既定falseになったため、この軸追加を
-   このPRでは見送ってよいと判定されたが、**既定を有効化する前には**以下の2点を満たすこと:
-   1. 本項目のとおり、`explicit_press.rs`の全列挙モデルにMozcDirect軸を追加し、
-      ADR-208 L1の不変条件(P1〜P6)がMozcDirect先頭のチェーン上でも成り立つことを検証する。
-   2. `ci/directact-precheck`相当のworkflowで、awase本体の実際の送信経路
-      (`ime_controller.rs::apply_mozc_direct`)からmozc-readable fork実機へ`PostMessageW`し、
-      ack `applied`が実際に返ることを確認する——C1修正後も、awase本体の送信経路からの
-      ack往復はCIでも実機でも一度も通していない(round1・round2のレビューが繰り返し
-      指摘した未検証点、R2-8)。登録メッセージ名が将来再びずれても検出する機械的な手段は
-      無いため、この確認を既定有効化の都度(少なくともforkのバージョン更新時に)再実行する
-      運用も合わせて検討する。
+   step2〜6のPRでは見送ってよいと判定されたが、**既定を有効化する前には**以下の2点を
+   満たすこと:
+   1. **(2026-11-16解消)** 本項目のとおり、`explicit_press.rs`の全列挙モデルに
+      MozcDirect軸を追加し、ADR-208 L1の不変条件(P1〜P6)がMozcDirect先頭のチェーン上でも
+      成り立つことを検証した。
+   2. **(2026-11-16解消)** `ci/directact-real`(`ci/directact-precheck`相当のworkflow)で、
+      awase本体の実際の送信経路(`ime_controller.rs::apply_mozc_direct`)からmozc-readable
+      fork実機(`exp/direct-actuation-channel`)へ`PostMessageW`し、run
+      [43805474865](https://github.com/cuzic/awase/actions/runs/43805474865)で
+      18/18件`result=Applied`(latency 0〜63ms)のack往復を確認した(詳細は
+      [BUG-234](../known-bugs/BUG-234.md)参照)。ただし同条件の再実行(run
+      [43806119252](https://github.com/cuzic/awase/actions/runs/43806119252))では合成
+      テスト窓の`AppImeProfile`分類が間欠的に失敗し0件だった——機構自体は実証済みだが、
+      この確認手段(合成テスト窓)自体に再現性の問題が残る。登録メッセージ名が将来再びずれても
+      検出する機械的な手段は無いため、この確認を既定有効化の都度(少なくともforkのバージョン
+      更新時に)再実行する運用も合わせて検討する。
+
+   2026-11-16時点、前提条件1・2とも満たされた。残る既知の限界(回路遮断がプロセス全体に
+   広がる・合成テスト窓の間欠的な再現性等)はround3まとめ(上記)参照。dragonflyg4実機への
+   投入はこの前提条件確認の後続タスクとして別途実施する。
