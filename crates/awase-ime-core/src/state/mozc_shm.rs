@@ -459,9 +459,10 @@ pub enum ShmUse {
 /// 記録するのは、開閉方向を持つ送信が**実際に送信できたときだけ**（5-2節、round6 V2）。
 /// モード切替のみの送信では記録しない（round5 U1の`ime_actuation_baseline_ms`の欠陥の修正）。
 ///
-/// `nonce`はdirect post（GJI/TsfNative限定、ADR-293 5-1節、**本PRでは未実装**）向けの予約フィールド。
-/// direct postの送信経路が無い間は常に`None`——`classify_own_request`の項目1(nonce+ackの確認)は
-/// この経路が実装されるPRで追加する。
+/// `nonce`はdirect post（GJI/TsfNative限定、ADR-293 5-1節）向けのフィールド。
+/// direct postの送信経路自体(`WriteMechanism::MozcDirect`、10節step4〜5)はまだ無いため、
+/// 実際の送信では常に`None`——`classify_own_request`の項目1(nonce+ackの確認、10節step2で復元)は
+/// `Some`が来る場合に備えてここで実装済みだが、現時点で`Some`になるのは単体テストの中だけ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OwnSend {
     /// 送信した開閉方向
@@ -472,12 +473,26 @@ pub struct OwnSend {
     pub tid: u32,
     /// 送信先プロセスID
     pub pid: u32,
-    /// 常に`None`（上記doc参照）。
+    /// 実送信では常に`None`（上記doc参照）。
     pub nonce: Option<u32>,
 }
 
-/// [`classify_own_request`]の判定結果（5-2節の全順序、項目0・2〜4。項目1〈nonce+ack〉は
-/// direct postの送信経路が無い本PRでは対象外）。
+/// awase自身の送信`own_send`に対する、Mozc側からの確認結果（ADR-293 5-2節項目1）。
+///
+/// `nonce`付きの送信（direct post、GJI/TsfNative限定）に対してのみ意味を持つ。version 6
+/// 共有メモリの生バイト解釈（`last_cmd_nonce`/`last_cmd_result`、10節step3「観測の殻」）は
+/// このPRのスコープ外——呼び出し元が既に解釈済みの値をここへ渡す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnSendAck {
+    /// 確認対象のnonce（`OwnSend.nonce`と比較する）
+    pub nonce: u32,
+    /// 真なら適用済み、偽なら拒否（拒否の理由はこの関数の判断には使わない）
+    pub applied: bool,
+    /// 適用が反映されたブロックの`update_tick_ms`（`applied`のときだけ`disagree_floor_ms`に使う）
+    pub update_tick_ms: u64,
+}
+
+/// [`classify_own_request`]の判定結果（5-2節の全順序、項目0〜4）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OwnRequestVerdict {
     /// `own_send`が無い、または読んでいるブロックの`(tid,pid)`と違う（項目0）。
@@ -488,16 +503,25 @@ pub enum OwnRequestVerdict {
     /// `own_send`を消し、disagree判定の起点を`disagree_floor_ms`へ引き上げる（項目2:
     /// 送信**後**に読んだ、`own_send.open`と一致する読み）。
     Consumed { disagree_floor_ms: u64 },
-    /// `own_send`を消し、呼び出し元へ「direct actuationは使用不可」を伝える（項目4で`nonce`有りの
-    /// ままcap超過、round6 V3。direct postの送信経路が無い本PRでは到達しない)。
+    /// `own_send`を消し、呼び出し元へ「direct actuationは使用不可」を伝える（項目1で`Rejected`、
+    /// または項目4で`nonce`有りのままcap超過、round6 V3。いずれも「失われた書き込みは諦める」
+    /// 現実追随の方針どおりで、フロアは立てない)。
     ConsumedUnusable,
     /// `own_send`は保持したまま、読みを保留する（項目3、既存の[`ShmUse::Held`]に対応）。
     Pending,
 }
 
-/// awase自身の送信`own_send`と、受け入れた読みを見比べる（純粋関数、5-2節の全順序どおり。
-/// 項目1〈nonce+ackの確認〉は、direct postの送信経路が無い本PRでは実装しない——`own_send.nonce`は
-/// 常に`None`なので、項目2〜4がそのまま適用される)。
+/// awase自身の送信`own_send`と、受け入れた読みを見比べる（純粋関数、5-2節の全順序どおり）。
+///
+/// **項目1(ADR-293 10節step2で復元、nonce+ackの確認)**: `own_send.nonce`が`Some`で、
+/// `ack`が同じnonceへの確認を運んでいるとき、`ack.applied`が真なら消して
+/// `disagree_floor_ms = ack.update_tick_ms`(項目2と同じ`Consumed`)、偽(拒否)なら消して
+/// 「不使用」を返す(フロアは立てない、失われた書き込みは諦める方針どおり、項目4の
+/// `ConsumedUnusable`と同じ扱い)。`ack`が`None`、または`ack.nonce`が`own_send.nonce`と
+/// 違う(まだ来ていない、または古いnonceへの確認)なら、この項目は適用せず項目2へ進む。
+/// direct postの送信経路(5-1節、10節step4〜5)自体はこのPRには無いため、実際の送信経路からは
+/// `own_send.nonce`・`ack`とも常に`None`——この項目が実際のデータで到達するのは、その送信経路が
+/// 実装された後になる。
 ///
 /// `read_target`は読んだブロックの`(tid,pid)`、`read_open`は`shm.tsf_open`、
 /// `read_update_tick_ms`は読んだブロックの`update_tick_ms`。`last_mode_key_tick_ms`は`None`
@@ -528,6 +552,7 @@ pub enum OwnRequestVerdict {
 #[must_use]
 pub const fn classify_own_request(
     own_send: Option<OwnSend>,
+    ack: Option<OwnSendAck>,
     read_target: (u32, u32),
     read_open: bool,
     read_update_tick_ms: u64,
@@ -541,6 +566,19 @@ pub const fn classify_own_request(
     // 項目0(round6 V4-1): (tid,pid)不一致は全順序の先頭で外す。無視するだけで消さない。
     if send.tid != read_target.0 || send.pid != read_target.1 {
         return OwnRequestVerdict::Unrelated;
+    }
+    // 項目1(10節step2で復元): nonceを持つ送信に、同じnonceへのackが来ているか。
+    if let (Some(expected_nonce), Some(ack)) = (send.nonce, ack) {
+        if ack.nonce == expected_nonce {
+            return if ack.applied {
+                OwnRequestVerdict::Consumed {
+                    disagree_floor_ms: ack.update_tick_ms,
+                }
+            } else {
+                OwnRequestVerdict::ConsumedUnusable
+            };
+        }
+        // nonce不一致(まだ来ていない、または古いnonceへの確認): 項目2以降にそのまま進む。
     }
     // 項目2(レビュー指摘1-aで`read_update_tick_ms > send.tick_ms`を追加): 送信**後**に読んだ、
     // own_send.openと一致する読み。
@@ -561,8 +599,9 @@ pub const fn classify_own_request(
         return OwnRequestVerdict::Pending;
     }
     if age_ms >= cap_ms {
-        // 項目4(round6 V3): nonceがあるときだけ「不使用」を立てる(direct postが無い本PRでは
-        // 常にnonce=Noneなので、この枝は常にClearNoOverrideになる)。
+        // 項目4(round6 V3): nonceがあるときだけ「不使用」を立てる(ackがcapまで来なかった場合)。
+        // 実際の送信経路(10節step4〜5)が無い間はnonceが常にNoneなので、この枝は常に
+        // ClearNoOverrideになる。
         return if send.nonce.is_some() {
             OwnRequestVerdict::ConsumedUnusable
         } else {
@@ -1428,8 +1467,8 @@ mod tests {
         );
     }
 
-    // ADR-293(BUG-234) classify_own_request: 10節step1のテスト一覧に対応
-    // (項目1〈nonce+ack〉はdirect postの送信経路が無い本PRでは対象外)。
+    // ADR-293(BUG-234) classify_own_request: 10節step1のテスト一覧に対応。
+    // 項目1〈nonce+ack〉のテストは下の「ADR-293 10節step2」節にまとめる。
 
     fn own_send(open: bool, tick_ms: u64) -> OwnSend {
         OwnSend {
@@ -1441,11 +1480,21 @@ mod tests {
         }
     }
 
+    fn own_send_with_nonce(open: bool, tick_ms: u64, nonce: u32) -> OwnSend {
+        OwnSend {
+            open,
+            tick_ms,
+            tid: 11,
+            pid: 22,
+            nonce: Some(nonce),
+        }
+    }
+
     /// own_sendが無関係(そもそも無い)なら`Unrelated`。
     #[test]
     fn classify_own_request_unrelated_when_no_own_send() {
         assert_eq!(
-            classify_own_request(None, (11, 22), true, 500, 600, None, 2000),
+            classify_own_request(None, None, (11, 22), true, 500, 600, None, 2000),
             OwnRequestVerdict::Unrelated
         );
     }
@@ -1456,12 +1505,12 @@ mod tests {
         let send = own_send(false, 1000);
         // pid違い
         assert_eq!(
-            classify_own_request(Some(send), (11, 99), true, 1200, 1200, None, 2000),
+            classify_own_request(Some(send), None, (11, 99), true, 1200, 1200, None, 2000),
             OwnRequestVerdict::Unrelated
         );
         // tid違い
         assert_eq!(
-            classify_own_request(Some(send), (99, 22), true, 1200, 1200, None, 2000),
+            classify_own_request(Some(send), None, (99, 22), true, 1200, 1200, None, 2000),
             OwnRequestVerdict::Unrelated
         );
     }
@@ -1473,7 +1522,7 @@ mod tests {
     fn classify_own_request_item2_matching_read_after_send_sets_disagree_floor() {
         let send = own_send(false, 1000);
         assert_eq!(
-            classify_own_request(Some(send), (11, 22), false, 1800, 1900, None, 2000),
+            classify_own_request(Some(send), None, (11, 22), false, 1800, 1900, None, 2000),
             OwnRequestVerdict::Consumed {
                 disagree_floor_ms: 1800
             }
@@ -1489,18 +1538,18 @@ mod tests {
         let send = own_send(true, 1000); // t=1000でONを送信(直前にOFFを送って上書きした想定)
                                          // update_tick_ms(900) <= send.tick_ms(1000): 送信前からopen=trueだった古い読み。
         assert_eq!(
-            classify_own_request(Some(send), (11, 22), true, 900, 1100, None, 2000),
+            classify_own_request(Some(send), None, (11, 22), true, 900, 1100, None, 2000),
             OwnRequestVerdict::Pending,
             "送信前から同じ値だった古い読みを確認として消費してはならない(OFF→ON連打でBUG-234が残る経路)"
         );
         // update_tick_ms(1000) == send.tick_ms(1000)の境界も同様(厳密に`>`を要求)。
         assert_eq!(
-            classify_own_request(Some(send), (11, 22), true, 1000, 1100, None, 2000),
+            classify_own_request(Some(send), None, (11, 22), true, 1000, 1100, None, 2000),
             OwnRequestVerdict::Pending
         );
         // update_tick_ms(1001) > send.tick_ms(1000)なら確認として消費する。
         assert_eq!(
-            classify_own_request(Some(send), (11, 22), true, 1001, 1100, None, 2000),
+            classify_own_request(Some(send), None, (11, 22), true, 1001, 1100, None, 2000),
             OwnRequestVerdict::Consumed {
                 disagree_floor_ms: 1001
             }
@@ -1515,7 +1564,7 @@ mod tests {
         let send = own_send(false, 0); // t=0 でOFFを送信
                                        // t=640ms、旧170ms settleは過ぎているが、cap(2000ms)はまだ
         assert_eq!(
-            classify_own_request(Some(send), (11, 22), true, 600, 640, None, 2000),
+            classify_own_request(Some(send), None, (11, 22), true, 600, 640, None, 2000),
             OwnRequestVerdict::Pending,
             "BUG-234: 170ms(旧settle)を過ぎた古い読みを外部変化と誤認してはならない"
         );
@@ -1528,7 +1577,7 @@ mod tests {
         let send = own_send(false, 1000); // (tid=11,pid=22)宛の送信
         assert_eq!(
             // 別窓(tid=33,pid=44)の食い違う読み
-            classify_own_request(Some(send), (33, 44), true, 1200, 1200, None, 2000),
+            classify_own_request(Some(send), None, (33, 44), true, 1200, 1200, None, 2000),
             OwnRequestVerdict::Unrelated,
             "他スレッド宛のown_sendが無関係な窓の食い違いを保留してはならない"
         );
@@ -1542,13 +1591,31 @@ mod tests {
         let send = own_send(false, 1000);
         // (e) 同値tick: 送信が勝ち、Pendingを維持する。
         assert_eq!(
-            classify_own_request(Some(send), (11, 22), true, 600, 1100, Some(1000), 2000),
+            classify_own_request(
+                Some(send),
+                None,
+                (11, 22),
+                true,
+                600,
+                1100,
+                Some(1000),
+                2000
+            ),
             OwnRequestVerdict::Pending,
             "round6 V1: 同じtickのshadow-toggle送信とその予測は、送信が勝つ(>=)"
         );
         // (b) 真に後(1001 > 1000)の物理モードキー予測にsupersedeされ、この枝は適用しない。
         assert_eq!(
-            classify_own_request(Some(send), (11, 22), true, 600, 1100, Some(1001), 2000),
+            classify_own_request(
+                Some(send),
+                None,
+                (11, 22),
+                true,
+                600,
+                1100,
+                Some(1001),
+                2000
+            ),
             OwnRequestVerdict::Unrelated,
             "T6-2: 真に後の物理モードキー予測にsupersedeされたら170msの通常判定に戻す"
         );
@@ -1564,7 +1631,16 @@ mod tests {
     fn classify_own_request_f_own_send_at_the_same_tick_as_its_own_intent_is_not_superseded() {
         let send = own_send(false, 1000); // 送信tickは、自分自身の意図eventのtick(1000)と同じ
         assert_eq!(
-            classify_own_request(Some(send), (11, 22), true, 600, 1100, Some(1000), 2000),
+            classify_own_request(
+                Some(send),
+                None,
+                (11, 22),
+                true,
+                600,
+                1100,
+                Some(1000),
+                2000
+            ),
             OwnRequestVerdict::Pending,
             "own_send.tick_ms >= last_mode_key_tick_ms(自分自身)なのでsupersedeされない"
         );
@@ -1577,7 +1653,16 @@ mod tests {
     fn classify_own_request_h_no_nonce_at_cap_expiry_clears_without_unusable_mark() {
         let send_no_nonce = own_send(false, 0);
         assert_eq!(
-            classify_own_request(Some(send_no_nonce), (11, 22), true, 2000, 2000, None, 2000),
+            classify_own_request(
+                Some(send_no_nonce),
+                None,
+                (11, 22),
+                true,
+                2000,
+                2000,
+                None,
+                2000
+            ),
             OwnRequestVerdict::ClearNoOverride,
             "nonce無しの送信が単に遅いだけでdirect actuationを不使用にしてはならない"
         );
@@ -1592,13 +1677,13 @@ mod tests {
         // 別スレッドの読みがown_send.openと一致していても(項目2相当の条件)、項目0が先に
         // 評価されてUnrelatedになり、Consumedにはならない。
         assert_eq!(
-            classify_own_request(Some(send), (33, 44), false, 1200, 1200, None, 2000),
+            classify_own_request(Some(send), None, (33, 44), false, 1200, 1200, None, 2000),
             OwnRequestVerdict::Unrelated,
             "項目0が項目2より先に評価され、他スレッドの一致する読みがown_sendを消費してはならない"
         );
         // 別スレッドの読みでcapも超過していても(項目4相当の条件)、同様にUnrelatedのまま。
         assert_eq!(
-            classify_own_request(Some(send), (33, 44), true, 3000, 3000, None, 2000),
+            classify_own_request(Some(send), None, (33, 44), true, 3000, 3000, None, 2000),
             OwnRequestVerdict::Unrelated,
             "項目0が項目4より先に評価され、他スレッドの読みがown_sendをage>=capで消去してはならない"
         );
@@ -1610,11 +1695,11 @@ mod tests {
     fn classify_own_request_age_equal_to_cap_is_the_boundary() {
         let send = own_send(false, 0);
         assert_eq!(
-            classify_own_request(Some(send), (11, 22), true, 100, 1999, None, 2000),
+            classify_own_request(Some(send), None, (11, 22), true, 100, 1999, None, 2000),
             OwnRequestVerdict::Pending
         );
         assert_eq!(
-            classify_own_request(Some(send), (11, 22), true, 100, 2000, None, 2000),
+            classify_own_request(Some(send), None, (11, 22), true, 100, 2000, None, 2000),
             OwnRequestVerdict::ClearNoOverride
         );
     }
@@ -1625,8 +1710,180 @@ mod tests {
         let send = own_send(false, 1000);
         // last_mode_key_tick_ms(1001) > send.tick_ms(1000): supersedeされている。かつage>=cap。
         assert_eq!(
-            classify_own_request(Some(send), (11, 22), true, 3000, 3000, Some(1001), 2000),
+            classify_own_request(
+                Some(send),
+                None,
+                (11, 22),
+                true,
+                3000,
+                3000,
+                Some(1001),
+                2000
+            ),
             OwnRequestVerdict::ClearNoOverride
+        );
+    }
+
+    // ADR-293(BUG-234) classify_own_request 項目1: 10節step2(核のみのPR)で復元したnonce+ack確認。
+    // direct postの送信経路(5-1節、10節step4〜5)自体はまだ無いため、nonce/ackは単体テストでだけ
+    // `Some`になる。
+
+    /// 項目1・Applied: nonce一致のackが`applied=true`なら消して`disagree_floor_ms`を
+    /// `ack.update_tick_ms`にする(cap未達でも即座に確定する、capいっぱい待つ項目3より早い)。
+    #[test]
+    fn classify_own_request_item1_ack_applied_consumes_with_ack_tick_as_floor() {
+        let send = own_send_with_nonce(false, 1000, 42);
+        let ack = OwnSendAck {
+            nonce: 42,
+            applied: true,
+            update_tick_ms: 1050,
+        };
+        // age(1100-1000=100ms)はcap(2000ms)未達だが、ackが来ているので即座にConsumed。
+        assert_eq!(
+            classify_own_request(
+                Some(send),
+                Some(ack),
+                (11, 22),
+                true,
+                1040,
+                1100,
+                None,
+                2000
+            ),
+            OwnRequestVerdict::Consumed {
+                disagree_floor_ms: 1050
+            },
+            "ack到着時点で即座に確定する(capを待たない、ADR-293 5-1節のdirect postの目的そのもの)"
+        );
+    }
+
+    /// 項目1・Rejected: nonce一致のackが`applied=false`なら消して「不使用」を返す(フロアは立てない、
+    /// 既存の「失われた書き込みは諦める」方針〈項目4の`ConsumedUnusable`〉と同じ扱い)。
+    #[test]
+    fn classify_own_request_item1_ack_rejected_is_consumed_unusable_without_a_floor() {
+        let send = own_send_with_nonce(false, 1000, 42);
+        let ack = OwnSendAck {
+            nonce: 42,
+            applied: false,
+            update_tick_ms: 1050,
+        };
+        assert_eq!(
+            classify_own_request(
+                Some(send),
+                Some(ack),
+                (11, 22),
+                true,
+                1040,
+                1100,
+                None,
+                2000
+            ),
+            OwnRequestVerdict::ConsumedUnusable,
+            "拒否は現実に追随する(フロアを立てない)——項目4のcap超過+nonce有りと同じ結論"
+        );
+    }
+
+    /// 項目1はnonceが一致するackにのみ適用する: 古い/無関係なnonceへのackは「まだ来ていない」扱いで
+    /// 項目2以降にそのまま進む(この入力は項目3のPendingに落ちる)。
+    #[test]
+    fn classify_own_request_item1_ack_with_a_different_nonce_falls_through_to_item3() {
+        let send = own_send_with_nonce(false, 1000, 42);
+        let stale_ack = OwnSendAck {
+            nonce: 41, // 1つ前の要求へのack(新しい要求42にはまだ届いていない)
+            applied: true,
+            update_tick_ms: 1050,
+        };
+        assert_eq!(
+            classify_own_request(
+                Some(send),
+                Some(stale_ack),
+                (11, 22),
+                true,
+                600,
+                1100,
+                None,
+                2000
+            ),
+            OwnRequestVerdict::Pending,
+            "古いnonceへのackは今回の送信への確認にならない——項目2〜4の通常判定に落ちる"
+        );
+    }
+
+    /// 項目4とnonceの組み合わせ: nonceを持つ送信にackが一度も来ないままcapへ達したら、`ClearNoOverride`
+    /// ではなく`ConsumedUnusable`を返す(round6 V3、item1が復元されたことでnonce有りの入力が
+    /// 単体テストで実際に到達できるようになった——(h)のnonce無しケースと対になる境界)。
+    #[test]
+    fn classify_own_request_item4_nonce_without_ack_at_cap_expiry_is_consumed_unusable() {
+        let send = own_send_with_nonce(false, 0, 42);
+        assert_eq!(
+            classify_own_request(Some(send), None, (11, 22), true, 2000, 2000, None, 2000),
+            OwnRequestVerdict::ConsumedUnusable,
+            "nonceがあるのにackがcapまで来なければ、direct actuationを不使用と判定する"
+        );
+    }
+
+    /// ADR-293 10節「BUG-234のタイムラインテスト」: capまで未ackなら`Held`、ack後は通常判定、
+    /// `Rejected`は既存の「失われた書き込みは諦める」挙動と一致する——`report_mozc_shm`の
+    /// `forced_held`相当の分岐を、`classify_own_request`単体のタイムラインとして固定する。
+    #[test]
+    fn classify_own_request_bug234_timeline_pending_then_ack_resolves() {
+        let nonce = 7;
+        // t=0: OFFを送信(nonce=7)。
+        let send = own_send_with_nonce(false, 0, nonce);
+        // t=100: まだackが来ていない。読みは古い値(open=true)のまま——capまでHeld。
+        assert_eq!(
+            classify_own_request(Some(send), None, (11, 22), true, 50, 100, None, 2000),
+            OwnRequestVerdict::Pending,
+            "ack未着の間はcapまでHeldのまま(170msの旧settleでは外部変化と誤認していたBUG-234)"
+        );
+        // t=120: ackがApplied(update_tick_ms=118)で届く——capを待たずに即座に確定する。
+        let ack_applied = OwnSendAck {
+            nonce,
+            applied: true,
+            update_tick_ms: 118,
+        };
+        assert_eq!(
+            classify_own_request(
+                Some(send),
+                Some(ack_applied),
+                (11, 22),
+                true,
+                50,
+                120,
+                None,
+                2000
+            ),
+            OwnRequestVerdict::Consumed {
+                disagree_floor_ms: 118
+            },
+            "ack到着後は通常判定(Consumed)に落ちる"
+        );
+    }
+
+    /// 上記タイムラインのRejected分岐: ackが拒否で届いた場合は、フロアを立てずに「不使用」を返す
+    /// (ConsumedUnusable)。これは項目4のnonce有り+cap超過と同じ「失われた書き込みは諦める」結論。
+    #[test]
+    fn classify_own_request_bug234_timeline_rejected_gives_up_without_a_floor() {
+        let nonce = 7;
+        let send = own_send_with_nonce(false, 0, nonce);
+        let ack_rejected = OwnSendAck {
+            nonce,
+            applied: false,
+            update_tick_ms: 118,
+        };
+        assert_eq!(
+            classify_own_request(
+                Some(send),
+                Some(ack_rejected),
+                (11, 22),
+                true,
+                50,
+                120,
+                None,
+                2000
+            ),
+            OwnRequestVerdict::ConsumedUnusable,
+            "拒否は既存の「失われた書き込みは諦める」挙動(項目4のConsumedUnusable)と一致する"
         );
     }
 
