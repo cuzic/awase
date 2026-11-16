@@ -45,6 +45,13 @@ pub struct WindowsPlatform {
     /// ときは`None`)。`mozc_direct_target()`が`mozc_target()`と同じ`(tid,pid)`かを
     /// 照合してから使う——フォーカスが変わった直後、古いスレッド宛の値を誤って使わない。
     mozc_direct: Option<(u32, u32, u64)>,
+    /// ADR-293 10節step6(拒否時の収束): `report_mozc_shm`が`classify_own_request`の
+    /// `ConsumedUnusable`(ackの`Rejected`、またはnonce有りのままcap超過)を見た`(tid,pid)`。
+    /// `mozc_direct_target()`はこの対象と一致する間`None`を返す
+    /// (`decide_chain`/`mechanism_applicable`がMozcDirectを使わなくなる)。
+    /// `mark_mozc_direct_unusable`で立て、次のフォーカス変更(`mozc_shm_shadow.rs`の
+    /// `focus_changed`)で`clear_mozc_direct_unusable`が解除する。
+    mozc_direct_unusable_for: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -98,6 +105,7 @@ impl WindowsPlatform {
             pending_giveup: None,
             pending_first_literal: None,
             mozc_direct: None,
+            mozc_direct_unusable_for: None,
         }
     }
 
@@ -1270,13 +1278,31 @@ impl WindowsPlatform {
     /// ADR-293 10節step4: 現在のフォーカス(`mozc_target()`)向けのdirect actuation宛先
     /// (`cmd_window_handle`)が分かっているか。`(tid,pid)`が`mozc_target()`と一致しない
     /// (フォーカスが変わった直後、まだ新しい値が来ていない)ときは`None`——古いスレッド宛の
-    /// 宛先を使わない。
+    /// 宛先を使わない。10節step6: この対象が`mark_mozc_direct_unusable`で「使用不可」
+    /// マークされている間も`None`(次のフォーカス変更まで、拒否時の収束)。
     #[must_use]
     pub(crate) fn mozc_direct_target(&self) -> Option<u64> {
-        let (tid, pid) = self.mozc_target()?;
+        let target @ (tid, pid) = self.mozc_target()?;
+        if self.mozc_direct_unusable_for == Some(target) {
+            return None;
+        }
         self.mozc_direct
             .filter(|&(t, p, _)| t == tid && p == pid)
             .map(|(_, _, handle)| handle)
+    }
+
+    /// ADR-293 10節step6: `(tid,pid)`をdirect actuation使用不可にする
+    /// (`report_mozc_shm`が`ConsumedUnusable`を返したとき、呼び出し元
+    /// `mozc_shm_shadow.rs`経由)。次のフォーカス変更まで`mozc_direct_target()`が
+    /// この対象に対して`None`を返す。
+    pub(crate) fn mark_mozc_direct_unusable(&mut self, target: (u32, u32)) {
+        self.mozc_direct_unusable_for = Some(target);
+    }
+
+    /// ADR-293 10節step6: フォーカスが変わったら使用不可マークを解除する
+    /// (`mozc_shm_shadow.rs`が`focus_changed`のときに呼ぶ)。
+    pub(crate) fn clear_mozc_direct_unusable(&mut self) {
+        self.mozc_direct_unusable_for = None;
     }
 
     /// 同一フォーカスプローブ内で取得済みの process_name を再利用して更新する。
