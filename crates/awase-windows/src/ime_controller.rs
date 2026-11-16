@@ -255,10 +255,26 @@ pub(crate) fn apply_mechanism(
     }
 }
 
+/// mozc-readable forkのdirect-actuation登録ウィンドウメッセージ名
+/// (`readable/docs/shared-memory.md` 6-5章、`src/base/const.h`)。
+///
+/// **forkのビルド定義によって名前が分岐する点に注意**: `const.h`は
+/// `GOOGLE_JAPANESE_INPUT_BUILD`側で`googlejapaneseinput.direct_actuation.message`、
+/// `#else`(`MOZC_BUILD`)側で`mozcreadable.direct_actuation.message`を使う。
+/// forkのWindowsビルド(`src/.bazelrc`の`common:windows ... --define TARGET=oss_windows`、
+/// `BUILD.bazel`の`oss_windows = ["MOZC_BUILD"]`)は**後者**のみを定義する(出荷物も
+/// `Mozc64.msi`のOSS名)。`GOOGLE_JAPANESE_INPUT_BUILD`側の名前はforkでは実在しないビルド
+/// 構成であり、ここで使うと`RegisterWindowMessageW`自体は成功するがforkのTIPが同じ番号を
+/// 登録しないため、postは`Ok`を返しながら実際には誰にも届かない(Opusレビューround1 C1)。
+/// **両方の名前を機械的に検証する手段が無いので、forkの`const.h`を変更した側は、必ずこの
+/// doc commentとCI(`ci/directact-precheck`相当)の両方を同時に更新すること。**
+const MOZC_DIRECT_ACTUATION_MESSAGE_NAME: windows::core::PCWSTR =
+    windows::core::w!("mozcreadable.direct_actuation.message");
+
 /// ADR-293([BUG-234](../../../docs/known-bugs/BUG-234.md)) 10節step5: `WriteMechanism::MozcDirect`
 /// の送信の殻。`view.focus.mozc_direct_cmd_window_handle`(version 6共有メモリが公開する
-/// `cmd_window_handle`)へ、登録ウィンドウメッセージ（`readable/docs/shared-memory.md` 6-5章、
-/// `mozc::kDirectActuationMessageName`相当）でnonce付きのopen/close要求を`PostMessageW`する。
+/// `cmd_window_handle`)へ、[`MOZC_DIRECT_ACTUATION_MESSAGE_NAME`](mozc-readable forkの
+/// `MOZC_BUILD`側の名前)でnonce付きのopen/close要求を`PostMessageW`する。
 ///
 /// **ackは待たない**（この関数は同期・非ブロッキング）。要求の成否確認（閉ループ）は、
 /// 既に配線済みの`decide_use`/`classify_own_request`（10節step1〜3）が`report_mozc_shm`の
@@ -266,7 +282,6 @@ pub(crate) fn apply_mechanism(
 /// 「送れた」ことだけを示し、「Mozcが実際に適用した」ことまでは確認しない
 /// （5-1節の位置づけどおり、5-4節のorigin-scopedな長いcapが正しさの最終防衛）。
 fn apply_mozc_direct(open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
-    use windows::core::w;
     use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, RegisterWindowMessageW};
 
@@ -296,9 +311,9 @@ fn apply_mozc_direct(open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         );
         return ImeOpenOutcome::Failed;
     }
-    // SAFETY: `w!` はコンパイル時に NUL 終端したワイド文字列リテラルを作る。
-    // `RegisterWindowMessageW` はどのスレッドからも呼べる非ブロッキング API。
-    let msg = unsafe { RegisterWindowMessageW(w!("googlejapaneseinput.direct_actuation.message")) };
+    // SAFETY: `MOZC_DIRECT_ACTUATION_MESSAGE_NAME` はコンパイル時に NUL 終端したワイド文字列
+    // リテラルを作る。`RegisterWindowMessageW` はどのスレッドからも呼べる非ブロッキング API。
+    let msg = unsafe { RegisterWindowMessageW(MOZC_DIRECT_ACTUATION_MESSAGE_NAME) };
     if msg == 0 {
         tracing::error!("[mozc-direct] RegisterWindowMessageW failed (GetLastError) → Failed");
         return ImeOpenOutcome::Failed;
