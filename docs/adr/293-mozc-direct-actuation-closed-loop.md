@@ -55,15 +55,27 @@ status: |-
   要修正6件(M1: nonceが起動ごとに1から振り直され前回プロセスのackと一致しうる、M2:
   自動リピートのたびにdirect postが積まれる想定漏れ、M3: 新しい書き込み口がlint/guardに
   未登録、M4: 実験的機構に既定オフの手段が無い、M5: 一時的な拒否と経路が死んでいる場合の
-  混同、M6: ADR/BUG文書が実装に追随していない)も指摘された。**C1・M1〜M5は反映済み**
-  (登録メッセージ名の修正・nonceのtick時刻シード・lint/guardへの登録・
-  `[diagnostics] mozc_direct_actuation`既定オフキルスイッチの追加・一時的拒否と
-  経路死亡の分離)。本frontmatterの更新(M6)はこの時点のもの。**未解決のまま残る既知の
-  限界**: (a) `explicit_press.rs`の全列挙モデルが`mozc_direct_ready`の軸を持たず、
-  ADR-208 L1の不変条件がMozcDirect先頭のチェーンでモデル上は未検証(11節6番)。(b) C1の
-  修正自体は実機・CIでのack往復をまだ一度も通していない(8節1番の遅延注入CIは機構の動作
-  確認のみで、実際のPostMessageW送信経路は未検証)。(c) mozc-readable fork側のイベント
-  駆動な改修(5-3節)は、ステージ4/5の拒否率データが出るまで着手しない方針のまま変更なし。
+  混同、M6: ADR/BUG文書が実装に追随していない)も指摘された。この対応をround2として同じ
+  レビュアーに再確認させたところ、**C1・M3・M4・L2は解消と判定されたが、M1は未解消
+  (round1の修正が実行されない回帰、R2-1)、M2・M5は一部解消のまま**と判定された:
+  R2-1(nonceカウンタの静的初期値が1のままで`compare_exchange(0, …)`が一度も成立せず
+  round1のM1修正が無効化されていた)、R2-2(M5の「経路が死んでいる」判定が`(tid,pid,
+  cmd_window_handle)`単位の単一スロットで、窓を行き来すると前の窓のマークが上書きされ
+  付け外しを繰り返す)、R2-3(M5の解除条件が`cmd_window_handle`の変化のみで、Mozcが単に
+  遅かっただけの場合も後続の本物のackを無視して永久除外になる新しい固着)、R2-4(ADR・
+  BUG-234文書の古い記述・誤記)を、同じround2の指摘として反映した。**R2-1・R2-2・R2-3・
+  R2-4は反映済み**(nonceカウンタの初期値を0に訂正・`mozc_direct_dead_for`を窓単位から
+  プロセス全体の回路遮断`mozc_direct_circuit_broken`に変更・forkからの本物のackを1回でも
+  観測したら解除する方式に変更・本frontmatter/10節/7節表/BUG-234.mdの訂正)。**M2
+  (`explicit_press.rs`の全列挙モデルへのMozcDirect軸追加とP1〜P6検証)は、R2-5のとおり
+  意図的に見送ったまま**——11節6番に、キルスイッチの既定をtrueへ切り替える前提条件として
+  明記した。**未解決のまま残る既知の限界**: (a) 上記M2の見送り。(b) C1の修正自体は
+  実機・CIでのack往復をまだ一度も通していない(8節1番の遅延注入CIは機構の動作確認のみで、
+  実際のPostMessageW送信経路は未検証、R2-8でも同じ指摘、11節に前提条件として明記した)。
+  (c) mozc-readable fork側のイベント駆動な改修(5-3節)は、ステージ4/5の拒否率データが
+  出るまで着手しない方針のまま変更なし。(d) L3(ackログの`latency_ms`がほぼ`None`)は
+  round2 R2-9でも「実測を始める前に直すのが望ましい」と再指摘されたが、優先度低として
+  今回も対応を見送った。
 related_adr: ["ADR-089", "ADR-163", "ADR-171", "ADR-191", "ADR-208", "ADR-241", "ADR-265", "ADR-268", "ADR-291", "ADR-292"]
 ---
 
@@ -309,6 +321,10 @@ R8(判定条件はbeliefではなくown-requestそのものと比較する)の�
   落とし、項目1自体をコードから削除した(PRにEXPERIMENTAL`acf1a2594`〈`DirectActuationAck`/
   `direct_actuation_plan.rs`等〉を含めないため、round1指摘0)。direct postの送信経路を実装する
   別PRで項目1を復元する。
+  **(2026-11-15訂正、round2 R2-4)**: 上記は10節step1(PR #941)時点の記述。10節step2
+  (`7278191a4`)で項目1を実際に復元済み——`OwnSendAck{nonce, applied, update_tick_ms}`を
+  新設し、`classify_own_request`の署名に`ack: Option<OwnSendAck>`を足した。`direct_actuation_plan.rs`
+  はこのADRのどの時点でも作られていない(不採用のまま)。
 - **項目2に`read_update_tick_ms > send.tick_ms`を追加(round1指摘1-a)。** 単一スロット+値一致
   だけでは、OFF→ONのように方向を素早く切り替えたとき、2回目の送信(ON)の直前にMozcがまだ
   1回目(OFF)を処理しておらず`tsf_open`がON方向のまま残っていた場合、この**送信前からの古い
@@ -543,7 +559,7 @@ ack到着時に即確定、Standard profileは`MOZC_OPEN_CLOSE_SETTLE_MS`を待�
 | GJI/TsfNative | 送信時(同tick) | `PostMessageW`が`Err` | `Failed`→同tickで`GjiDirect`へフォールスルー |
 | GJI/TsfNative | 送信時 | HWND値が別スレッド/プロセスへ再利用されている | 送信前に`GetWindowThreadProcessId`で(tid,pid)照合、不一致なら送らず`Failed`扱い |
 | GJI/TsfNative | 後発(別tick) | ack `Rejected(...)` | own-request消去、(tid,pid)を「フォーカス変更まで不使用」にマーク、`evaluate_drift`は変更せず現実に追随する(3節R3) |
-| GJI/TsfNative | 後発 | ack無しで`MOZC_OPEN_CLOSE_SETTLE_MS`経過 | 同上(5-2節4) |
+| GJI/TsfNative | 後発 | ack無しで`MOZC_OPEN_CLOSE_SETTLE_MS`経過(nonce有り) | **(2026-11-15訂正、round2 R2-2/R2-3)** own-request消去、プロセス全体を回路遮断(`mozc_direct_circuit_broken`、窓単位ではない)。解除はフォーカス変更ではなく、forkからの本物のack(`last_cmd_nonce`が自分の発行した最後のnonceと一致、結果を問わない)を1回でも観測したとき(`clear_mozc_direct_circuit_broken_if_alive`)のみ |
 | GJI/TsfNative | 後発 | 読んでいるブロックの(tid,pid)が`own_send`と違う | スタンプを無視するだけで消さない(項目0、round7 W1) |
 | 全profile(mozc-shm) | 後発 | `OwnSend`が存在・(tid,pid)一致・読みが`OwnSend.open`と不一致・`own_send.tick_ms >= last_mode_key_tick_ms`(supersedeされていない)・`age < MOZC_OPEN_CLOSE_SETTLE_MS` | `decide_use`が保留(Held、5-2節項目3/5-4節1) |
 | 全profile(mozc-shm) | 後発 | 上記が不成立で`age >= cap`、**`own_send.nonce`が`Some`**(GJI/TsfNativeの直接actuation) | `own_send`を消し「不使用」マーク(5-2節項目4) |
@@ -615,7 +631,8 @@ Zの`Explicit claim`fence・`decide_use`双方への適用——これにより*
   direct postが積まれ、Mozc側のサーバーラウンドトリップとedit sessionが連続要求で
   伸び続ける実害がある(最悪、BUG-230/234が懸念する「Mozcの切替完了が最大約2秒」の条件下で
   キューが伸び、その間の通常の打鍵の処理も遅れうる)。`gji_direct_already_matches`と同じ
-  省略を`decide_attempt`のMozcDirect armに追加した(10節step2のコミットで実装、押下
+  省略を`decide_attempt`のMozcDirect armに追加した(round2指摘への対応コミット
+  `5cb7ce6e3`で実装、10節step2〔`7278191a4`〕とは別コミット。押下
   (`press=Some`)は`shadow_on`が未知化されるため省略されず、リピートだけ省略される)。
   `explicit_press.rs`の全列挙モデル(`PressState`)は`mozc_direct_ready`の軸を持たないため、
   この省略がMozcDirect先頭のチェーン上でADR-208 L1の不変条件を崩さないことはモデル上では
@@ -731,6 +748,9 @@ Zの`Explicit claim`fence・`decide_use`双方への適用——これにより*
    タイムラインテスト(capまで未ackなら`Held`、ack後は通常判定、`Rejected`は既存の「失われた
    書き込みは諦める」挙動と一致)。既存の`direct_actuation_plan.rs`の`Plan`(再送を含む)はこの
    単純な分類に置き換わる。
+   **(2026-11-15訂正、round2 R2-4)**: 実装(`7278191a4`)は`decide_use`の署名を変更せず、
+   own-requestのHeld強制を既存の唯一の本番呼び出し元`report_mozc_shm`側に残した
+   (L1参照、妥当と判定済み)。`direct_actuation_plan.rs`はこのADRのどの時点でも作られていない。
 3. **観測の殻**: `ShmState`と`DirectActuationAck`を1回のseqlock読みから同時に取る関数。
 4. **機構の追加**: `WriteMechanism::MozcDirect`(適用可否は`mechanism_applicable`側)、
    `MechanismCommand::DirectActuate(bool)`、`DecisionInputs.mozc_direct_ready`、
@@ -751,23 +771,41 @@ Zの`Explicit claim`fence・`decide_use`双方への適用——これにより*
 **本PRに含まない(別タスク)**: mozc-readable fork側のイベント駆動な`kNoFocusedContext`遅延
 (5-3節、ステージ5の拒否率データが出たら着手)。
 
-**実装状況(2026-11-15、`exp/mozc-direct-actuation-step2`、`opus-review-step2to6`の指摘を
-反映済み)**: step2(classify_own_requestの項目1復元)・step3(観測の殻)・step4+5(機構追加+
-送信の殻、1コミットに統合——`decide_attempt`のmatch式の網羅性の都合で分けると中間状態が
-コンパイルを通らないため)・step6(拒否時の収束)をすべて実装した。致命的指摘C1(登録
-ウィンドウメッセージ名がforkの実OSSビルド`mozcreadable.direct_actuation.message`と
-不一致だった)を修正し、`MOZC_DIRECT_ACTUATION_MESSAGE_NAME`としてconst化・forkの
-ビルド分岐をdocに明記した。要修正の指摘もすべて反映: M1(nonceを`current_tick_ms()`から
-再シード)・M2(MozcDirect armに`gji_direct_already_matches`と同じ省略を追加、自動リピートの
-連打を抑制。9節R1-iiの判断を反転・ME-3 golden再生成)・M3
+**実装状況(2026-11-15、`exp/mozc-direct-actuation-step2`)**: step2(classify_own_requestの
+項目1復元)・step3(観測の殻)・step4+5(機構追加+送信の殻、1コミットに統合——`decide_attempt`
+のmatch式の網羅性の都合で分けると中間状態がコンパイルを通らないため)・step6(拒否時の収束)
+をすべて実装した。
+
+**`opus-review-step2to6` round1の指摘への対応**: 致命的指摘C1(登録ウィンドウメッセージ名が
+forkの実OSSビルド`mozcreadable.direct_actuation.message`と不一致だった)を修正し、
+`MOZC_DIRECT_ACTUATION_MESSAGE_NAME`としてconst化・forkのビルド分岐をdocに明記した。M3
 (`lints/actuation_call_guard::RESTRICTED_CALLS`と`architecture_guard.rs`に
 `apply_mozc_direct`/`PostMessageW(Some(..))`を登録)・M4(`[diagnostics]
-mozc_direct_actuation`、既定falseのキルスイッチを追加)・M5(`OwnRequestVerdict`を
-`ConsumedUnusable`〈一時的な拒否〉と`ConsumedUnusableNoAck`〈経路が死んでいる〉に分離、
-`WindowsPlatform::mozc_direct_dead_for`を新設)。軽微な指摘のうちL1(step2の設計逸脱は
-妥当と判定済み)はそのまま、L2〜L6(冗長スタンプの削除・非同期チェーンでの到達不能性の
-固定・doc精度等)は本PRでは対応していない。**未解決のまま残る既知の限界**は11節6番、
-status frontmatter参照(全列挙モデルの軸未対応・実機/CIでのack往復未検証)。
+mozc_direct_actuation`、既定falseのキルスイッチを追加)・L2(冗長な`mozc_direct_post_tick_ms`
+スタンプの撤去)も対応した。M1(nonceを`current_tick_ms()`から再シード)・M2(MozcDirect armに
+`gji_direct_already_matches`と同じ省略を追加、自動リピートの連打を抑制。9節R1-iiの判断を
+反転・ME-3 golden再生成)・M5(`OwnRequestVerdict`を`ConsumedUnusable`〈一時的な拒否〉と
+`ConsumedUnusableNoAck`〈経路が死んでいる〉に分離)も対応したが、round2の再確認で**M1は
+修正が実行されない回帰、M5は一部解消のまま**と判定された(下記参照)。軽微な指摘のうちL1
+(step2の設計逸脱は妥当と判定済み)はそのまま、L3〜L6(ackログの遅延がほぼ`None`・非同期
+チェーンでの到達不能性の固定・doc精度等)は本PRでは対応していない。
+
+**`opus-review-step2to6` round2の再確認で見つかった指摘への対応**: R2-1(M1の修正が実行
+されない回帰——`direct_actuation_nonce_counter`の静的初期値が1のままで`compare_exchange(0, …)`
+が一度も成立していなかった)を、初期値を0に直して修正。合わせて再シードが実際に効くことを
+固定する単体テストを追加した(round1にはテストが無く、この回帰が見過ごされた直接の原因)。
+R2-2(M5の「経路が死んでいる」判定が`(tid,pid,cmd_window_handle)`単位の単一スロットで、
+窓を行き来すると前の窓のマークが上書きされ付け外しを繰り返す)を、`mozc_direct_dead_for`を
+撤去してプロセス全体の回路遮断`WindowsPlatform::mozc_direct_circuit_broken`に置き換えて
+修正。R2-3(M5の解除条件が`cmd_window_handle`の変化のみで、Mozcが単に遅かっただけの場合も
+永久除外になる新しい固着)を、`hook::last_issued_direct_actuation_nonce`(新設)とforkからの
+本物のackが一致したら〈結果を問わず〉解除する方式(`clear_mozc_direct_circuit_broken_if_alive`)
+に変えて修正。R2-4(本ADR・BUG-234.mdの古い記述・誤記)はこの編集で反映した。**M2
+(`explicit_press.rs`の全列挙モデルへのMozcDirect軸追加)はround2でも一部解消のまま
+(モデル未対応)**——R2-5のとおり、既定を有効化する前提条件として11節6番に明記した。
+R2-9(L3、ackログの`latency_ms`がほぼ`None`)は今回も対応を見送った。**未解決のまま残る
+既知の限界**は11節6番、status frontmatter参照(全列挙モデルの軸未対応・実機/CIでのack
+往復未検証)。
 
 ## 11. 今後の判断が必要な点
 
@@ -824,3 +862,16 @@ status frontmatter参照(全列挙モデルの軸未対応・実機/CIでのack�
    全列挙モデルでは未検証のまま出荷する。モデルへの軸追加は非自明な拡張(既存のP1〜P6
    不変条件それぞれへの影響を洗い出す必要がある)のため、別タスクとして次セッションで
    着手する。
+
+   **`[diagnostics] mozc_direct_actuation`キルスイッチの既定をtrueへ切り替える前提条件
+   (round2 R2-5/R2-8、2026-11-15追記)**: M4で既定falseになったため、この軸追加を
+   このPRでは見送ってよいと判定されたが、**既定を有効化する前には**以下の2点を満たすこと:
+   1. 本項目のとおり、`explicit_press.rs`の全列挙モデルにMozcDirect軸を追加し、
+      ADR-208 L1の不変条件(P1〜P6)がMozcDirect先頭のチェーン上でも成り立つことを検証する。
+   2. `ci/directact-precheck`相当のworkflowで、awase本体の実際の送信経路
+      (`ime_controller.rs::apply_mozc_direct`)からmozc-readable fork実機へ`PostMessageW`し、
+      ack `applied`が実際に返ることを確認する——C1修正後も、awase本体の送信経路からの
+      ack往復はCIでも実機でも一度も通していない(round1・round2のレビューが繰り返し
+      指摘した未検証点、R2-8)。登録メッセージ名が将来再びずれても検出する機械的な手段は
+      無いため、この確認を既定有効化の都度(少なくともforkのバージョン更新時に)再実行する
+      運用も合わせて検討する。
