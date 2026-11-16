@@ -282,6 +282,14 @@ impl super::Runtime {
                     update_tick_ms: raw.update_tick_ms,
                 }
             });
+            // Opusレビュー`opus-review-step2to6` round2 R2-3: forkからのackが自分の発行した
+            // 最後のnonceと一致するなら、「経路は生きている」証拠としてプロセス全体の回路遮断
+            // (`mozc_direct_circuit_broken`、R2-2)を解除する——結果(`Applied`/`Rejected`)を
+            // 問わない。`own_send`は`report_mozc_shm`にすでに消費されている場合があるため、
+            // `own_send`経由ではなく`hook::last_issued_direct_actuation_nonce()`(消費されない
+            // 記録)と直接比較する。
+            self.platform
+                .clear_mozc_direct_circuit_broken_if_alive(direct_ack.map(|a| a.last_cmd_nonce));
             // ADR-293 10節step5: 拒否率計測用のログ(5-3節の着手判断に使う)。新しいnonceを
             // 観測したときだけ1回出す(同じ値を毎tick出力しない)。`own_send`が同じnonceを
             // 持っていればそこから送信時刻を取り、latencyを添える(消費済みで無ければ無し)。
@@ -318,11 +326,12 @@ impl super::Runtime {
             // ADR-293 10節step6: 「拒否時の収束」。Opusレビュー`opus-review-step2to6` M5で
             // 一時的な拒否と経路自体が死んでいる場合を分ける——前者(ackが`Rejected`)は
             // 次のフォーカス変更まで`MozcDirect`を使用不可にするだけ(経路は生きている)。
-            // 後者(nonce有りのままackが一度もcapまで来なかった)はフォーカス変更では
-            // 復帰させず、`cmd_window_handle`が変わるまで止める(M5、付け外しの繰り返しで
-            // 操作を失い続ける事故を防ぐ)。`evaluate_drift`は変更しない(3節R3のまま)。
+            // 後者(nonce有りのままackが一度もcapまで来なかった)はround2 R2-2で窓単位から
+            // プロセス全体の回路遮断に変えた(付け外しの繰り返しで操作を失い続ける事故を
+            // 防ぐ、窓を行き来しても再発しない)。解除は`clear_mozc_direct_circuit_broken_if_alive`
+            // (R2-3)のみ。`evaluate_drift`は変更しない(3節R3のまま)。
             if dead_path {
-                self.platform.mark_mozc_direct_dead((tid, pid));
+                self.platform.mark_mozc_direct_circuit_broken();
             } else if unusable {
                 self.platform.mark_mozc_direct_unusable((tid, pid));
             }
