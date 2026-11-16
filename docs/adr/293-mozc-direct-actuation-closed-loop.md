@@ -587,6 +587,19 @@ Zの`Explicit claim`fence・`decide_use`双方への適用——これにより*
   最大cap分遅れて無関係な窓へ誤送信するリスクがある。
 - **`decide_attempt`のMozcDirect armを「既に一致なら`None`」とする案**(round2 R1-ii):
   オプション(i)の「常に`Some`を返す、適用可否は`mechanism_applicable`側」の方が単純。
+  **`opus-review-step2to6` M2で訂正・採用に反転**: 「単純」側を選んだ理由
+  (「directactuationにはshadowのような確認済み状態のキャッシュが無い」)が誤りだった——
+  `shadow_on`はGjiDirect専用ではなく対象の開閉の汎用キャッシュで、MozcDirectも同じ対象を
+  書く以上参照できる。常に`Some`のままだと、物理キーの自動リピート(`press=None`、
+  `explicit_press_applied_pair`が`shadow_on`を未知化しない経路)のたびに新しいnonceで
+  direct postが積まれ、Mozc側のサーバーラウンドトリップとedit sessionが連続要求で
+  伸び続ける実害がある(最悪、BUG-230/234が懸念する「Mozcの切替完了が最大約2秒」の条件下で
+  キューが伸び、その間の通常の打鍵の処理も遅れうる)。`gji_direct_already_matches`と同じ
+  省略を`decide_attempt`のMozcDirect armに追加した(10節step2のコミットで実装、押下
+  (`press=Some`)は`shadow_on`が未知化されるため省略されず、リピートだけ省略される)。
+  `explicit_press.rs`の全列挙モデル(`PressState`)は`mozc_direct_ready`の軸を持たないため、
+  この省略がMozcDirect先頭のチェーン上でADR-208 L1の不変条件を崩さないことはモデル上では
+  未検証のまま(11節に追記)。
 - **拒否時に1回だけ特別に再送する案**(ユーザーとの対話、R3-b): ADR-268 D2への新しい
   例外が要り、正当化に別ADRが必要。
 - **プロファイルを問わずMozcDirectを最優先する案**(round3 S1、round4でも不採用のまま): Standard
@@ -762,3 +775,14 @@ Zの`Explicit claim`fence・`decide_use`双方への適用——これにより*
    による追随等)でdesiredが送信後に変わった稀な組み合わせでは、修正前なら`decide_use`が
    desiredへ揃え直していたのが、修正後は最長capまでHeldになる。capの受容済みのコスト
    (最長2秒の保留)の範囲内。いずれも実害が報告された時点で着手する。
+6. **`explicit_press.rs`の全列挙モデル(`PressState`)が`mozc_direct_ready`の軸を持たない**
+   (`opus-review-step2to6` M2、9節R1-iiの訂正と対)。`attempt_write`・
+   `chain_head_is_gji_direct`・`chain_head_is_imm_cross`は`mozc_direct_ready: false`を
+   ハードコードしており、実際のチェーンが`CHAIN_GJI_ONLY`から`CHAIN_MOZC_DIRECT_THEN_GJI`
+   (先頭`MozcDirect`)へ差し替わる場合を一度も列挙していない。`decide_attempt`の
+   MozcDirect armに追加したalready-matched省略(M2)は`decide_attempt`単体のユニット
+   テストでは確認済みだが、ADR-208 L1の不変条件(同一押下で二重送信しない・リピートは
+   追い送りしない)がMozcDirect先頭のチェーン上でも成り立つことを、2000行超のこの
+   全列挙モデルでは未検証のまま出荷する。モデルへの軸追加は非自明な拡張(既存のP1〜P6
+   不変条件それぞれへの影響を洗い出す必要がある)のため、別タスクとして次セッションで
+   着手する。
