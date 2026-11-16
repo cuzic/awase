@@ -898,10 +898,23 @@ R2-2(窓を跨いだ付け外し)・R2-3(大筋、後述)・R2-4(文書の古い
    このPRでは見送ってよいと判定されたが、**既定を有効化する前には**以下の2点を満たすこと:
    1. 本項目のとおり、`explicit_press.rs`の全列挙モデルにMozcDirect軸を追加し、
       ADR-208 L1の不変条件(P1〜P6)がMozcDirect先頭のチェーン上でも成り立つことを検証する。
-   2. `ci/directact-precheck`相当のworkflowで、awase本体の実際の送信経路
-      (`ime_controller.rs::apply_mozc_direct`)からmozc-readable fork実機へ`PostMessageW`し、
-      ack `applied`が実際に返ることを確認する——C1修正後も、awase本体の送信経路からの
-      ack往復はCIでも実機でも一度も通していない(round1・round2のレビューが繰り返し
-      指摘した未検証点、R2-8)。登録メッセージ名が将来再びずれても検出する機械的な手段は
-      無いため、この確認を既定有効化の都度(少なくともforkのバージョン更新時に)再実行する
-      運用も合わせて検討する。
+   2. **満たした(2026-11-16、`ci/directact-real`、run
+      [43805474865](https://github.com/cuzic/awase/actions/runs/43805474865))**:
+      `ci/directact-precheck`相当のCI(窓のクラス名をChrome(`Chrome_WidgetWin_1`)に偽装し
+      `AppImeProfile::Imm32Unavailable`→`CHAIN_GJI_ONLY`に分類させた上で、トップレベル窓へ
+      明示的に`SetFocus`する——`Window.focus()`がEDIT子窓〈予約済みシステムクラス名
+      `"Edit"`〉へ`SetFocus`するため、窓のクラス偽装だけでは`profile`が`standard`のまま
+      誤分類されたのが最初の失敗原因だった)で、awase本体の実際の送信経路
+      (`ime_controller.rs::apply_mozc_direct`)からmozc-readable fork実機(ビルド版
+      `exp/direct-actuation-channel`、`d49bd6b2e`)へ`PostMessageW`し、**18/18件すべてで
+      `result=Applied`、latency 0〜63ms**のackが実際に返ることを確認した(`tools/mozc_shm_ci/
+      shmci.py directact-real`/`directact-real-analyze`)。C1(登録メッセージ名の不一致)修正後、
+      初めて実際の送信経路からの往復を通した。
+      **既知の残課題**: 同じ設定での再実行(run
+      [43806119252](https://github.com/cuzic/awase/actions/runs/43806119252))では
+      `profile`が`standard`のまま一度も`imm32-unavailable`へ遷移せず、ackが0件だった——
+      合成テスト窓のフォーカス/クラス名分類がCI実行ごとに安定しない(間欠的)ことが
+      分かっている。原因は未特定(タイミング依存の可能性)。機構自体の正しさ(往復成立・
+      latency分布)はrun 43805474865で実証済みだが、**この合成テスト窓によるCI確認は
+      再現性が無い**ため、既定有効化前にforkのバージョン更新時等に再実行する運用を
+      設計する場合は、このCIハーネスの間欠性自体を先に直す必要がある。
