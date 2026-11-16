@@ -147,6 +147,10 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
         ],
     ),
     ("record_ime_apply_result", &["on_ime_apply_complete"]),
+    // apply_mozc_direct（`ime_controller.rs`）: ADR-293 10節step5、mozc-readable fork宛ての
+    // direct actuation送信（`PostMessageW`）の唯一の口。`WriteMechanism::MozcDirect`の
+    // `apply_mechanism`経由でしか呼ばれない（Opusレビュー`opus-review-step2to6` M3）。
+    ("apply_mozc_direct", &["apply_mechanism"]),
 ];
 
 fn allowed_fns_for(target: &str) -> Option<&'static [&'static str]> {
