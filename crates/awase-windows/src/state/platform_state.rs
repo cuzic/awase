@@ -2424,10 +2424,11 @@ impl ImeStateHub {
     /// `own_send`を消すべきか（`classify_own_request`の判定、`hook`側のクリアは
     /// `platform_state.rs`からは呼べないため、呼び出し元〈`mozc_shm_shadow.rs`〉に伝え返す）。
     /// `ack`は`own_send.nonce`への確認(`classify_own_request`項目1、ADR-293 10節step2)。
-    /// version 6共有メモリの生バイト解釈(`last_cmd_nonce`/`last_cmd_result`、10節step3
-    /// 「観測の殻」)はこのPRのスコープ外のため、direct postの送信経路(5-1節、10節step4〜5)が
-    /// 無い間は呼び出し元から常に`None`が渡る——`own_send.nonce`も常に`None`なので項目1自体は
-    /// 到達しない。
+    /// version 6共有メモリの生バイト解釈(`last_cmd_nonce`/`last_cmd_result`)から
+    /// `OwnSendAck`への変換は、呼び出し元(`mozc_shm_shadow.rs`、10節step3「観測の殻」)が
+    /// 行う。direct postの送信経路(5-1節、10節step4〜5)が無い間は`own_send.nonce`が実データで
+    /// `Some`にならないため、`ack`が`Some`でも`classify_own_request`項目1のnonce一致判定は
+    /// 成立せず、項目2以降の既存判定に落ちる(安全側)。
     ///
     /// **Pendingは「読みがbeliefと食い違うとき」だけHeldを強制する**(Opusレビュー指摘2-a)。
     /// `classify_own_request`のPending自体は「読みが`own_send.open`と不一致」を意味するだけで、

@@ -33,8 +33,8 @@ use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
 use crate::state::mozc_shm::{
     app_container_section_path, classify, format_sid, local_mapping_name, ComposeBlock,
-    ComposeReading, CompositionFields, FocusTicks, InputStyle, KeyResults, RawBlock, ReadFailure,
-    Reading, Route, BLOCK_SIZE, V3_BLOCK_SIZE, V5_BLOCK_SIZE,
+    ComposeReading, CompositionFields, DirectActuationAck, FocusTicks, InputStyle, KeyResults,
+    RawBlock, ReadFailure, Reading, Route, BLOCK_SIZE, V3_BLOCK_SIZE, V5_BLOCK_SIZE, V6_BLOCK_SIZE,
 };
 
 /// seqlock の再試行の上限（書き込みは数命令なので、実際には 1〜2 回で終わる）。
@@ -120,12 +120,17 @@ pub fn thread_and_process_of_window(hwnd_addr: usize) -> (u32, u32) {
 ///
 /// 通常のプロセスは `Local\` の名前で開く。開けなければ、対象が AppContainer のときだけ専用の名前空間のパスで開き直す。
 /// どちらでも、ここは**ブロックを読むだけ**で、受け入れるかどうかは `state::mozc_shm::outcome_of` が決める。
+///
+/// 2つ目の戻り値（ADR-293 10節step3「観測の殻」）: `version >= 6` なら、`RawBlock`
+/// （1つ目の戻り値の`Reading.block`）と**同じ2段目のseqlock読みから**取った
+/// direct actuationの確認結果（`DirectActuationAck`、生の解釈）。`version < 6`・
+/// 2段目が読めない・1段目自体が読めないときは`None`。
 #[must_use]
-pub fn read(thread_id: u32, process_id: u32) -> (Reading, u32) {
+pub fn read(thread_id: u32, process_id: u32) -> (Reading, Option<DirectActuationAck>, u32) {
     let started = Instant::now();
-    let reading = read_inner(thread_id, process_id);
+    let (reading, ack) = read_inner(thread_id, process_id);
     let read_us = u32::try_from(started.elapsed().as_micros()).unwrap_or(u32::MAX);
-    (reading, read_us)
+    (reading, ack, read_us)
 }
 
 /// 共有メモリのハンドルを開く（通常のプロセスは `Local\`、開けなければ AppContainer の名前空間）。
@@ -145,11 +150,20 @@ fn open_handle(thread_id: u32, process_id: u32) -> (Route, Result<HANDLE, ReadFa
     }
 }
 
-fn read_inner(thread_id: u32, process_id: u32) -> Reading {
+fn read_inner(thread_id: u32, process_id: u32) -> (Reading, Option<DirectActuationAck>) {
     let (route, opened) = open_handle(thread_id, process_id);
-    Reading {
-        route,
-        block: opened.and_then(read_view),
+    match opened {
+        Ok(handle) => {
+            let (block, ack) = read_view(handle);
+            (Reading { route, block }, ack)
+        }
+        Err(e) => (
+            Reading {
+                route,
+                block: Err(e),
+            },
+            None,
+        ),
     }
 }
 
@@ -285,12 +299,40 @@ fn read_input_style_inner(handle: HANDLE, process_id: u32) -> Option<InputStyle>
     Some(InputStyle::parse(&full))
 }
 
-/// マップしたビューから seqlock の手順で 48 バイトを読み、ビューとハンドルを閉じる。
-fn read_view(handle: HANDLE) -> Result<RawBlock, ReadFailure> {
-    let bytes = read_bytes::<BLOCK_SIZE>(handle);
+/// マップしたビューから seqlock の手順で読み、ビューとハンドルを閉じる。
+///
+/// ADR-293 10節step3「観測の殻」: まず48バイトで`version`を確かめ（1段目）、`version >= 6`
+/// のときだけ`V6_BLOCK_SIZE`（176バイト）まで読み直す（2段目、[`read_focus_ticks_inner`]等と
+/// 同じ2段階の手順）。`RawBlock`と`DirectActuationAck`は、version 6が読めたときは**同じ2段目の
+/// 1回のseqlock読みから**取る（別々のOS呼び出しで食い違うスナップショットを混ぜない）。
+/// 2段目が読めない（またはversion < 6）ときは1段目の`RawBlock`をそのまま返し、
+/// `DirectActuationAck`は`None`。
+fn read_view(handle: HANDLE) -> (Result<RawBlock, ReadFailure>, Option<DirectActuationAck>) {
+    let result = read_view_inner(handle);
     // SAFETY: `handle` は呼び出し元が渡した有効なハンドルで、ここで 1 回だけ閉じる。
     let _ = unsafe { CloseHandle(handle) };
-    bytes.map(|b| RawBlock::parse(&b))
+    result
+}
+
+fn read_view_inner(handle: HANDLE) -> (Result<RawBlock, ReadFailure>, Option<DirectActuationAck>) {
+    let head = match read_bytes::<BLOCK_SIZE>(handle) {
+        Ok(h) => h,
+        Err(e) => return (Err(e), None),
+    };
+    let head_raw = RawBlock::parse(&head);
+    if head_raw.version < 6 {
+        return (Ok(head_raw), None);
+    }
+    // 2段目が読めない（seqlockの再試行を使い切った等）ときは、1段目の`RawBlock`で諦める
+    // ——`DirectActuationAck`なしは常に安全側（項目1に到達しない）。
+    read_bytes::<V6_BLOCK_SIZE>(handle).map_or((Ok(head_raw), None), |full| {
+        let mut first = [0u8; BLOCK_SIZE];
+        first.copy_from_slice(&full[..BLOCK_SIZE]);
+        (
+            Ok(RawBlock::parse(&first)),
+            Some(DirectActuationAck::parse(&full)),
+        )
+    })
 }
 
 /// ハンドルの先頭 `N` バイトを seqlock の手順で読む（ビューは閉じる。**ハンドルは閉じない**）。
