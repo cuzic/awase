@@ -216,13 +216,18 @@ impl super::Runtime {
         // Opusレビュー`opus-review-step2to6` M4: キルスイッチ(`direct_actuation_enabled`、
         // 既定false)が無効の間は、実際に読めていても常に`None`を渡し、`decide_chain`を
         // `CHAIN_GJI_ONLY`のまま保つ。
-        self.platform.set_mozc_direct_readiness(self.mozc_shm.direct_actuation_enabled.then(|| {
-            matches!(outcome, Outcome::Accepted(_))
-                .then(|| direct_ack)
-                .flatten()
-                .filter(|a| a.cmd_window_handle != 0)
-                .map(|a| (tid, pid, a.cmd_window_handle))
-        }).flatten());
+        self.platform.set_mozc_direct_readiness(
+            self.mozc_shm
+                .direct_actuation_enabled
+                .then(|| {
+                    matches!(outcome, Outcome::Accepted(_))
+                        .then(|| direct_ack)
+                        .flatten()
+                        .filter(|a| a.cmd_window_handle != 0)
+                        .map(|a| (tid, pid, a.cmd_window_handle))
+                })
+                .flatten(),
+        );
         // 読みの間隔が TTL（`MOZC_SHM_OBSERVATION_TTL_MS`）を超えたら記録する（TTL の見直しの材料。ADR-268）。
         let stamp_ms = crate::hook::current_tick_ms();
         if let Some(prev) = self.mozc_shm.last_read_ms {
@@ -295,25 +300,30 @@ impl super::Runtime {
                     );
                 }
             }
-            let (used, clear_own_send, unusable) = self.platform_state.ime.report_mozc_shm(
-                *shm,
-                raw.update_tick_ms,
-                now_ms,
-                baseline_ms,
-                ime_actuation_baseline_ms,
-                own_send,
-                ack,
-                (tid, pid),
-                crate::state::TickMs(now_ms),
-            );
+            let (used, clear_own_send, unusable, dead_path) =
+                self.platform_state.ime.report_mozc_shm(
+                    *shm,
+                    raw.update_tick_ms,
+                    now_ms,
+                    baseline_ms,
+                    ime_actuation_baseline_ms,
+                    own_send,
+                    ack,
+                    (tid, pid),
+                    crate::state::TickMs(now_ms),
+                );
             if clear_own_send {
                 crate::hook::clear_own_send();
             }
-            // ADR-293 10節step6: 「拒否時の収束」。ackが`Rejected`(または項目4でnonce有りの
-            // ままcap超過)と判定された(tid,pid)は、次のフォーカス変更まで`MozcDirect`を
-            // 使用不可にする(`decide_chain`/`mechanism_applicable`が`mozc_direct_ready`を
-            // 偽に見るようになる)——`evaluate_drift`は変更しない(3節R3のまま)。
-            if unusable {
+            // ADR-293 10節step6: 「拒否時の収束」。Opusレビュー`opus-review-step2to6` M5で
+            // 一時的な拒否と経路自体が死んでいる場合を分ける——前者(ackが`Rejected`)は
+            // 次のフォーカス変更まで`MozcDirect`を使用不可にするだけ(経路は生きている)。
+            // 後者(nonce有りのままackが一度もcapまで来なかった)はフォーカス変更では
+            // 復帰させず、`cmd_window_handle`が変わるまで止める(M5、付け外しの繰り返しで
+            // 操作を失い続ける事故を防ぐ)。`evaluate_drift`は変更しない(3節R3のまま)。
+            if dead_path {
+                self.platform.mark_mozc_direct_dead((tid, pid));
+            } else if unusable {
                 self.platform.mark_mozc_direct_unusable((tid, pid));
             }
             (

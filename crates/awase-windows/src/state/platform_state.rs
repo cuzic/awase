@@ -2430,12 +2430,19 @@ impl ImeStateHub {
     /// 実装された後も、awase自身が送信を試みなかった(own_send自体が無い)場合は`ack`も
     /// `None`のままで、`classify_own_request`項目1のnonce一致判定には到達しない(安全側)。
     ///
-    /// 戻り値の3つ目(`unusable`、10節step6「拒否時の収束」)は、`classify_own_request`が
-    /// `ConsumedUnusable`(項目1のack `Rejected`、または項目4でnonce有りのままcap超過)と
-    /// 判定したときだけ真——`nonce`無しの送信が単に遅いだけの`ClearNoOverride`は含まない
-    /// (direct actuation自体を使っていない送信のcap超過まで不使用にしない、round6 V3と
-    /// 同じ区別)。呼び出し元(`mozc_shm_shadow.rs`)が、この`(tid,pid)`を次のフォーカス変更まで
-    /// `mozc_direct_ready`を偽にする(`WindowsPlatform::mark_mozc_direct_unusable`)。
+    /// 戻り値の3つ目(`unusable`)・4つ目(`dead_path`、10節step6「拒否時の収束」、Opusレビュー
+    /// `opus-review-step2to6` M5で2つに分離)は、`classify_own_request`の判定に対応する:
+    /// - `ConsumedUnusable`(項目1のack `Rejected`、一時的な拒否)→ `unusable=true, dead_path=false`。
+    ///   経路は生きている(TIPが実際に応答した)ので、呼び出し元は次のフォーカス変更まで
+    ///   `mozc_direct_ready`を偽にするだけ(`WindowsPlatform::mark_mozc_direct_unusable`)。
+    /// - `ConsumedUnusableNoAck`(項目4でnonce有りのままcap超過、ackが一度も来なかった)→
+    ///   `unusable=true, dead_path=true`。経路自体が死んでいる(名前の不一致等)可能性が高いので、
+    ///   フォーカス変更では復帰させない(`WindowsPlatform::mark_mozc_direct_dead`、
+    ///   `cmd_window_handle`が変わるまで=forkの再起動等まで保持)。
+    /// - それ以外 → `unusable=false, dead_path=false`。`nonce`無しの送信が単に遅いだけの
+    ///   `ClearNoOverride`は含まない(direct actuation自体を使っていない送信のcap超過まで
+    ///   不使用にしない、round6 V3と同じ区別)。
+    ///
     /// `evaluate_drift`は変更しない(3節R3、失われた書き込みは諦めてユーザーの再入力に委ねる
     /// 既存方針のまま)。
     ///
@@ -2457,7 +2464,7 @@ impl ImeStateHub {
         ack: Option<crate::state::mozc_shm::OwnSendAck>,
         read_target: (u32, u32),
         tick_ms: TickMs,
-    ) -> (crate::state::mozc_shm::ShmUse, bool, bool) {
+    ) -> (crate::state::mozc_shm::ShmUse, bool, bool, bool) {
         use crate::state::mozc_shm::{classify_own_request, decide_use, OwnRequestVerdict, ShmUse};
         let effective = self.effective_open_at(tick_ms);
         let desired = self.shadow_model.desired_open();
@@ -2477,20 +2484,22 @@ impl ImeStateHub {
             last_mode_key_tick_ms,
             crate::tuning::MOZC_OPEN_CLOSE_SETTLE_MS,
         );
-        // ADR-293 10節step6: `ConsumedUnusable`(項目1のRejected、または項目4でnonce有りの
-        // ままcap超過)だけを「不使用」として呼び出し元へ伝え返す。`ClearNoOverride`
+        // ADR-293 10節step6(Opusレビュー`opus-review-step2to6` M5): `ConsumedUnusable`
+        // (項目1のRejected、一時的)と`ConsumedUnusableNoAck`(項目4でnonce有りのままcap超過、
+        // 経路自体が死んでいる)を分けて呼び出し元へ伝え返す。`ClearNoOverride`
         // (nonce無しの送信が単に遅いだけ)は含めない——direct actuation自体は使っていない
         // 送信(SendVk/ImmCross)のcap超過まで不使用にしてしまうと、無関係にdirect
         // actuationを使用不可にする(round6 V3と同じ区別)。
-        let (clear_own_send, pending, unusable) = match verdict {
-            OwnRequestVerdict::Unrelated => (false, false, false),
-            OwnRequestVerdict::ClearNoOverride => (true, false, false),
-            OwnRequestVerdict::ConsumedUnusable => (true, false, true),
+        let (clear_own_send, pending, unusable, dead_path) = match verdict {
+            OwnRequestVerdict::Unrelated => (false, false, false, false),
+            OwnRequestVerdict::ClearNoOverride => (true, false, false, false),
+            OwnRequestVerdict::ConsumedUnusable => (true, false, true, false),
+            OwnRequestVerdict::ConsumedUnusableNoAck => (true, false, true, true),
             OwnRequestVerdict::Consumed { disagree_floor_ms } => {
                 disagree_baseline_ms = disagree_baseline_ms.max(disagree_floor_ms);
-                (true, false, false)
+                (true, false, false, false)
             }
-            OwnRequestVerdict::Pending => (false, true, false),
+            OwnRequestVerdict::Pending => (false, true, false, false),
         };
         // Splitはown_sendの判定より常に優先する(5-2節冒頭、decide_use自身のSplit判定と同じ条件)。
         // Pendingは、読みがbeliefまたはdesiredと食い違うときだけHeldを強制する(上記doc、2-a・
@@ -2522,7 +2531,7 @@ impl ImeStateHub {
             self.demote_applied_for_mozc_shm_split(tick_ms);
         }
         let ShmUse::Use { open, disagrees } = decision else {
-            return (decision, clear_own_send, unusable);
+            return (decision, clear_own_send, unusable, dead_path);
         };
         let fence = self.shadow_model.observations.current_fence();
         self.dispatch_event(
@@ -2541,7 +2550,7 @@ impl ImeStateHub {
                 "[mozc-shm] follow external change open={open} effective_was={effective} desired_was={desired}"
             );
         }
-        (decision, clear_own_send, unusable)
+        (decision, clear_own_send, unusable, dead_path)
     }
 
     /// belief の根拠の解決（副作用なし）: `shadow_model` の解決と、`IntentStore` の上書き。`effective_open_at`（診断のログを出す）と
@@ -4297,7 +4306,7 @@ mod tests {
         use crate::state::mozc_shm::ShmUse;
         let mut ps = ps_with_open_intent_and_applied();
         // 基準（awase の最後の操作）= 100。update_tick 5000 > 100 → 操作より後に変わった事実。
-        let (used, _, _) = ps.ime.report_mozc_shm(
+        let (used, _, _, _) = ps.ime.report_mozc_shm(
             mozc_shm_state(false),
             5000,
             5100,
@@ -4333,7 +4342,7 @@ mod tests {
     fn report_mozc_shm_holds_a_read_right_after_an_operation() {
         use crate::state::mozc_shm::ShmUse;
         let mut ps = ps_with_open_intent_and_applied();
-        let (used, _, _) = ps.ime.report_mozc_shm(
+        let (used, _, _, _) = ps.ime.report_mozc_shm(
             mozc_shm_state(false),
             100,
             110,
@@ -4357,7 +4366,7 @@ mod tests {
         let mut ps = ps_with_open_intent_and_applied();
         let mut split = mozc_shm_state(false);
         split.effective_open = true;
-        let (used, _, _) =
+        let (used, _, _, _) =
             ps.ime
                 .report_mozc_shm(split, 5000, 5100, 100, 0, None, None, (0, 0), TickMs(5100));
         assert_eq!(used, ShmUse::Split);
@@ -4450,7 +4459,7 @@ mod tests {
     fn report_mozc_shm_agreeing_read_keeps_the_explicit_intent() {
         use crate::state::mozc_shm::ShmUse;
         let mut ps = ps_with_open_intent_and_applied();
-        let (used, _, _) = ps.ime.report_mozc_shm(
+        let (used, _, _, _) = ps.ime.report_mozc_shm(
             mozc_shm_state(true),
             5000,
             5100,
@@ -4484,7 +4493,7 @@ mod tests {
         // ime_actuation_baseline_ms(G3)もbaselineと同じ値を渡し、last_mode_key_tick_ms(=100、
         // ps_with_open_intent_and_appliedが明示意図をtick=100で記録済み)より大きくして、
         // disagree_baseline_msがこのテストの意図どおりbaseline(1000)になるようにする。
-        let (held, _, _) = ps.ime.report_mozc_shm(
+        let (held, _, _, _) = ps.ime.report_mozc_shm(
             mozc_shm_state(false),
             900,
             baseline + settle - 1,
@@ -4497,7 +4506,7 @@ mod tests {
         );
         assert_eq!(held, ShmUse::Held);
         assert_eq!(ps.ime.explicit_intent(), Some(true));
-        let (used, _, _) = ps.ime.report_mozc_shm(
+        let (used, _, _, _) = ps.ime.report_mozc_shm(
             mozc_shm_state(false),
             900,
             baseline + settle,
@@ -4539,7 +4548,7 @@ mod tests {
         };
         // now=400: SEND_TICK_MSから200ms経過(旧170ms settleは過ぎている)。Mozcはまだopen=true
         // のまま(古い値、処理待ち)。
-        let (used, clear_own_send, _) = ps.ime.report_mozc_shm(
+        let (used, clear_own_send, _, _) = ps.ime.report_mozc_shm(
             mozc_shm_state(true),
             150, // update_tick_ms(送信前からの値、送信後に更新されていない)
             400,
@@ -4587,7 +4596,7 @@ mod tests {
             pid: 22,
             nonce: None,
         };
-        let (used, clear_own_send, unusable) = ps.ime.report_mozc_shm(
+        let (used, clear_own_send, unusable, dead_path) = ps.ime.report_mozc_shm(
             mozc_shm_state(true),
             150,
             SEND_TICK_MS + cap,
@@ -4616,6 +4625,55 @@ mod tests {
              「不使用」にしない(round6 V3と同じ区別——このConsumedUnusableを返すのはnonce有り \
              のときだけ、ClearNoOverrideはunusableに数えない)"
         );
+        assert!(!dead_path, "ClearNoOverrideはdead_pathにも数えない");
+    }
+
+    /// Opusレビュー`opus-review-step2to6` M5: nonce有りの送信にackが一度もcapまで来なかったら
+    /// (項目4の`ConsumedUnusableNoAck`)、`unusable`と`dead_path`の両方が真になる——
+    /// 一時的な拒否(`ConsumedUnusable`、`dead_path=false`)とは区別する。呼び出し元は
+    /// この区別で、フォーカス変更だけでは復帰させない「経路が死んでいる」マークを使う。
+    #[test]
+    fn report_mozc_shm_nonce_without_ack_at_cap_expiry_marks_dead_path() {
+        use crate::state::mozc_shm::{OwnSend, ShmUse};
+        const SEND_TICK_MS: u64 = 200;
+        let cap = crate::tuning::MOZC_OPEN_CLOSE_SETTLE_MS;
+        let mut ps = ps_with_closed_intent_and_applied_at(SEND_TICK_MS);
+        let own_send = OwnSend {
+            open: false,
+            tick_ms: SEND_TICK_MS,
+            tid: 11,
+            pid: 22,
+            nonce: Some(7),
+        };
+        let (used, clear_own_send, unusable, dead_path) = ps.ime.report_mozc_shm(
+            mozc_shm_state(true),
+            150,
+            SEND_TICK_MS + cap,
+            SEND_TICK_MS,
+            SEND_TICK_MS,
+            Some(own_send),
+            None,
+            (11, 22),
+            TickMs(SEND_TICK_MS + cap),
+        );
+        assert_eq!(
+            used,
+            ShmUse::Use {
+                open: true,
+                disagrees: true
+            },
+            "capを超えたら従来の170ms判定にそのまま落ち、書き込みが失われた事実として追随する"
+        );
+        assert!(clear_own_send, "cap超過はown_sendを消す(項目4)");
+        assert!(
+            unusable,
+            "nonce有りのままackが一度も来なければ「不使用」を伝え返す(round6 V3)"
+        );
+        assert!(
+            dead_path,
+            "ackが一度も来ないcap超過は、フォーカス変更では復帰しない「経路が死んでいる」 \
+             マークとして区別する(M5)"
+        );
     }
 
     /// ADR-293 10節step6(拒否時の収束): nonce有りの送信にackが`Rejected`(`applied: false`)
@@ -4643,7 +4701,7 @@ mod tests {
         // 残る判断は通常の170ms判定にそのまま落ちる(フロアは立てない)ことを確かめるため、
         // 通常判定でも食い違いを受理する時刻を選ぶ(cap内だとdecide_useの通常Heldと混同する)。
         let now_ms = SEND_TICK_MS + 200;
-        let (used, clear_own_send, unusable) = ps.ime.report_mozc_shm(
+        let (used, clear_own_send, unusable, dead_path) = ps.ime.report_mozc_shm(
             mozc_shm_state(true),
             150,
             now_ms,
@@ -4668,6 +4726,11 @@ mod tests {
             "ack Rejectedは「不使用」を呼び出し元へ伝え返す(10節step6、次のフォーカス変更まで \
              MozcDirectを使わせない判断の材料)"
         );
+        assert!(
+            !dead_path,
+            "ack Rejectedは経路が生きている証拠なので、dead_pathには数えない(M5)——フォーカス \
+             変更で復帰させてよい"
+        );
     }
 
     /// own_send.openと一致する読み(Mozcが実際にOFFへ切り替わった最初の読み)は項目2で消費され、
@@ -4686,7 +4749,7 @@ mod tests {
             nonce: None,
         };
         // Mozcが実際にOFFへ切り替わった後の読み(update_tick_ms(300) > send.tick_ms(200))。
-        let (used, clear_own_send, _) = ps.ime.report_mozc_shm(
+        let (used, clear_own_send, _, _) = ps.ime.report_mozc_shm(
             mozc_shm_state(false),
             300,
             400,
@@ -4732,7 +4795,7 @@ mod tests {
             pid: 22,
             nonce: None,
         };
-        let (used, clear_own_send, _) = ps.ime.report_mozc_shm(
+        let (used, clear_own_send, _, _) = ps.ime.report_mozc_shm(
             mozc_shm_state(true), // Mozcはまだopen=trueのまま(effectiveと一致、desiredとは不一致)
             250,
             350,

@@ -572,10 +572,17 @@ pub enum OwnRequestVerdict {
     /// `own_send`を消し、disagree判定の起点を`disagree_floor_ms`へ引き上げる（項目2:
     /// 送信**後**に読んだ、`own_send.open`と一致する読み）。
     Consumed { disagree_floor_ms: u64 },
-    /// `own_send`を消し、呼び出し元へ「direct actuationは使用不可」を伝える（項目1で`Rejected`、
-    /// または項目4で`nonce`有りのままcap超過、round6 V3。いずれも「失われた書き込みは諦める」
-    /// 現実追随の方針どおりで、フロアは立てない)。
+    /// `own_send`を消し、呼び出し元へ「direct actuationは使用不可(一時的な拒否)」を伝える
+    /// （項目1でack `Rejected`、フロアは立てない)。TIPが明示的に拒否を返した場合であり、
+    /// フォーカスが変われば再試行してよい(Opusレビュー`opus-review-step2to6` M5、
+    /// `ConsumedUnusableNoAck`とは区別する——拒否は経路が生きている証拠)。
     ConsumedUnusable,
+    /// `own_send`を消し、呼び出し元へ「direct actuationの経路自体が死んでいる」を伝える
+    /// （項目4で`nonce`有りのままcap超過、ackが一度も来なかった、round6 V3）。TIPから
+    /// 一度もackが届かない(名前の不一致・forkが対応していない等)ことを示すため、
+    /// フォーカス変更では復帰させない——同じ`cmd_window_handle`へ送り続けても同じ結果に
+    /// なると見込まれる(Opusレビュー`opus-review-step2to6` M5)。
+    ConsumedUnusableNoAck,
     /// `own_send`は保持したまま、読みを保留する（項目3、既存の[`ShmUse::Held`]に対応）。
     Pending,
 }
@@ -585,8 +592,9 @@ pub enum OwnRequestVerdict {
 /// **項目1(ADR-293 10節step2で復元、nonce+ackの確認)**: `own_send.nonce`が`Some`で、
 /// `ack`が同じnonceへの確認を運んでいるとき、`ack.applied`が真なら消して
 /// `disagree_floor_ms = ack.update_tick_ms`(項目2と同じ`Consumed`)、偽(拒否)なら消して
-/// 「不使用」を返す(フロアは立てない、失われた書き込みは諦める方針どおり、項目4の
-/// `ConsumedUnusable`と同じ扱い)。`ack`が`None`、または`ack.nonce`が`own_send.nonce`と
+/// 「不使用(一時的な拒否)」を返す(`ConsumedUnusable`、フロアは立てない、失われた書き込みは
+/// 諦める方針どおり。項目4の`ConsumedUnusableNoAck`〈ackが一度も来ない=経路自体が死んでいる〉
+/// とは区別する、Opusレビュー`opus-review-step2to6` M5)。`ack`が`None`、または`ack.nonce`が`own_send.nonce`と
 /// 違う(まだ来ていない、または古いnonceへの確認)なら、この項目は適用せず項目2へ進む。
 /// direct postの送信経路(5-1節、10節step4〜5)自体はこのPRには無いため、実際の送信経路からは
 /// `own_send.nonce`・`ack`とも常に`None`——この項目が実際のデータで到達するのは、その送信経路が
@@ -672,7 +680,7 @@ pub const fn classify_own_request(
         // 実際の送信経路(10節step4〜5)が無い間はnonceが常にNoneなので、この枝は常に
         // ClearNoOverrideになる。
         return if send.nonce.is_some() {
-            OwnRequestVerdict::ConsumedUnusable
+            OwnRequestVerdict::ConsumedUnusableNoAck
         } else {
             OwnRequestVerdict::ClearNoOverride
         };
@@ -1879,15 +1887,17 @@ mod tests {
     }
 
     /// 項目4とnonceの組み合わせ: nonceを持つ送信にackが一度も来ないままcapへ達したら、`ClearNoOverride`
-    /// ではなく`ConsumedUnusable`を返す(round6 V3、item1が復元されたことでnonce有りの入力が
+    /// ではなく`ConsumedUnusableNoAck`を返す(round6 V3、item1が復元されたことでnonce有りの入力が
     /// 単体テストで実際に到達できるようになった——(h)のnonce無しケースと対になる境界)。
+    /// `ConsumedUnusable`(項目1のack `Rejected`)とは別の変種になる(Opusレビュー
+    /// `opus-review-step2to6` M5: 前者は経路が死んでいる、後者は一時的な拒否で区別が要る)。
     #[test]
-    fn classify_own_request_item4_nonce_without_ack_at_cap_expiry_is_consumed_unusable() {
+    fn classify_own_request_item4_nonce_without_ack_at_cap_expiry_is_consumed_unusable_no_ack() {
         let send = own_send_with_nonce(false, 0, 42);
         assert_eq!(
             classify_own_request(Some(send), None, (11, 22), true, 2000, 2000, None, 2000),
-            OwnRequestVerdict::ConsumedUnusable,
-            "nonceがあるのにackがcapまで来なければ、direct actuationを不使用と判定する"
+            OwnRequestVerdict::ConsumedUnusableNoAck,
+            "nonceがあるのにackがcapまで来なければ、direct actuationの経路自体が死んでいると判定する"
         );
     }
 

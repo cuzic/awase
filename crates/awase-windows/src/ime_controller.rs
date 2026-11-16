@@ -273,7 +273,7 @@ const MOZC_DIRECT_ACTUATION_MESSAGE_NAME: windows::core::PCWSTR =
 
 /// ADR-293([BUG-234](../../../docs/known-bugs/BUG-234.md)) 10節step5: `WriteMechanism::MozcDirect`
 /// の送信の殻。`view.focus.mozc_direct_cmd_window_handle`(version 6共有メモリが公開する
-/// `cmd_window_handle`)へ、[`MOZC_DIRECT_ACTUATION_MESSAGE_NAME`](mozc-readable forkの
+/// `cmd_window_handle`)へ、`MOZC_DIRECT_ACTUATION_MESSAGE_NAME`(mozc-readable forkの
 /// `MOZC_BUILD`側の名前)でnonce付きのopen/close要求を`PostMessageW`する。
 ///
 /// **ackは待たない**（この関数は同期・非ブロッキング）。要求の成否確認（閉ループ）は、
