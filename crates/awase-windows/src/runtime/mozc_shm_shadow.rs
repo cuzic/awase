@@ -183,6 +183,12 @@ impl super::Runtime {
         let Some((tid, pid)) = self.platform.mozc_target() else {
             return (None, None);
         };
+        // ADR-293 10節step6: 「フォーカス変更まで不使用」フラグ(`mark_mozc_direct_unusable`)は
+        // フォーカスが変わったら解除する——対象が変わらなければ拒否の結論は変わらないはずなので、
+        // 同じ(tid,pid)のままでは解除しない。
+        if focus_changed {
+            self.platform.clear_mozc_direct_unusable();
+        }
 
         // 開けなかった窓は、フォーカスが変わるまで読まない（ADR-268 D1）。
         if !focus_changed && self.mozc_shm.absent_for == Some((tid, pid)) {
@@ -277,7 +283,7 @@ impl super::Runtime {
                     );
                 }
             }
-            let (used, clear_own_send) = self.platform_state.ime.report_mozc_shm(
+            let (used, clear_own_send, unusable) = self.platform_state.ime.report_mozc_shm(
                 *shm,
                 raw.update_tick_ms,
                 now_ms,
@@ -290,6 +296,13 @@ impl super::Runtime {
             );
             if clear_own_send {
                 crate::hook::clear_own_send();
+            }
+            // ADR-293 10節step6: 「拒否時の収束」。ackが`Rejected`(または項目4でnonce有りの
+            // ままcap超過)と判定された(tid,pid)は、次のフォーカス変更まで`MozcDirect`を
+            // 使用不可にする(`decide_chain`/`mechanism_applicable`が`mozc_direct_ready`を
+            // 偽に見るようになる)——`evaluate_drift`は変更しない(3節R3のまま)。
+            if unusable {
+                self.platform.mark_mozc_direct_unusable((tid, pid));
             }
             (
                 shm.effective_mode.map(|mode| (mode, raw.update_tick_ms)),
