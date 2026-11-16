@@ -74,8 +74,15 @@ status: |-
   実際のPostMessageW送信経路は未検証、R2-8でも同じ指摘、11節に前提条件として明記した)。
   (c) mozc-readable fork側のイベント駆動な改修(5-3節)は、ステージ4/5の拒否率データが
   出るまで着手しない方針のまま変更なし。(d) L3(ackログの`latency_ms`がほぼ`None`)は
-  round2 R2-9でも「実測を始める前に直すのが望ましい」と再指摘されたが、優先度低として
-  今回も対応を見送った。
+  round2 R2-9で対応済み(`hook::last_issued_direct_actuation_nonce_tick_ms`へのフォール
+  バック、`b0d3951ae`)——ADR本文に「見送った」と書いていたのは、この文書のコミット
+  (`91944597e`)がR2-9の実装コミットより先に作られたための誤記で、round3 R3-2で訂正した。
+  (e) round3で見つかった軽微な残課題: プロセス全体の回路遮断(round2 R2-2/R2-3)の解除は
+  「遮断の原因になった窓のブロックを再読みすること」に依存するため、窓Aがハング/
+  Mozcが2秒超える遅延を起こした直後にユーザーが窓Bへ移ると、Aに戻るまでどの窓でも
+  MozcDirectが使われない(安全側だが、計測段階ではデータ収集が止まる、R3-1)。遮断・
+  解除にログを追加したが、半開状態(一定時間後に1回だけ試す)は未実装のまま次タスクへ
+  見送った。
 related_adr: ["ADR-089", "ADR-163", "ADR-171", "ADR-191", "ADR-208", "ADR-241", "ADR-265", "ADR-268", "ADR-291", "ADR-292"]
 ---
 
@@ -803,9 +810,32 @@ R2-2(M5の「経路が死んでいる」判定が`(tid,pid,cmd_window_handle)`�
 に変えて修正。R2-4(本ADR・BUG-234.mdの古い記述・誤記)はこの編集で反映した。**M2
 (`explicit_press.rs`の全列挙モデルへのMozcDirect軸追加)はround2でも一部解消のまま
 (モデル未対応)**——R2-5のとおり、既定を有効化する前提条件として11節6番に明記した。
-R2-9(L3、ackログの`latency_ms`がほぼ`None`)は今回も対応を見送った。**未解決のまま残る
-既知の限界**は11節6番、status frontmatter参照(全列挙モデルの軸未対応・実機/CIでのack
-往復未検証)。
+R2-9(L3、ackログの`latency_ms`がほぼ`None`)は`hook::last_issued_direct_actuation_nonce_tick_ms`
+(新設)へのフォールバックで対応した(`b0d3951ae`)。**未解決のまま残る既知の限界**は11節6番、
+status frontmatter参照(全列挙モデルの軸未対応・実機/CIでのack往復未検証)。
+
+**`opus-review-step2to6` round3の再確認で見つかった指摘への対応**: R2-1(nonceの再シード)・
+R2-2(窓を跨いだ付け外し)・R2-3(大筋、後述)・R2-4(文書の古い記述)・R2-5/R2-8(11節への
+前提条件の明記)・R2-9(latency)は解消と判定された。致命的・要修正の指摘は無く、残りは
+すべて軽微(R3-1〜R3-4):
+- **R3-1**: 回路遮断の解除は、forkからの本物のackが「遮断の原因になった窓」に届いてawaseが
+  それを読むことに依存する(`mozc_shm_read_once`はフォーカス中の窓のブロックしか読まない)。
+  窓Aが一時的にハングした/Mozcが2秒超えて遅延した直後にユーザーが窓Bへ移ると、Aへ戻るまで
+  どの窓でもMozcDirectが使われない——安全側(GjiDirect+step1のcap)だが、キルスイッチを
+  入れて拒否率/遅延を計測する段階ではデータ収集が止まる。半開状態の実装は見送り、
+  遮断が立った時(`warn`、原因のnonce・対象を添える)と解除された時(`info`)のログ追加のみ
+  対応した(`WindowsPlatform::mark_mozc_direct_circuit_broken`/
+  `clear_mozc_direct_circuit_broken_if_alive`)。
+- **R3-2**: 本ADRのfrontmatter・806行付近に残っていた「R2-9(L3)は見送った」という誤記
+  (R2-9の実装コミット`b0d3951ae`より先にドキュメントコミット`91944597e`が作られたため)を
+  訂正した。
+- **R3-3**: R2-1で追加したテスト(`hook.rs`の`next_direct_actuation_nonce_seeds_and_tracks_last_issued`)
+  は`#[cfg(windows)]`配下のためLinux上の`cargo test`には現れない。`cargo check --target
+  x86_64-pc-windows-msvc -p awase-windows --tests --lib`でコンパイルを確認した。
+- **R3-4**: `next_direct_actuation_nonce()`が`PostMessageW`の成否を問わず`last_issued`を
+  発行時点で更新していた点を分離した。`next_direct_actuation_nonce()`はnonceの発行のみ、
+  新設した`note_direct_actuation_posted(nonce)`を`apply_mozc_direct`の`Ok(())`分岐でだけ
+  呼ぶことで、「送ったnonce」という名前の意味を保つようにした。
 
 ## 11. 今後の判断が必要な点
 
