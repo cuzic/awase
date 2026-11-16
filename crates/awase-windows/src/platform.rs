@@ -51,7 +51,18 @@ pub struct WindowsPlatform {
     /// (`decide_chain`/`mechanism_applicable`がMozcDirectを使わなくなる)。
     /// `mark_mozc_direct_unusable`で立て、次のフォーカス変更(`mozc_shm_shadow.rs`の
     /// `focus_changed`)で`clear_mozc_direct_unusable`が解除する。
+    ///
+    /// **一時的な拒否(ack `Rejected`)専用**(Opusレビュー`opus-review-step2to6` M5)。
+    /// 「ackが一度も来ない(経路自体が死んでいる)」場合は`mozc_direct_dead_for`を使う——
+    /// 両者を同じフラグで扱うと、名前の不一致等で経路が死んでいる場合もフォーカス変更の
+    /// たびに再試行→2秒Held→失敗、を繰り返してしまう(1回ごとに操作1回分の損失)。
     mozc_direct_unusable_for: Option<(u32, u32)>,
+    /// ADR-293 10節step6(Opusレビュー`opus-review-step2to6` M5): 「nonce有りの送信にackが
+    /// 一度も来ないままcap超過」(`(tid,pid)`, その時点の`cmd_window_handle`)。
+    /// `mozc_direct_unusable_for`と異なり、フォーカス変更では解除しない——`cmd_window_handle`
+    /// が変わる(forkの再起動・TIPの再初期化等、`set_mozc_direct_readiness`が検知する)まで、
+    /// 同じ対象への再試行自体を止める。
+    mozc_direct_dead_for: Option<(u32, u32, u64)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -106,6 +117,7 @@ impl WindowsPlatform {
             pending_first_literal: None,
             mozc_direct: None,
             mozc_direct_unusable_for: None,
+            mozc_direct_dead_for: None,
         }
     }
 
@@ -1272,6 +1284,16 @@ impl WindowsPlatform {
     /// ("まだ窓が無い")・version 6未満・読めなかったときは`None`)。読むたびに
     /// 無条件で上書きする(`mozc_shm.polling`等と同じ、古い値を残さない)。
     pub(crate) fn set_mozc_direct_readiness(&mut self, target: Option<(u32, u32, u64)>) {
+        // Opusレビュー`opus-review-step2to6` M5: `cmd_window_handle`が変わったら(forkの
+        // 再起動・TIPの再初期化等、新しい窓の登録)、同じ(tid,pid)の「経路が死んでいる」
+        // マークを解除する——古いhandle宛の死亡判定を新しいhandleに persist させない。
+        if let (Some((dead_tid, dead_pid, dead_handle)), Some((tid, pid, handle))) =
+            (self.mozc_direct_dead_for, target)
+        {
+            if dead_tid == tid && dead_pid == pid && dead_handle != handle {
+                self.mozc_direct_dead_for = None;
+            }
+        }
         self.mozc_direct = target;
     }
 
@@ -1279,22 +1301,28 @@ impl WindowsPlatform {
     /// (`cmd_window_handle`)が分かっているか。`(tid,pid)`が`mozc_target()`と一致しない
     /// (フォーカスが変わった直後、まだ新しい値が来ていない)ときは`None`——古いスレッド宛の
     /// 宛先を使わない。10節step6: この対象が`mark_mozc_direct_unusable`で「使用不可」
-    /// マークされている間も`None`(次のフォーカス変更まで、拒否時の収束)。
+    /// マークされている間も`None`(次のフォーカス変更まで、一時的な拒否)。Opusレビュー
+    /// `opus-review-step2to6` M5: 同じ`cmd_window_handle`が`mark_mozc_direct_dead`で
+    /// 「経路が死んでいる」マークを受けている間も`None`(handleが変わるまで)。
     #[must_use]
     pub(crate) fn mozc_direct_target(&self) -> Option<u64> {
         let target @ (tid, pid) = self.mozc_target()?;
         if self.mozc_direct_unusable_for == Some(target) {
             return None;
         }
-        self.mozc_direct
+        let handle = self
+            .mozc_direct
             .filter(|&(t, p, _)| t == tid && p == pid)
-            .map(|(_, _, handle)| handle)
+            .map(|(_, _, handle)| handle)?;
+        if self.mozc_direct_dead_for == Some((tid, pid, handle)) {
+            return None;
+        }
+        Some(handle)
     }
 
-    /// ADR-293 10節step6: `(tid,pid)`をdirect actuation使用不可にする
-    /// (`report_mozc_shm`が`ConsumedUnusable`を返したとき、呼び出し元
-    /// `mozc_shm_shadow.rs`経由)。次のフォーカス変更まで`mozc_direct_target()`が
-    /// この対象に対して`None`を返す。
+    /// ADR-293 10節step6: `(tid,pid)`をdirect actuation使用不可にする(一時的な拒否、
+    /// `report_mozc_shm`が`ConsumedUnusable`を返したとき、呼び出し元`mozc_shm_shadow.rs`
+    /// 経由)。次のフォーカス変更まで`mozc_direct_target()`がこの対象に対して`None`を返す。
     pub(crate) fn mark_mozc_direct_unusable(&mut self, target: (u32, u32)) {
         self.mozc_direct_unusable_for = Some(target);
     }
@@ -1303,6 +1331,21 @@ impl WindowsPlatform {
     /// (`mozc_shm_shadow.rs`が`focus_changed`のときに呼ぶ)。
     pub(crate) fn clear_mozc_direct_unusable(&mut self) {
         self.mozc_direct_unusable_for = None;
+    }
+
+    /// Opusレビュー`opus-review-step2to6` M5: `(tid,pid)`への direct actuationの経路自体が
+    /// 死んでいるとマークする(`report_mozc_shm`が`ConsumedUnusableNoAck`を返したとき、
+    /// nonce有りの送信にackが一度もcapまで来なかった)。現在の`cmd_window_handle`(この
+    /// 対象について既知なら)と対にして記録し、そのhandleが変わるまで(`set_mozc_direct_readiness`
+    /// 経由)`mozc_direct_target()`がこの対象に対して`None`を返す——フォーカス変更では
+    /// 復帰しない(名前の不一致のような構造的な配線ミスで、再試行しても同じ結果になると
+    /// 見込まれるため)。
+    pub(crate) fn mark_mozc_direct_dead(&mut self, target: (u32, u32)) {
+        let handle = self
+            .mozc_direct
+            .filter(|&(t, p, _)| t == target.0 && p == target.1)
+            .map_or(0, |(_, _, handle)| handle);
+        self.mozc_direct_dead_for = Some((target.0, target.1, handle));
     }
 
     /// 同一フォーカスプローブ内で取得済みの process_name を再利用して更新する。
