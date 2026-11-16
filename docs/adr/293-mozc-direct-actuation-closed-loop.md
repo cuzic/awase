@@ -43,7 +43,27 @@ status: |-
   戻してしまう欠陥があったため、`decide_use`の`disagrees`と同じ条件(`effective`または
   `desired`と食い違う)に揃えた。N3(項目2の`read_update_tick_ms > send.tick_ms`は必要条件で
   十分条件ではない)はADRの書き方を訂正、L1〜L5(doc精度・読み側の式の統一・ログ追加)も反映。
-  N1/N2を反映したround3のレビューで収束を確認中。
+  N1/N2を反映したround3のレビューで収束を確認し、`opus-review-pr941`は軽微な指摘(R1〜R3、
+  文面精度のみ)を反映して完了(PR #941、develop未マージ)。2026-11-15、同じブランチの先端から
+  10節step2〜6(classify_own_requestのack確認復元・観測の殻・WriteMechanism::MozcDirectの
+  機構追加と送信の殻・拒否時の収束)を実装し`exp/mozc-direct-actuation-step2`へpush。
+  この実装一式を別のOpusレビュー(`opus-review-step2to6`)に出したところ、**致命的指摘C1**
+  (mozc-readable forkの実OSSビルドが使う登録ウィンドウメッセージ名
+  `mozcreadable.direct_actuation.message`と、実装が使っていた
+  `googlejapaneseinput.direct_actuation.message`が不一致——direct postが全て黙って
+  捨てられ、BUG-234の当の環境ではstep1単独より症状が悪化する)が見つかった。あわせて
+  要修正6件(M1: nonceが起動ごとに1から振り直され前回プロセスのackと一致しうる、M2:
+  自動リピートのたびにdirect postが積まれる想定漏れ、M3: 新しい書き込み口がlint/guardに
+  未登録、M4: 実験的機構に既定オフの手段が無い、M5: 一時的な拒否と経路が死んでいる場合の
+  混同、M6: ADR/BUG文書が実装に追随していない)も指摘された。**C1・M1〜M5は反映済み**
+  (登録メッセージ名の修正・nonceのtick時刻シード・lint/guardへの登録・
+  `[diagnostics] mozc_direct_actuation`既定オフキルスイッチの追加・一時的拒否と
+  経路死亡の分離)。本frontmatterの更新(M6)はこの時点のもの。**未解決のまま残る既知の
+  限界**: (a) `explicit_press.rs`の全列挙モデルが`mozc_direct_ready`の軸を持たず、
+  ADR-208 L1の不変条件がMozcDirect先頭のチェーンでモデル上は未検証(11節6番)。(b) C1の
+  修正自体は実機・CIでのack往復をまだ一度も通していない(8節1番の遅延注入CIは機構の動作
+  確認のみで、実際のPostMessageW送信経路は未検証)。(c) mozc-readable fork側のイベント
+  駆動な改修(5-3節)は、ステージ4/5の拒否率データが出るまで着手しない方針のまま変更なし。
 related_adr: ["ADR-089", "ADR-163", "ADR-171", "ADR-191", "ADR-208", "ADR-241", "ADR-265", "ADR-268", "ADR-291", "ADR-292"]
 ---
 
@@ -730,6 +750,24 @@ Zの`Explicit claim`fence・`decide_use`双方への適用——これにより*
 
 **本PRに含まない(別タスク)**: mozc-readable fork側のイベント駆動な`kNoFocusedContext`遅延
 (5-3節、ステージ5の拒否率データが出たら着手)。
+
+**実装状況(2026-11-15、`exp/mozc-direct-actuation-step2`、`opus-review-step2to6`の指摘を
+反映済み)**: step2(classify_own_requestの項目1復元)・step3(観測の殻)・step4+5(機構追加+
+送信の殻、1コミットに統合——`decide_attempt`のmatch式の網羅性の都合で分けると中間状態が
+コンパイルを通らないため)・step6(拒否時の収束)をすべて実装した。致命的指摘C1(登録
+ウィンドウメッセージ名がforkの実OSSビルド`mozcreadable.direct_actuation.message`と
+不一致だった)を修正し、`MOZC_DIRECT_ACTUATION_MESSAGE_NAME`としてconst化・forkの
+ビルド分岐をdocに明記した。要修正の指摘もすべて反映: M1(nonceを`current_tick_ms()`から
+再シード)・M2(MozcDirect armに`gji_direct_already_matches`と同じ省略を追加、自動リピートの
+連打を抑制。9節R1-iiの判断を反転・ME-3 golden再生成)・M3
+(`lints/actuation_call_guard::RESTRICTED_CALLS`と`architecture_guard.rs`に
+`apply_mozc_direct`/`PostMessageW(Some(..))`を登録)・M4(`[diagnostics]
+mozc_direct_actuation`、既定falseのキルスイッチを追加)・M5(`OwnRequestVerdict`を
+`ConsumedUnusable`〈一時的な拒否〉と`ConsumedUnusableNoAck`〈経路が死んでいる〉に分離、
+`WindowsPlatform::mozc_direct_dead_for`を新設)。軽微な指摘のうちL1(step2の設計逸脱は
+妥当と判定済み)はそのまま、L2〜L6(冗長スタンプの削除・非同期チェーンでの到達不能性の
+固定・doc精度等)は本PRでは対応していない。**未解決のまま残る既知の限界**は11節6番、
+status frontmatter参照(全列挙モデルの軸未対応・実機/CIでのack往復未検証)。
 
 ## 11. 今後の判断が必要な点
 
