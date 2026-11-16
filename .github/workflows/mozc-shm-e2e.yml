@@ -14,7 +14,7 @@ name: mozc-shm-e2e
 
 on:
   push:
-    branches: [ci/mozc-shm-e2e, ci/mozc-shm-e2e2, ci/bug234-publish-delay]
+    branches: [ci/mozc-shm-e2e, ci/mozc-shm-e2e2, ci/bug234-publish-delay, ci/directact-real]
   workflow_dispatch:
 
 permissions:
@@ -77,6 +77,9 @@ jobs:
             delay: 700
           - scenario: bug234
             delay: 2000
+          # [ADR-293 10節] awase 本体の実送信経路(apply_mozc_direct)が、本物の mozc-readable
+          # フォーク(exp/direct-actuation-channel、version 6 nonce/ack)と実際に ack 往復するかを測る。
+          - scenario: directact-real
     steps:
       - uses: actions/checkout@v4
       - name: mozc-readable の CI の部品(AppContainer 用)
@@ -94,8 +97,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # bug234 は遅延注入の入った exp/open-close-publish-delay の MSI を使う。
-          $branch = if ('${{ matrix.scenario }}' -eq 'bug234') { 'exp/open-close-publish-delay' } else { 'readable' }
+          # bug234 は遅延注入の入った exp/open-close-publish-delay、directact-real は
+          # version 6 nonce/ack の入った exp/direct-actuation-channel の MSI を使う。
+          $branch = switch ('${{ matrix.scenario }}') {
+            'bug234' { 'exp/open-close-publish-delay' }
+            'directact-real' { 'exp/direct-actuation-channel' }
+            default { 'readable' }
+          }
           $run = gh run list -R cuzic/mozc-readable --workflow readable-build.yaml --branch $branch --status success --limit 1 --json databaseId --jq '.[0].databaseId'
           Write-Host "mozc-readable readable-build run: $run"
           gh run download $run -R cuzic/mozc-readable -n Mozc64_x64.msi -D msi
