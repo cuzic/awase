@@ -2437,8 +2437,11 @@ impl ImeStateHub {
     ///   `mozc_direct_ready`を偽にするだけ(`WindowsPlatform::mark_mozc_direct_unusable`)。
     /// - `ConsumedUnusableNoAck`(項目4でnonce有りのままcap超過、ackが一度も来なかった)→
     ///   `unusable=true, dead_path=true`。経路自体が死んでいる(名前の不一致等)可能性が高いので、
-    ///   フォーカス変更では復帰させない(`WindowsPlatform::mark_mozc_direct_dead`、
-    ///   `cmd_window_handle`が変わるまで=forkの再起動等まで保持)。
+    ///   **プロセス全体**を回路遮断する(`WindowsPlatform::mark_mozc_direct_circuit_broken`、
+    ///   round2 R2-2。窓単位だと窓を行き来するたびに再発した)。解除は、forkからの本物のackを
+    ///   1回でも観測したとき(`WindowsPlatform::clear_mozc_direct_circuit_broken_if_alive`、
+    ///   round2 R2-3)のみ——`cmd_window_handle`の変化では解除しない(Mozcが単に遅かった
+    ///   だけの場合に永久除外されてしまうため)。
     /// - それ以外 → `unusable=false, dead_path=false`。`nonce`無しの送信が単に遅いだけの
     ///   `ClearNoOverride`は含まない(direct actuation自体を使っていない送信のcap超過まで
     ///   不使用にしない、round6 V3と同じ区別)。

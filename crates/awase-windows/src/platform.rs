@@ -46,23 +46,34 @@ pub struct WindowsPlatform {
     /// 照合してから使う——フォーカスが変わった直後、古いスレッド宛の値を誤って使わない。
     mozc_direct: Option<(u32, u32, u64)>,
     /// ADR-293 10節step6(拒否時の収束): `report_mozc_shm`が`classify_own_request`の
-    /// `ConsumedUnusable`(ackの`Rejected`、またはnonce有りのままcap超過)を見た`(tid,pid)`。
+    /// `ConsumedUnusable`(ackの`Rejected`、**一時的な拒否**)を見た`(tid,pid)`。
     /// `mozc_direct_target()`はこの対象と一致する間`None`を返す
     /// (`decide_chain`/`mechanism_applicable`がMozcDirectを使わなくなる)。
     /// `mark_mozc_direct_unusable`で立て、次のフォーカス変更(`mozc_shm_shadow.rs`の
     /// `focus_changed`)で`clear_mozc_direct_unusable`が解除する。
     ///
     /// **一時的な拒否(ack `Rejected`)専用**(Opusレビュー`opus-review-step2to6` M5)。
-    /// 「ackが一度も来ない(経路自体が死んでいる)」場合は`mozc_direct_dead_for`を使う——
-    /// 両者を同じフラグで扱うと、名前の不一致等で経路が死んでいる場合もフォーカス変更の
-    /// たびに再試行→2秒Held→失敗、を繰り返してしまう(1回ごとに操作1回分の損失)。
+    /// 「ackが一度も来ない(経路自体が死んでいる)」場合は`mozc_direct_circuit_broken`
+    /// (プロセス全体、round2 R2-2)を使う——両者を同じフラグで扱うと、名前の不一致等で
+    /// 経路が死んでいる場合もフォーカス変更のたびに再試行→2秒Held→失敗、を繰り返して
+    /// しまう(1回ごとに操作1回分の損失)。
     mozc_direct_unusable_for: Option<(u32, u32)>,
-    /// ADR-293 10節step6(Opusレビュー`opus-review-step2to6` M5): 「nonce有りの送信にackが
-    /// 一度も来ないままcap超過」(`(tid,pid)`, その時点の`cmd_window_handle`)。
-    /// `mozc_direct_unusable_for`と異なり、フォーカス変更では解除しない——`cmd_window_handle`
-    /// が変わる(forkの再起動・TIPの再初期化等、`set_mozc_direct_readiness`が検知する)まで、
-    /// 同じ対象への再試行自体を止める。
-    mozc_direct_dead_for: Option<(u32, u32, u64)>,
+    /// ADR-293 10節step6(Opusレビュー`opus-review-step2to6` M5→round2 R2-2):
+    /// 「nonce有りの送信にackが一度も来ないままcap超過」をプロセス全体の回路遮断として
+    /// 持つ(窓の`(tid,pid)`単位ではない)。round1は`(tid,pid,cmd_window_handle)`の
+    /// 単一スロットで持っていたが、窓A→窓B→窓Aのように複数の窓を行き来すると
+    /// 新しいマークが前のマークを上書きしてしまい、行き来するたびに「使用可能→2秒Held→
+    /// 失敗→使用不可」を繰り返して操作を失い続ける事故が起きていた(round2 R2-2)。
+    /// 名前の不一致やワイヤー不一致のような原因はプロセス全体に効くので、
+    /// プロセス全体で止めるほうが原因に合っている。
+    ///
+    /// round2 R2-3: 解除は`cmd_window_handle`の変化ではなく、forkからの本物のack
+    /// (`last_cmd_nonce`が`hook::last_issued_direct_actuation_nonce()`と一致、結果を
+    /// 問わない)を1回でも観測したときに行う——「経路が生きている証拠」を見た時点で
+    /// 遮断する理由が消えるため。`cmd_window_handle`の変化だけを解除条件にすると、
+    /// Mozcが単に遅かっただけ(cap直後に本物のackが`Applied`で届く)の場合でも、
+    /// そのアプリのプロセスが終わるまで永久にMozcDirectを使わなくなってしまう。
+    mozc_direct_circuit_broken: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -117,7 +128,7 @@ impl WindowsPlatform {
             pending_first_literal: None,
             mozc_direct: None,
             mozc_direct_unusable_for: None,
-            mozc_direct_dead_for: None,
+            mozc_direct_circuit_broken: false,
         }
     }
 
@@ -1283,17 +1294,11 @@ impl WindowsPlatform {
     /// 更新する(`(tid, pid, cmd_window_handle)`。`cmd_window_handle == 0`
     /// ("まだ窓が無い")・version 6未満・読めなかったときは`None`)。読むたびに
     /// 無条件で上書きする(`mozc_shm.polling`等と同じ、古い値を残さない)。
+    ///
+    /// round2 R2-2でプロセス全体の回路遮断(`mozc_direct_circuit_broken`)に変えたため、
+    /// ここで`cmd_window_handle`の変化を見て解除する処理は無くなった——解除は
+    /// `clear_mozc_direct_circuit_broken_if_alive`(forkからの本物のackを見たとき)だけが行う。
     pub(crate) fn set_mozc_direct_readiness(&mut self, target: Option<(u32, u32, u64)>) {
-        // Opusレビュー`opus-review-step2to6` M5: `cmd_window_handle`が変わったら(forkの
-        // 再起動・TIPの再初期化等、新しい窓の登録)、同じ(tid,pid)の「経路が死んでいる」
-        // マークを解除する——古いhandle宛の死亡判定を新しいhandleに persist させない。
-        if let (Some((dead_tid, dead_pid, dead_handle)), Some((tid, pid, handle))) =
-            (self.mozc_direct_dead_for, target)
-        {
-            if dead_tid == tid && dead_pid == pid && dead_handle != handle {
-                self.mozc_direct_dead_for = None;
-            }
-        }
         self.mozc_direct = target;
     }
 
@@ -1302,22 +1307,20 @@ impl WindowsPlatform {
     /// (フォーカスが変わった直後、まだ新しい値が来ていない)ときは`None`——古いスレッド宛の
     /// 宛先を使わない。10節step6: この対象が`mark_mozc_direct_unusable`で「使用不可」
     /// マークされている間も`None`(次のフォーカス変更まで、一時的な拒否)。Opusレビュー
-    /// `opus-review-step2to6` M5: 同じ`cmd_window_handle`が`mark_mozc_direct_dead`で
-    /// 「経路が死んでいる」マークを受けている間も`None`(handleが変わるまで)。
+    /// `opus-review-step2to6` round2 R2-2: プロセス全体が回路遮断(`mozc_direct_circuit_broken`)
+    /// されている間も`None`(窓を問わない)。
     #[must_use]
     pub(crate) fn mozc_direct_target(&self) -> Option<u64> {
+        if self.mozc_direct_circuit_broken {
+            return None;
+        }
         let target @ (tid, pid) = self.mozc_target()?;
         if self.mozc_direct_unusable_for == Some(target) {
             return None;
         }
-        let handle = self
-            .mozc_direct
+        self.mozc_direct
             .filter(|&(t, p, _)| t == tid && p == pid)
-            .map(|(_, _, handle)| handle)?;
-        if self.mozc_direct_dead_for == Some((tid, pid, handle)) {
-            return None;
-        }
-        Some(handle)
+            .map(|(_, _, handle)| handle)
     }
 
     /// ADR-293 10節step6: `(tid,pid)`をdirect actuation使用不可にする(一時的な拒否、
@@ -1333,19 +1336,32 @@ impl WindowsPlatform {
         self.mozc_direct_unusable_for = None;
     }
 
-    /// Opusレビュー`opus-review-step2to6` M5: `(tid,pid)`への direct actuationの経路自体が
-    /// 死んでいるとマークする(`report_mozc_shm`が`ConsumedUnusableNoAck`を返したとき、
-    /// nonce有りの送信にackが一度もcapまで来なかった)。現在の`cmd_window_handle`(この
-    /// 対象について既知なら)と対にして記録し、そのhandleが変わるまで(`set_mozc_direct_readiness`
-    /// 経由)`mozc_direct_target()`がこの対象に対して`None`を返す——フォーカス変更では
-    /// 復帰しない(名前の不一致のような構造的な配線ミスで、再試行しても同じ結果になると
-    /// 見込まれるため)。
-    pub(crate) fn mark_mozc_direct_dead(&mut self, target: (u32, u32)) {
-        let handle = self
-            .mozc_direct
-            .filter(|&(t, p, _)| t == target.0 && p == target.1)
-            .map_or(0, |(_, _, handle)| handle);
-        self.mozc_direct_dead_for = Some((target.0, target.1, handle));
+    /// Opusレビュー`opus-review-step2to6` M5→round2 R2-2: direct actuationの経路自体が
+    /// 死んでいると判定し、**プロセス全体**を回路遮断する(`report_mozc_shm`が
+    /// `ConsumedUnusableNoAck`を返したとき、nonce有りの送信にackが一度もcapまで来なかった、
+    /// 呼び出し元`mozc_shm_shadow.rs`経由)。round1は`(tid,pid,cmd_window_handle)`単位の
+    /// 単一スロットで持っていたが、窓を行き来するたびに前の窓のマークが上書きされ、
+    /// 行き来するたびに操作を失い続ける事故があった(round2 R2-2)。名前の不一致や
+    /// ワイヤー不一致のような原因はプロセス全体に効くので、プロセス全体で止める方が
+    /// 原因に合っている。解除は`clear_mozc_direct_circuit_broken_if_alive`のみ。
+    pub(crate) fn mark_mozc_direct_circuit_broken(&mut self) {
+        self.mozc_direct_circuit_broken = true;
+    }
+
+    /// Opusレビュー`opus-review-step2to6` round2 R2-3: forkからの本物のack
+    /// (`ack_nonce`が自分の発行した最後のnonceと一致、結果〈`Applied`/`Rejected`〉を
+    /// 問わない)を1回でも観測したら、回路遮断を解除する——「経路が生きている証拠」を
+    /// 見た時点で、遮断する理由(経路が死んでいるという判定)が成り立たなくなるため。
+    /// `cmd_window_handle`の変化だけを解除条件にすると、Mozcが単に遅かっただけ(cap直後に
+    /// 本物のackが`Applied`で届く)の場合でも、そのアプリのプロセスが終わるまで永久に
+    /// MozcDirectを使わなくなってしまう(round2 R2-3が指摘した新しい固着)。
+    pub(crate) fn clear_mozc_direct_circuit_broken_if_alive(&mut self, ack_nonce: Option<u32>) {
+        if !self.mozc_direct_circuit_broken {
+            return;
+        }
+        if ack_nonce.is_some_and(|n| n == crate::hook::last_issued_direct_actuation_nonce()) {
+            self.mozc_direct_circuit_broken = false;
+        }
     }
 
     /// 同一フォーカスプローブ内で取得済みの process_name を再利用して更新する。
