@@ -1075,12 +1075,42 @@ def cmd_directact_real(args):
     win = Window(w, "DirectActReal", "DirectActReal")
     win.cls = "Chrome_WidgetWin_1"  # AppImeProfile::from_class_name が Imm32Unavailable と誤認するように偽装する
     win.create()
+
+    def dump_v6(tid, label):
+        """awase を介さず、この合成窓の v6 ブロック(176 バイト)を直接読む(切り分け用、directact-precheck と同じ手口)。"""
+        import struct
+        h = w.k32.OpenFileMappingW(4, False, f"Local\\mozc-readable-ime-{tid}")
+        if not h:
+            print(f"v6-dump[{label}]: OpenFileMappingW failed (no block for tid={tid})")
+            return None
+        v = w.k32.MapViewOfFile(h, 4, 0, 0, 176)
+        if not v:
+            print(f"v6-dump[{label}]: MapViewOfFile failed")
+            return None
+        b = ctypes.string_at(v, 176)
+        version = struct.unpack_from("<I", b, 4)[0]
+        cmd_hwnd = struct.unpack_from("<Q", b, 168)[0]
+        nonce, result = struct.unpack_from("<2I", b, 160)
+        print(f"v6-dump[{label}]: version={version} cmd_window_handle={cmd_hwnd} last_cmd_nonce={nonce} last_cmd_result={result}")
+        return {"version": version, "cmd_window_handle": cmd_hwnd}
+
     with open(args.events, "w", encoding="utf-8") as f:
         for i in range(args.trials):
             if not win.set_open(1):
                 emit({"ev": "setup_failed", "trial": i})
                 continue
             w.pump(args.settle)
+            if i == 0:
+                # 最初の trial だけ、cmd_window_handle が公開されるまで最大 10 秒様子を見る
+                # (Activate直後の最初のPublishまで0のまま、というレビュー時の既知の挙動の確認)。
+                deadline = time.time() + 10
+                while time.time() < deadline:
+                    blk = dump_v6(win.tid, f"trial{i}-poll")
+                    if blk and blk["cmd_window_handle"] != 0:
+                        break
+                    w.pump(0.5)
+            else:
+                dump_v6(win.tid, f"trial{i}")
             # win.focus() は EDIT 子窓(クラス名固定の "Edit")へ SetFocus する(他の場面と共有するため
             # 変更しない)。この場面は窓そのもの(偽装した Chrome_WidgetWin_1)を focused window として
             # awase に読ませる必要があるため、EDIT ではなくトップレベル窓へ明示的に SetFocus し直す
