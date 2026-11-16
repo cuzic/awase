@@ -1144,7 +1144,7 @@ def cmd_directact_real_analyze(args):
                 acks.append({"nonce": int(nonce), "result": result, "latency_ms": latency})
     for a in acks:
         print(json.dumps(a))
-    applied = [a for a in acks if a["result"] == "Some(Applied)"]
+    applied = [a for a in acks if a["result"] == "Applied"]
     summary = {
         "total_acks": len(acks),
         "applied": len(applied),
