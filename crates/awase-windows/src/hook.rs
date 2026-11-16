@@ -89,6 +89,12 @@ struct HookState {
     /// ADR-293 10節step5: 次に発行するdirect actuationのnonce(0を跳ばす単調増加カウンタ、
     /// `next_direct_actuation_nonce`)。
     direct_actuation_nonce_counter: AtomicU32,
+    /// Opusレビュー`opus-review-step2to6` round2 R2-3: 最後に発行したdirect actuation
+    /// のnonce(`own_send`と違い、`classify_own_request`に消費されても消えない)。
+    /// `0` = まだ1件も発行していない。forkからのackがこの値と一致したら「経路は生きている」
+    /// 証拠として、プロセス全体の回路遮断(`WindowsPlatform::mozc_direct_circuit_broken`)を
+    /// 解除する判定に使う(`mozc_shm_shadow.rs`)。
+    last_issued_direct_actuation_nonce: AtomicU32,
     /// `install_hook` がフックスレッドからの TID 通知を待つスロット。
     /// 0 = 待機中、`u32::MAX` = `SetWindowsHookExW` 失敗、それ以外 = フックスレッド TID。
     hook_tid_init_slot: AtomicU32,
@@ -190,7 +196,8 @@ impl HookState {
             own_send_tid: AtomicU32::new(0),
             own_send_pid: AtomicU32::new(0),
             own_send_nonce: AtomicU32::new(0),
-            direct_actuation_nonce_counter: AtomicU32::new(1),
+            direct_actuation_nonce_counter: AtomicU32::new(0),
+            last_issued_direct_actuation_nonce: AtomicU32::new(0),
             hook_tid_init_slot: AtomicU32::new(0),
             physical_key_state: [const { AtomicBool::new(false) }; 256],
             physical_key_down_at_ms: [const { AtomicU64::new(0) }; 256],
@@ -445,18 +452,23 @@ pub(crate) fn clear_own_send() {
 /// ADR-293 10節step5: 次のdirect actuation要求に使うnonceを発行する(0以外のu32、
 /// `shared-memory.md` 6-5節のワイヤー定義どおり単調増加。呼ぶたびに違う値)。
 ///
-/// カウンタは固定値1からではなく、起動ごとに`current_tick_ms()`から再シードする
-/// (Opusレビューround1 M1)。`direct_actuation_nonce_counter`は`const fn new()`の
-/// static初期値(コンパイル時定数)なので、固定値1からでは**毎回同じ値から**始まり、
-/// 再起動後の最初のdirect postが、前回プロセスが同じスレッド(=同じmozc-readable
-/// forkのTIP)に残した`last_cmd_nonce`(forkはプロセス再起動で消えない、TIP側の状態)と
-/// 一致しうる——`classify_own_request`項目1が前回のackを「今回の送信への確認」と
-/// 誤認し、BUG-234を別経路で再発させるおそれがある。`current_tick_ms()`はテストでは
-/// 仮想時計を返すため、シード自体の決定性はテストに影響しない。
+/// カウンタは固定値からではなく、起動ごとに`current_tick_ms()`から再シードする
+/// (Opusレビューround1 M1、round2 R2-1で初期値の食い違いを修正)。
+/// `direct_actuation_nonce_counter`の`static`初期値は**0**(`AtomicU32::new(0)`)——
+/// 0はワイヤー上も「無効なnonce」なので、このカウンタの「まだシードしていない」を
+/// 表す安全な番兵として使える(`fetch_add`は0から始まる限りループ内で0を返さない)。
+/// 初期値を1のような非0定数にすると、直後の`compare_exchange(0, …)`が常に失敗して
+/// シードが一度も実行されなくなる(round2 R2-1で実際に発生した回帰)——固定値からの
+/// 起動のたびに、再起動後の最初のdirect postが、前回プロセスが同じスレッド
+/// (=同じmozc-readable forkのTIP)に残した`last_cmd_nonce`(forkはプロセス再起動で
+/// 消えない、TIP側の状態)と一致しうる——`classify_own_request`項目1が前回のackを
+/// 「今回の送信への確認」と誤認し、BUG-234を別経路で再発させるおそれがある。
+/// `current_tick_ms()`はテストでは仮想時計を返すため、シード自体の決定性はテストに
+/// 影響しない。
 pub(crate) fn next_direct_actuation_nonce() -> u32 {
-    // 初回呼び出し(カウンタがまだ0)だけ、現在時刻由来の値でシードし直す。失敗(既に
-    // 他のスレッドがシード済み/既に送信済み)は無視して通常の増分へ進む——0以外の
-    // 値を返すという契約には影響しない。
+    // 初回呼び出し(カウンタがまだ未シードの0)だけ、現在時刻由来の値でシードし直す。
+    // 失敗(既に他のスレッドがシード済み/既に送信済み)は無視して通常の増分へ進む——
+    // 0以外の値を返すという契約には影響しない。
     let seed = (current_tick_ms() as u32) | 1;
     let _ = HOOK_STATE.direct_actuation_nonce_counter.compare_exchange(
         0,
@@ -469,9 +481,27 @@ pub(crate) fn next_direct_actuation_nonce() -> u32 {
             .direct_actuation_nonce_counter
             .fetch_add(1, Ordering::Relaxed);
         if n != 0 {
+            HOOK_STATE
+                .last_issued_direct_actuation_nonce
+                .store(n, Ordering::Relaxed);
             return n;
         }
     }
+}
+
+/// Opusレビュー`opus-review-step2to6` round2 R2-3: 最後に`next_direct_actuation_nonce()`が
+/// 発行したnonce(`0` = まだ発行していない)。forkから読んだackの`last_cmd_nonce`がこの値と
+/// 一致するなら、direct actuationの経路(メッセージ名・ワイヤーフォーマット)が実際に
+/// forkまで届いて応答を返したという「生きている証拠」になる——結果(`Applied`/`Rejected`)を
+/// 問わない。`own_send`(単一スロット、`classify_own_request`に消費されると消える)とは別に
+/// 持つ必要がある: cap超過でプロセス全体の回路遮断(`WindowsPlatform::
+/// mozc_direct_circuit_broken`)が立った後、`own_send`はすでに消えているが、それより後に
+/// 届いた本物のackをまだ「生きている証拠」として検出できるようにするため。
+#[must_use]
+pub(crate) fn last_issued_direct_actuation_nonce() -> u32 {
+    HOOK_STATE
+        .last_issued_direct_actuation_nonce
+        .load(Ordering::Relaxed)
 }
 
 fn hook_tid_reset() {
@@ -2111,3 +2141,47 @@ fn now_timestamp() -> Timestamp {
 
 // alt_impersonation_tests は state::alt_impersonation::tests へ移設した
 // （既存5件 + 新規の網羅テーブルテスト2件、ADR-082 決定1実施記録の次の一歩）。
+
+#[cfg(test)]
+mod direct_actuation_nonce_tests {
+    use super::*;
+
+    /// round2 R2-1/R2-3: `direct_actuation_nonce_counter`の静的初期値が0でないと、
+    /// `compare_exchange(0, seed, …)`が一度も成立せず再シードが死ぬ(round1の
+    /// M1修正が実際には実行されない回帰、Opusレビューround2で発見)。`hook.rs`はこの
+    /// クレートの唯一の呼び出し元(`ime_controller.rs::apply_mozc_direct`)が本物の
+    /// Windows HWNDを要求するため他のテストから`next_direct_actuation_nonce()`を呼ぶ
+    /// 経路が無く、このテストが本テストバイナリ内で唯一の呼び出し元になる(`HOOK_STATE`は
+    /// プロセス全体で1つの`static`なので、他の呼び出し元が無いことがこのテストの
+    /// 決定性の前提)——このため、シード確認と`last_issued_direct_actuation_nonce`の
+    /// 確認を同じ呼び出し列の中で**1つのテスト**として順番に行う(2つのテストに分けると、
+    /// cargo testのデフォルトの並列実行で同じ`static`カウンタへの呼び出しが競合し、
+    /// どちらかが「初回呼び出し」の前提を満たせなくなる)。
+    #[test]
+    fn next_direct_actuation_nonce_seeds_and_tracks_last_issued() {
+        let _clock = crate::clock::freeze();
+        crate::clock::advance(123_456);
+        let expected_seed = (current_tick_ms() as u32) | 1;
+        let first = next_direct_actuation_nonce();
+        assert_eq!(
+            first, expected_seed,
+            "初回呼び出しはcurrent_tick_ms()|1からシードされるはず(静的初期値が\
+             0でないとcompare_exchangeが成立せずこのシードが効かない、round2 R2-1)"
+        );
+        assert_eq!(last_issued_direct_actuation_nonce(), first);
+
+        let second = next_direct_actuation_nonce();
+        assert_eq!(second, expected_seed + 1, "2回目以降は単調増加するだけ");
+        assert_eq!(last_issued_direct_actuation_nonce(), second);
+
+        // round2 R2-3: own_sendは`classify_own_request`の消費で消えるが、発行済み
+        // nonceの記録は独立したフィールドなので影響を受けないはず(cap超過後の回路遮断を
+        // 解除する判定が、消費済みのown_sendに頼らず済むようにするための前提)。
+        clear_own_send();
+        assert_eq!(
+            last_issued_direct_actuation_nonce(),
+            second,
+            "own_sendを消しても発行済みnonceの記録は残るはず(R2-3の前提)"
+        );
+    }
+}
