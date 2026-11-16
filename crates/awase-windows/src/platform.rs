@@ -39,6 +39,12 @@ pub struct WindowsPlatform {
     pending_giveup: Option<crate::tsf::literal_facts::GiveUpEvidence>,
     /// ADR-258 段階0: 1回目の literal 疑いの証拠(runtime が journal に記録するだけ。arm しない)。
     pending_first_literal: Option<crate::tsf::literal_facts::FirstLiteralEvidence>,
+    /// ADR-293 10節step4: direct actuationの宛先(`(tid, pid, cmd_window_handle)`)。
+    /// `runtime/mozc_shm_shadow.rs`がversion 6ブロックを読むたびに
+    /// `set_mozc_direct_readiness`で更新する(読まなかった・`cmd_window_handle == 0`の
+    /// ときは`None`)。`mozc_direct_target()`が`mozc_target()`と同じ`(tid,pid)`かを
+    /// 照合してから使う——フォーカスが変わった直後、古いスレッド宛の値を誤って使わない。
+    mozc_direct: Option<(u32, u32, u64)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +97,7 @@ impl WindowsPlatform {
             giveup_tracker: crate::tsf::literal_facts::GiveUpTracker::default(),
             pending_giveup: None,
             pending_first_literal: None,
+            mozc_direct: None,
         }
     }
 
@@ -1136,6 +1143,9 @@ impl WindowsPlatform {
         // ADR-293(BUG-234): OwnSendのスタンプ先(`apply_mechanism`はOSから自前取得しない、
         // round6 V4-2)。
         let mozc_target = self.mozc_target();
+        // ADR-293 10節step4: direct actuationの宛先(`cmd_window_handle`)。読めていなければ
+        // `None`(= `mozc_direct_ready` も偽、`decide_chain`はCHAIN_GJI_ONLYのまま変えない)。
+        let mozc_direct_cmd_window_handle = self.mozc_direct_target();
         crate::state::ImeControlView {
             focus: crate::state::FocusFacts {
                 class_name,
@@ -1145,6 +1155,7 @@ impl WindowsPlatform {
                 // async 経路が `ActuationTarget::capture(focus_gen)` に渡すのと同じ値。
                 focus_gen: self.output.ime_mode_focus_gen.get(),
                 mozc_target,
+                mozc_direct_cmd_window_handle,
             },
             observed: crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs()),
             control: crate::state::ControlLog { shadow_on },
@@ -1246,6 +1257,26 @@ impl WindowsPlatform {
         }
         let tid = crate::observer::mozc_shm::thread_of_window(hwnd_addr);
         (tid != 0).then_some((tid, pid))
+    }
+
+    /// ADR-293 10節step4: `mozc_shm_shadow.rs`が読んだdirect actuationの宛先を
+    /// 更新する(`(tid, pid, cmd_window_handle)`。`cmd_window_handle == 0`
+    /// ("まだ窓が無い")・version 6未満・読めなかったときは`None`)。読むたびに
+    /// 無条件で上書きする(`mozc_shm.polling`等と同じ、古い値を残さない)。
+    pub(crate) fn set_mozc_direct_readiness(&mut self, target: Option<(u32, u32, u64)>) {
+        self.mozc_direct = target;
+    }
+
+    /// ADR-293 10節step4: 現在のフォーカス(`mozc_target()`)向けのdirect actuation宛先
+    /// (`cmd_window_handle`)が分かっているか。`(tid,pid)`が`mozc_target()`と一致しない
+    /// (フォーカスが変わった直後、まだ新しい値が来ていない)ときは`None`——古いスレッド宛の
+    /// 宛先を使わない。
+    #[must_use]
+    pub(crate) fn mozc_direct_target(&self) -> Option<u64> {
+        let (tid, pid) = self.mozc_target()?;
+        self.mozc_direct
+            .filter(|&(t, p, _)| t == tid && p == pid)
+            .map(|(_, _, handle)| handle)
     }
 
     /// 同一フォーカスプローブ内で取得済みの process_name を再利用して更新する。

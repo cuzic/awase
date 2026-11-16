@@ -183,6 +183,7 @@ fn focus_then_engine_on(class: &str, profile: AppImeProfile) -> (bool, bool) {
         model.applied.applied_open(),
         InputModeState::Unknown,
         false,
+        false,
     );
     let (_, command) = decide_attempt(inputs, DecisionSite::Sync, WriteMechanism::GjiDirect, true);
     (mirrored, command.is_some())

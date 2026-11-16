@@ -63,6 +63,11 @@ pub(crate) fn mechanism_applicable(mechanism: WriteMechanism, inputs: DecisionIn
         WriteMechanism::ImmCross => key_sequence_policy::imm_cross_applicable(inputs.profile),
         WriteMechanism::GjiDirect => key_sequence_policy::gji_direct_applicable(inputs.kind),
         WriteMechanism::MsImeDirect => key_sequence_policy::ms_ime_direct_applicable(inputs.kind),
+        // ADR-293 10節step4（round2 R1-i）: 不適用な機構はここでチェーンから除外する
+        // （`decide_attempt`は適用可能なら常に`Some`を返すだけで、already-matched判定を
+        // 持たない）。`decide_chain`自体が`mozc_direct_ready`のときだけ`MozcDirect`を
+        // チェーンへ挿入するため、ここは`decide_chain`と矛盾しないよう同じ入力をそのまま見る。
+        WriteMechanism::MozcDirect => inputs.mozc_direct_ready,
     }
 }
 
@@ -84,6 +89,12 @@ pub(crate) fn imm_cross_is_first_applicable(inputs: DecisionInputs) -> bool {
 /// 殻は真のとき `tsf::observer::reset_candidate_was_seen()` を呼ぶ（次回 apply が同じ証拠を再度読む BUG-113 型の
 /// 二重送信を防ぐ）。GJI が実際に候補ウィンドウを閉じたことの確認は待たない（1 回の証拠につき再送は 1 回、
 /// ADR-171 round4 M4）。
+/// ADR-293 10節step4: `MozcDirect`のOFF方向成功（送信の殻が`AppliedWithoutSendInput`を
+/// 返す、ADR-293 9節「検討したが不採用」1番——`Pending`等の新variantは作らず既存の
+/// `AppliedWithoutSendInput`を再利用する）も、`GjiDirect`/`SendVk`/`Applied`と同じ理由
+/// （ADR-171）で候補ウィンドウ再表示の証拠を消費する。`GjiDirect`はVK送信の成否が
+/// `Applied`、`MozcDirect`は実SendInputを伴わない成否が`AppliedWithoutSendInput`と、
+/// 機構ごとに「成功」を示すoutcomeが違う点だけが非対称（10節step4コメント参照）。
 #[must_use]
 pub(crate) const fn consumes_candidate_evidence(
     mechanism: WriteMechanism,
@@ -91,10 +102,20 @@ pub(crate) const fn consumes_candidate_evidence(
     open: bool,
     outcome: ImeOpenOutcome,
 ) -> bool {
-    matches!(mechanism, WriteMechanism::GjiDirect)
-        && !open
-        && matches!(command, Some(MechanismCommand::SendVk(_)))
-        && matches!(outcome, ImeOpenOutcome::Applied)
+    if open {
+        return false;
+    }
+    match mechanism {
+        WriteMechanism::GjiDirect => {
+            matches!(command, Some(MechanismCommand::SendVk(_)))
+                && matches!(outcome, ImeOpenOutcome::Applied)
+        }
+        WriteMechanism::MozcDirect => {
+            matches!(command, Some(MechanismCommand::DirectActuate(_)))
+                && matches!(outcome, ImeOpenOutcome::AppliedWithoutSendInput)
+        }
+        WriteMechanism::ImmCross | WriteMechanism::MsImeDirect => false,
+    }
 }
 
 /// 同期チェーンの writer（旧 `ime_controller.rs::SyncChainWriter`）。
@@ -429,7 +450,14 @@ mod tests {
     }
 
     fn inputs(profile: AppImeProfile, kind: ImeKindId, shadow_on: Option<bool>) -> DecisionInputs {
-        DecisionInputs::from_facts(profile, kind, shadow_on, InputModeState::Unknown, false)
+        DecisionInputs::from_facts(
+            profile,
+            kind,
+            shadow_on,
+            InputModeState::Unknown,
+            false,
+            false,
+        )
     }
 
     fn hub() -> ImeStateHub {
@@ -584,6 +612,53 @@ mod tests {
             false,
             ImeOpenOutcome::Applied
         ));
+    }
+
+    /// ADR-293 10節step4: `MozcDirect`のOFF方向成功は`GjiDirect`と同じ理由(ADR-171)で
+    /// 候補ウィンドウ再表示の証拠を消費するが、成功を示すoutcomeが`Applied`ではなく
+    /// `AppliedWithoutSendInput`(実SendInputを伴わない)である点が`GjiDirect`と違う。
+    #[test]
+    fn candidate_evidence_is_consumed_by_a_direct_actuated_mozc_direct_off() {
+        let direct = Some(MechanismCommand::DirectActuate(false));
+        let mozc_direct = WriteMechanism::MozcDirect;
+        assert!(consumes_candidate_evidence(
+            mozc_direct,
+            direct,
+            false,
+            ImeOpenOutcome::AppliedWithoutSendInput
+        ));
+        // Applied(GjiDirectの成功outcome)ではMozcDirectは消費しない——機構ごとに
+        // 「成功」を示すoutcomeが違う(10節step4コメント参照)。
+        assert!(!consumes_candidate_evidence(
+            mozc_direct,
+            direct,
+            false,
+            ImeOpenOutcome::Applied
+        ));
+        // open方向は消費しない。
+        assert!(!consumes_candidate_evidence(
+            mozc_direct,
+            Some(MechanismCommand::DirectActuate(true)),
+            true,
+            ImeOpenOutcome::AppliedWithoutSendInput
+        ));
+        // Failedでは消費しない(フォールスルーする失敗)。
+        assert!(!consumes_candidate_evidence(
+            mozc_direct,
+            direct,
+            false,
+            ImeOpenOutcome::Failed
+        ));
+    }
+
+    /// ADR-293 10節step4: `MozcDirect`の適用可否は`inputs.mozc_direct_ready`そのもの
+    /// (round2 R1-i、不適用ならチェーンから除外)。
+    #[test]
+    fn mechanism_applicable_for_mozc_direct_follows_mozc_direct_ready() {
+        let mut i = inputs(AppImeProfile::TsfNative, ImeKindId::Gji, None);
+        assert!(!mechanism_applicable(WriteMechanism::MozcDirect, i));
+        i.mozc_direct_ready = true;
+        assert!(mechanism_applicable(WriteMechanism::MozcDirect, i));
     }
 
     // ── apply_sync ──────────────────────────────────────────────────

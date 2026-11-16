@@ -62,7 +62,13 @@ use super::event_origin::{EventOrigin, EventSource, Generation};
 use super::ime_actuation_decision::{DecisionInputs, DecisionSite, MechanismCommand};
 
 /// ADR-163 D2: `WriteMechanism::ALL`と同じ最大attempt数。
-pub const MAX_WRITE_MECHANISMS: usize = 3;
+///
+/// ADR-293 10節step4（round3 S6）: `MozcDirect`の追加で3→4。以後`WriteMechanism`に
+/// 機構を追加するときもこの値を見直すこと——下のアサーションが、増やし忘れて
+/// `WriteMechanism::ALL.len()`がこれを超えた場合にビルドを失敗させる。
+pub const MAX_WRITE_MECHANISMS: usize = 4;
+
+const _: () = assert!(WriteMechanism::ALL.len() <= MAX_WRITE_MECHANISMS);
 
 /// `Option<Option<bool>>` の3値（未記録／記録済みだが値不明／記録済みで既知）を
 /// `{"recorded":bool,"value":Option<bool>}` という常に固定サイズのオブジェクトへ
@@ -726,6 +732,9 @@ mod tests {
                         WriteMechanism::MsImeDirect => {
                             key_sequence_policy::ms_ime_direct_applicable(record.gate_inputs.kind)
                         }
+                        // ADR-293 10節step4: `sync_actuation::mechanism_applicable`と同じ
+                        // (`inputs.mozc_direct_ready`そのもの)。
+                        WriteMechanism::MozcDirect => record.gate_inputs.mozc_direct_ready,
                     }
                 } else {
                     *mechanism != WriteMechanism::ImmCross
@@ -806,6 +815,7 @@ mod tests {
             shadow_on,
             belief_input_mode,
             candidate_was_seen: false,
+            mozc_direct_ready: false,
         }
     }
 
@@ -905,7 +915,7 @@ mod tests {
             "site": "Sync",
             "gate_inputs": {"profile":"Standard","kind":"Gji","shadow_on":null,"belief_input_mode":"Unknown"},
             "order": {"open":true,"would_have_blocked":false,"origin":{"source":"Physical","epoch":0}},
-            "chain": ["ImmCross","GjiDirect","MsImeDirect","ImmCross"],
+            "chain": ["ImmCross","GjiDirect","MsImeDirect","MozcDirect","ImmCross"],
             "attempts": [],
             "caller": null
         }"#;
@@ -964,8 +974,9 @@ mod tests {
             caller: None,
         };
         let json = serde_json::to_string(&record).expect("serialize");
-        // 実測値（2026-09-14時点、フィールド構成が変わったら更新すること）:
-        // attempt 1件の構成で577バイト（ADR-171の`candidate_was_seen`追加前は
+        // 実測値（2026-11-15時点、フィールド構成が変わったら更新すること）:
+        // attempt 1件の構成で629バイト（ADR-293の`gate_inputs`/`attempts[].inputs`への
+        // `mozc_direct_ready`追加前は577バイト、ADR-171の`candidate_was_seen`追加前は
         // 523バイト、N-1対応前は631バイト、上記コメント参照）。
         // journal.rsの`select_tail_within_budget`はlane予約20%
         // （Actuation）の中で既存`ImeActuation`（固定サイズ数十バイト）と
@@ -973,7 +984,7 @@ mod tests {
         // 追加でおよそ7〜8倍規模になる——この数値をwindows-build CI/実機
         // ダンプでの前後比較（163-T1d受け入れ基準）の基準値として使うこと。
         assert!(
-            json.len() < 600,
+            json.len() < 650,
             "ActuationDecisionRecordのJSON表現が想定より大きい: {} bytes ({json})",
             json.len()
         );

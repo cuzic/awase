@@ -34,6 +34,12 @@ pub(crate) struct FocusFacts<'a> {
     /// (`OwnSend`のスタンプ先、5-2節)。`apply_mechanism`はOSから自前取得せず、ここ経由で受け取る
     /// (`ime_controller.rs:27-30`の制約)。フォーカス未取得・スレッドが取れない場合は`None`。
     pub mozc_target: Option<(u32, u32)>,
+    /// ADR-293 10節step4/5: direct actuation要求の宛先(`cmd_window_handle`、version 6
+    /// 共有メモリ)。`Some`のときだけ`DecisionInputs::mozc_direct_ready`が真になり、
+    /// GJI専用チェーンに`MozcDirect`が挿入される(`decide_chain`)。HWND自体は
+    /// `DecisionInputs`/`MechanismCommand`に入れない(ADR-163 D8)——送信の殻
+    /// (`apply_mechanism`)がここから直接読む。
+    pub mozc_direct_cmd_window_handle: Option<u64>,
 }
 
 /// OS から直接観測した揮発性状態（tick 境界でアトミックをロードしてスナップショット化）。
@@ -152,6 +158,7 @@ impl From<&ImeControlView<'_>> for crate::state::ime_actuation_decision::Decisio
             view.control.shadow_on,
             view.belief_input_mode,
             view.observed.candidate_was_seen,
+            view.focus.mozc_direct_cmd_window_handle.is_some(),
         )
     }
 }

@@ -16,7 +16,7 @@ use awase::types::VkCode;
 
 use crate::focus::class_names::AppImeProfile;
 use crate::state::actuation_chain::WriteMechanism;
-use crate::state::app_ime_policy::caps;
+use crate::state::app_ime_policy::{caps, CHAIN_GJI_ONLY, CHAIN_MOZC_DIRECT_THEN_GJI};
 use crate::state::conv_after_open::ConvAfterOpenId;
 use crate::state::ime_kind::ImeKindId;
 use crate::state::key_sequence_policy::{self, ImeOperation, KeyMechanism};
@@ -52,6 +52,12 @@ pub struct DecisionInputs {
     /// ADR-163 決定D8: PII を含まない bool 1 個。
     #[serde(default)]
     pub candidate_was_seen: bool,
+    /// ADR-293 10節step4: direct actuation（version 6共有メモリのnonce/ack経路）の宛先
+    /// (`cmd_window_handle`) が分かっているか。`true` のときだけ `decide_chain` が
+    /// `CHAIN_GJI_ONLY` を `CHAIN_MOZC_DIRECT_THEN_GJI` へ差し替える。HWND 自体・nonce は
+    /// ここに入れない（ADR-163 決定D8、直前の`candidate_was_seen`と同じPII排除の方針）。
+    #[serde(default)]
+    pub mozc_direct_ready: bool,
 }
 
 impl DecisionInputs {
@@ -66,6 +72,7 @@ impl DecisionInputs {
         shadow_on: Option<bool>,
         belief_input_mode: InputModeState,
         candidate_was_seen: bool,
+        mozc_direct_ready: bool,
     ) -> Self {
         Self {
             profile,
@@ -73,6 +80,7 @@ impl DecisionInputs {
             shadow_on,
             belief_input_mode,
             candidate_was_seen,
+            mozc_direct_ready,
         }
     }
 }
@@ -143,6 +151,12 @@ pub enum MechanismCommand {
     },
     /// `send_ime_mode_key(vk)`相当（GjiDirect/MsImeDirect）。
     SendVk(VkCode),
+    /// ADR-293 10節step4: direct actuation要求(version 6共有メモリのnonce/ack経路、
+    /// `WriteMechanism::MozcDirect`専用)。`bool`は要求する開閉方向(`desired_open`、
+    /// ワイヤーのlparam bit0と同じ意味)。nonce・宛先HWNDはここに持たせない
+    /// (ADR-163 決定D8、`decide_attempt`はOS値を扱わない)——送信の殻(10節step5)が
+    /// 送信時にnonceを発行し、宛先は`FocusFacts::mozc_direct_cmd_window_handle`から読む。
+    DirectActuate(bool),
 }
 
 /// `ImeController::apply`/`run_open_chain_async`/`dispatch_ime_set_open`冒頭の
@@ -173,9 +187,24 @@ pub const fn is_input_relay(inputs: DecisionInputs) -> bool {
 /// `ime_controller.rs::caps_chain_for`と同一（`caps(profile.into(), kind).chain`）。
 /// async経路（`open_chain.rs`）は`WriteMechanism::ALL`固定のまま変更しない
 /// （ADR-163 round2 T2、ADR-159の理由により意図的に非対称）。
+///
+/// ADR-293 10節step4（round3 S5）: `caps`表そのものは変更しない——`caps`は
+/// `(profile, kind)`だけで決まる静的な宣言のままで、direct actuationの準備状態
+/// （実行時にしか分からない、観測値）は**この関数側の、`CHAIN_GJI_ONLY`限定の
+/// readiness依存オーバーライド**として別に乗せる。`inputs.mozc_direct_ready`が
+/// 真で、かつ`caps`が返したチェーンが`CHAIN_GJI_ONLY`（Imm32Unavailable/TsfNative
+/// ×GJI）のときだけ`CHAIN_MOZC_DIRECT_THEN_GJI`へ差し替える——Standard
+/// プロファイル（`CHAIN_IMM_CROSS_THEN_GJI`等）は対象外のまま（5-1節: `MozcDirect`は
+/// GJI専用チェーン限定、`ImmSetOpenStatus`の同期書き換えに依存するStandard
+/// プロファイルの信頼性をIMM compartmentに触れない`MozcDirect`で置き換えない）。
 #[must_use]
 pub fn decide_chain(inputs: DecisionInputs) -> &'static [WriteMechanism] {
-    caps(inputs.profile.into(), inputs.kind).chain
+    let chain = caps(inputs.profile.into(), inputs.kind).chain;
+    if inputs.mozc_direct_ready && chain == CHAIN_GJI_ONLY {
+        CHAIN_MOZC_DIRECT_THEN_GJI
+    } else {
+        chain
+    }
 }
 
 /// 明示キー押下の書き込み（押下 ID を持つ order）で、view の `shadow_on`（`applied` 由来）を未知にするか
@@ -392,6 +421,12 @@ pub fn decide_attempt(
                 ImeOperation::from_open(open),
             )))
         }
+        // ADR-293 10節step4（round2 R1-ii）: 不適用（`mozc_direct_ready == false`）な
+        // 場合は`mechanism_applicable`側でチェーンから除外済みなので、ここに来るのは
+        // 適用可能な場合だけ——常に`Some`を返す（既に一致しているかの判定は、direct
+        // actuationにはshadowのような「前回の確認済み状態」のキャッシュが無いため、
+        // そもそも成立しない）。
+        (WriteMechanism::MozcDirect, _) => Some(MechanismCommand::DirectActuate(open)),
     };
     (romaji_pre_write, command)
 }
@@ -412,10 +447,12 @@ mod tests {
             shadow_on,
             belief_input_mode,
             candidate_was_seen: false,
+            mozc_direct_ready: false,
         }
     }
 
-    /// `from_facts` は各引数をそのフィールドへ写す（BUG-141: `candidate_was_seen` の写し漏れ）。
+    /// `from_facts` は各引数をそのフィールドへ写す（BUG-141: `candidate_was_seen` の写し漏れ。
+    /// ADR-293 10節step4で`mozc_direct_ready`を追加）。
     #[test]
     fn from_facts_copies_every_fact_into_its_field() {
         let i = DecisionInputs::from_facts(
@@ -424,20 +461,24 @@ mod tests {
             Some(false),
             InputModeState::ObservedKana,
             true,
+            true,
         );
         assert_eq!(i.profile, AppImeProfile::TsfNative);
         assert_eq!(i.kind, ImeKindId::Gji);
         assert_eq!(i.shadow_on, Some(false));
         assert_eq!(i.belief_input_mode, InputModeState::ObservedKana);
         assert!(i.candidate_was_seen);
+        assert!(i.mozc_direct_ready);
         let j = DecisionInputs::from_facts(
             AppImeProfile::Standard,
             ImeKindId::MsIme,
             None,
             InputModeState::Unknown,
             false,
+            false,
         );
         assert!(!j.candidate_was_seen);
+        assert!(!j.mozc_direct_ready);
         assert_eq!(
             (j.profile, j.kind, j.shadow_on),
             (AppImeProfile::Standard, ImeKindId::MsIme, None)
@@ -486,6 +527,82 @@ mod tests {
                     "{profile:?} {kind:?}"
                 );
             }
+        }
+    }
+
+    // ── decide_chain: ADR-293 10節step4のreadiness依存オーバーライド ──────────
+
+    /// `mozc_direct_ready`が真でも、`caps`が`CHAIN_GJI_ONLY`以外を返す
+    /// (Standard profile)なら、チェーンは変わらない(5-1節: `MozcDirect`はGJI
+    /// 専用チェーン限定、Standard profileのImmCross信頼性を置き換えない)。
+    #[test]
+    fn decide_chain_ignores_mozc_direct_ready_outside_gji_only_chains() {
+        for profile in [AppImeProfile::Standard, AppImeProfile::Imm32Unavailable] {
+            for kind in ImeKindId::ALL {
+                let mut i = inputs(profile, kind, None, InputModeState::Unknown);
+                let base = caps(profile.into(), kind).chain;
+                if base == CHAIN_GJI_ONLY {
+                    continue; // 別テストの対象
+                }
+                i.mozc_direct_ready = true;
+                assert_eq!(decide_chain(i), base, "{profile:?} {kind:?}");
+            }
+        }
+    }
+
+    /// `caps`が`CHAIN_GJI_ONLY`(Imm32Unavailable/TsfNative×GJI)を返すとき、
+    /// `mozc_direct_ready`が真なら`[MozcDirect, GjiDirect]`へ差し替わる。偽なら
+    /// 元の`CHAIN_GJI_ONLY`のまま。
+    #[test]
+    fn decide_chain_overrides_gji_only_when_mozc_direct_ready() {
+        for profile in [AppImeProfile::Imm32Unavailable, AppImeProfile::TsfNative] {
+            let i_not_ready = inputs(profile, ImeKindId::Gji, None, InputModeState::Unknown);
+            assert_eq!(decide_chain(i_not_ready), CHAIN_GJI_ONLY, "{profile:?}");
+
+            let mut i_ready = i_not_ready;
+            i_ready.mozc_direct_ready = true;
+            assert_eq!(
+                decide_chain(i_ready),
+                CHAIN_MOZC_DIRECT_THEN_GJI,
+                "{profile:?}"
+            );
+            assert_eq!(
+                decide_chain(i_ready),
+                &[WriteMechanism::MozcDirect, WriteMechanism::GjiDirect]
+            );
+        }
+    }
+
+    /// `mozc_direct_ready`は`kind == MsIme`の`caps`結果(`CHAIN_MS_IME_ONLY`)には効かない
+    /// (`CHAIN_GJI_ONLY`との比較が偽になるため、オーバーライド条件自体が不成立)。
+    #[test]
+    fn decide_chain_does_not_override_ms_ime_only_chain() {
+        for profile in [AppImeProfile::Imm32Unavailable, AppImeProfile::TsfNative] {
+            let mut i = inputs(profile, ImeKindId::MsIme, None, InputModeState::Unknown);
+            let base = caps(profile.into(), ImeKindId::MsIme).chain;
+            i.mozc_direct_ready = true;
+            assert_eq!(decide_chain(i), base, "{profile:?}");
+        }
+    }
+
+    // ── decide_attempt: MozcDirect ───────────────────────────────────────
+
+    /// `decide_attempt`はMozcDirectに対して、適用可否を問わず常に`Some(DirectActuate(open))`を
+    /// 返す(already-matched判定はmechanism_applicable側、round2 R1-ii)。romaji_pre_writeは常に偽
+    /// (`decide_needs_romaji_pre_write`の条件にMozcDirectは含まれない)。
+    #[test]
+    fn mozc_direct_attempt_always_returns_direct_actuate() {
+        for open in [true, false] {
+            let i = inputs(
+                AppImeProfile::TsfNative,
+                ImeKindId::Gji,
+                None,
+                InputModeState::Unknown,
+            );
+            let (pre, cmd) =
+                decide_attempt(i, DecisionSite::Sync, WriteMechanism::MozcDirect, open);
+            assert!(!pre);
+            assert_eq!(cmd, Some(MechanismCommand::DirectActuate(open)));
         }
     }
 

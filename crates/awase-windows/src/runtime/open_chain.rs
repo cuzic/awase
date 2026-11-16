@@ -733,6 +733,7 @@ mod tests {
             shadow_on: None,
             belief_input_mode: InputModeState::Unknown,
             candidate_was_seen: false,
+            mozc_direct_ready: false,
         };
         let order_record = ActuationOrderRecord {
             open: true,

@@ -9830,9 +9830,11 @@ fn mozc_shm_abandon_writes_z_reachable_strategy_and_notifies_engine() {
 }
 
 /// ADR-293(BUG-234、Opusレビュー指摘5-c): `OwnSend`のスタンプ(`crate::hook::note_own_send(`)の
-/// 呼び出し元を、開閉方向を持つ送信が実際に成功した経路の4箇所(3ファイル、direct postの
-/// 送信経路は本PRには無い)に固定する。新しい呼び出し元(round5 U1が警告した「モード切替のみの
-/// 送信でもスタンプしてしまう」欠陥の再発経路)が無断で増えていないかをこのテストで検知する。
+/// 呼び出し元を、開閉方向を持つ送信が実際に成功した経路の5箇所(3ファイル)に固定する。
+/// 10節step5で`apply_mozc_direct`の`PostMessageW`成功経路が5箇所目として加わった
+/// (direct postの送信経路、以前は無かった)。新しい呼び出し元(round5 U1が警告した
+/// 「モード切替のみの送信でもスタンプしてしまう」欠陥の再発経路)が無断で増えていないかを
+/// このテストで検知する。
 #[test]
 fn note_own_send_call_sites_are_pinned_to_successful_open_close_writes() {
     let files = list_src_files();
@@ -9849,13 +9851,14 @@ fn note_own_send_call_sites_are_pinned_to_successful_open_close_writes() {
     assert_eq!(
         breakdown,
         vec![
-            ("src/ime_controller.rs".to_string(), 2),
+            ("src/ime_controller.rs".to_string(), 3),
             ("src/platform.rs".to_string(), 1),
             ("src/runtime/open_chain.rs".to_string(), 1),
         ],
         "`note_own_send(` の呼び出し元はADR-293 5-2節が列挙する、開閉方向を持つ送信が実際に \
-         成功した4箇所(GjiDirect/MsImeDirect送信×2・`set_ime_open`のクロスプロセス書き込み・ \
-         `imm_cross_write`)だけに固定されています。実際: {breakdown:?}\n\
+         成功した5箇所(GjiDirect/MsImeDirect送信×2・`apply_mozc_direct`のPostMessageW・ \
+         `set_ime_open`のクロスプロセス書き込み・`imm_cross_write`)だけに固定されています。 \
+         実際: {breakdown:?}\n\
          モード切替のみの送信や、未送信outcomeの分岐からこの呼び出しを増やさないでください \
          (round5 U1/round6 V2が防いだ欠陥の再発経路になります)。"
     );
@@ -9904,5 +9907,18 @@ fn note_own_send_call_sites_are_pinned_to_successful_open_close_writes() {
     assert!(
         imm_cross_write.contains("matches!(raw, ActuationOutcome::Written)"),
         "imm_cross_writeのnote_own_sendは、ActuationOutcome::Writtenの分岐の中にあること"
+    );
+
+    // ADR-293 10節step5: `apply_mozc_direct`(`apply_mechanism`がMozcDirect機構の
+    // コマンドを委譲する専用関数、`apply_mechanism`自体の外)の呼び出しもここで固定する。
+    let apply_mozc_direct = extract_fn_body(&ime_controller, "fn apply_mozc_direct(");
+    assert_eq!(
+        count_real_calls(apply_mozc_direct, "note_own_send("),
+        1,
+        "apply_mozc_directの外にnote_own_sendの呼び出しが漏れていないか"
+    );
+    assert!(
+        apply_mozc_direct.contains("Ok(()) =>"),
+        "apply_mozc_directのnote_own_sendは、PostMessageWが成功した(Ok(()))分岐の中にあること"
     );
 }

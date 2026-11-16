@@ -4365,6 +4365,7 @@ mod tests {
                 shadow_on: applied,
                 belief_input_mode: InputModeState::Unknown,
                 candidate_was_seen: false,
+                mozc_direct_ready: false,
             };
             decide_attempt(inputs, DecisionSite::Sync, WriteMechanism::GjiDirect, open).1
         };
