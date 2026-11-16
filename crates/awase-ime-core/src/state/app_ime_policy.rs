@@ -58,9 +58,23 @@ const CHAIN_IMM_CROSS_THEN_GJI: &[WriteMechanism] =
 const CHAIN_IMM_CROSS_THEN_MS_IME: &[WriteMechanism] =
     &[WriteMechanism::ImmCross, WriteMechanism::MsImeDirect];
 /// IMM32 クロスプロセス不可 × GJI。
-const CHAIN_GJI_ONLY: &[WriteMechanism] = &[WriteMechanism::GjiDirect];
+///
+/// `pub(crate)`: ADR-293 10節step4の`decide_chain`（`ime_actuation_decision.rs`）が、
+/// `inputs.mozc_direct_ready`が真のときにこの値と比較して
+/// [`CHAIN_MOZC_DIRECT_THEN_GJI`]へ差し替えるため、同一crateの兄弟モジュールから
+/// 参照できる必要がある。`caps`表自体はこの定数の値を変えない（readiness依存の
+/// オーバーライドは`decide_chain`側、round3 S5）。
+pub(crate) const CHAIN_GJI_ONLY: &[WriteMechanism] = &[WriteMechanism::GjiDirect];
 /// IMM32 クロスプロセス不可 × MS-IME。
 const CHAIN_MS_IME_ONLY: &[WriteMechanism] = &[WriteMechanism::MsImeDirect];
+/// ADR-293 10節step4: GJI専用チェーンでdirect actuationの宛先が分かっているとき
+/// （`inputs.mozc_direct_ready`）、[`CHAIN_GJI_ONLY`]の代わりに`decide_chain`が
+/// 返すチェーン。`MozcDirect`が`Failed`（`PostMessageW`失敗等）を返したら
+/// 同tickで`GjiDirect`へフォールスルーする（7節表）。`caps`表には現れない
+/// （round3 S5: readinessは実行時観測値であり`(profile, kind)`だけで決まる
+/// 静的な宣言ではないため）。
+pub(crate) const CHAIN_MOZC_DIRECT_THEN_GJI: &[WriteMechanism] =
+    &[WriteMechanism::MozcDirect, WriteMechanism::GjiDirect];
 
 /// 読み戻し可能プロファイルの feedback（`AppImePolicy::from_profile` の旧リテラル）。
 const FEEDBACK_READ: FeedbackPolicy = FeedbackPolicy::Read {

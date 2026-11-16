@@ -521,6 +521,14 @@ impl PressState {
 
     /// 先頭の書き込み機構が GjiDirect か（GjiDirect だけが `applied` の already-matched 省略を持つ。
     /// L1 の自動リピートで「同じ向きの VK を追い送りしない」が `applied` 省略に頼れるかの判定に使う）。
+    ///
+    /// **既知の限界（ADR-293 10節step4、未解決）**: `PressState`は実行時の
+    /// direct actuation準備状態（mozc-shm v6の`cmd_window_handle`）を持たないため、
+    /// `mozc_direct_ready`は常に`false`で呼ぶ。実際のチェーンが`CHAIN_GJI_ONLY`から
+    /// `CHAIN_MOZC_DIRECT_THEN_GJI`（先頭`MozcDirect`）へ差し替わった場合、この関数は
+    /// 誤って`false`を返す——`MozcDirect`は`applied`のalready-matched省略を持たない
+    /// （`decide_attempt`が常に`Some`を返す、ADR-293 9節）ため、L1の自動リピート抑制が
+    /// 効かなくなる可能性がある。実機でのMozcDirect有効化前に要再検討。
     #[must_use]
     pub fn chain_head_is_gji_direct(&self) -> bool {
         let inputs = DecisionInputs {
@@ -529,6 +537,7 @@ impl PressState {
             shadow_on: None,
             belief_input_mode: InputModeState::Unknown,
             candidate_was_seen: false,
+            mozc_direct_ready: false,
         };
         decide_chain(inputs)[0] == WriteMechanism::GjiDirect
     }
@@ -542,6 +551,7 @@ impl PressState {
             shadow_on: None,
             belief_input_mode: InputModeState::Unknown,
             candidate_was_seen: false,
+            mozc_direct_ready: false,
         };
         decide_chain(inputs)[0] == WriteMechanism::ImmCross
     }
@@ -790,6 +800,7 @@ fn attempt_write(
         shadow_on,
         belief_input_mode: InputModeState::Unknown,
         candidate_was_seen: state.candidate_was_seen,
+        mozc_direct_ready: false,
     };
     if decide_gate(inputs) == GateResult::NotOwned {
         return (None, ElisionReason::InputRelayNotOwned);

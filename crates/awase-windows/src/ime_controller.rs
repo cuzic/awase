@@ -223,6 +223,14 @@ pub(crate) fn apply_mechanism(
                  渡している"
             )
         }
+        Some(MechanismCommand::DirectActuate(_)) => {
+            debug_assert_eq!(
+                mechanism,
+                WriteMechanism::MozcDirect,
+                "DirectActuateコマンドはMozcDirect機構専用(decide_attempt参照)"
+            );
+            apply_mozc_direct(open, view)
+        }
         None => {
             // GjiDirectStrategy の already-matched（shadow が確認済みで一致）判定。
             // `decide_attempt` が `None` を返すのは、GjiDirect の already-matched か、
@@ -243,6 +251,86 @@ pub(crate) fn apply_mechanism(
                 if open { "ON" } else { "OFF" }
             );
             ImeOpenOutcome::AlreadyMatched
+        }
+    }
+}
+
+/// ADR-293([BUG-234](../../../docs/known-bugs/BUG-234.md)) 10節step5: `WriteMechanism::MozcDirect`
+/// の送信の殻。`view.focus.mozc_direct_cmd_window_handle`(version 6共有メモリが公開する
+/// `cmd_window_handle`)へ、登録ウィンドウメッセージ（`readable/docs/shared-memory.md` 6-5章、
+/// `mozc::kDirectActuationMessageName`相当）でnonce付きのopen/close要求を`PostMessageW`する。
+///
+/// **ackは待たない**（この関数は同期・非ブロッキング）。要求の成否確認（閉ループ）は、
+/// 既に配線済みの`decide_use`/`classify_own_request`（10節step1〜3）が`report_mozc_shm`の
+/// 次tickで`own_send.nonce`への`last_cmd_nonce`一致を見て行う——`AppliedWithoutSendInput`は
+/// 「送れた」ことだけを示し、「Mozcが実際に適用した」ことまでは確認しない
+/// （5-1節の位置づけどおり、5-4節のorigin-scopedな長いcapが正しさの最終防衛）。
+fn apply_mozc_direct(open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
+    use windows::core::w;
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, RegisterWindowMessageW};
+
+    let Some(handle) = view.focus.mozc_direct_cmd_window_handle else {
+        tracing::error!(
+            "[mozc-direct] cmd_window_handle 未解決のまま apply_mechanism に到達(open={open}) \
+             → Failed(decide_chain/mechanism_applicableの前提が崩れている)"
+        );
+        return ImeOpenOutcome::Failed;
+    };
+    let Some(target) = view.focus.mozc_target else {
+        tracing::error!(
+            "[mozc-direct] mozc_target 未解決のまま apply_mechanism に到達(open={open}) → Failed"
+        );
+        return ImeOpenOutcome::Failed;
+    };
+    // HWND所有権確認（ADR-293 7節表「HWND値が別スレッド/プロセスへ再利用されている」）:
+    // `cmd_window_handle`は直前のtick（最大`MOZC_SHM_TIMER_MS`前）に読んだ値であり、
+    // 送信直前に実際の(tid,pid)を再確認する——フォーカスが変わった直後は、別スレッド/
+    // プロセスに再利用されたHWNDを指しているおそれがある。
+    let hwnd_addr = handle as usize;
+    let live = crate::observer::mozc_shm::thread_and_process_of_window(hwnd_addr);
+    if live != target {
+        tracing::warn!(
+            "[mozc-direct] cmd_window_handle の(tid,pid)不一致(expected={target:?} \
+             actual={live:?}) → Failed(同tickでGjiDirectへフォールスルー)"
+        );
+        return ImeOpenOutcome::Failed;
+    }
+    // SAFETY: `w!` はコンパイル時に NUL 終端したワイド文字列リテラルを作る。
+    // `RegisterWindowMessageW` はどのスレッドからも呼べる非ブロッキング API。
+    let msg = unsafe { RegisterWindowMessageW(w!("googlejapaneseinput.direct_actuation.message")) };
+    if msg == 0 {
+        tracing::error!("[mozc-direct] RegisterWindowMessageW failed (GetLastError) → Failed");
+        return ImeOpenOutcome::Failed;
+    }
+    let nonce = crate::hook::next_direct_actuation_nonce();
+    // ワイヤー定義（6-5章）: lparam bit0 = desired_open。bit1〜31 は予約（0 のまま送る）。
+    let lparam = isize::from(open);
+    // SAFETY: `hwnd_addr` は直前に所有権を確認した有効な HWND 値。`PostMessageW` は
+    // 非ブロッキング（`SendMessage` と違い、受け手のメッセージループをブロックしない）。
+    let posted = unsafe {
+        PostMessageW(
+            Some(HWND(hwnd_addr as *mut _)),
+            msg,
+            WPARAM(nonce as usize),
+            LPARAM(lparam),
+        )
+    };
+    match posted {
+        Ok(()) => {
+            tracing::debug!("[mozc-direct] post open={open} nonce={nonce} target={target:?}");
+            // ADR-293(BUG-234) 5-2節: 開閉方向を持つ送信が実際に送信できたときだけスタンプする。
+            crate::hook::note_own_send(open, target.0, target.1, Some(nonce));
+            crate::hook::note_ime_actuation_send();
+            crate::hook::note_mozc_direct_post();
+            ImeOpenOutcome::AppliedWithoutSendInput
+        }
+        Err(err) => {
+            tracing::warn!(
+                "[mozc-direct] PostMessageW failed nonce={nonce} open={open}: {err} \
+                 → Failed(同tickでGjiDirectへフォールスルー)"
+            );
+            ImeOpenOutcome::Failed
         }
     }
 }
@@ -472,6 +560,7 @@ pub fn characterize_strategy(active_gji: bool, profile: &str, skip_imm: bool) ->
             // （`focus_gen` を使う唯一の経路）は走らない。
             focus_gen: crate::state::focus_gen::FocusGen::INITIAL,
             mozc_target: None,
+            mozc_direct_cmd_window_handle: None,
         },
         observed: ObservedState {
             active_ime_kind,
@@ -520,6 +609,7 @@ mod tests {
                 profile,
                 focus_gen: crate::state::focus_gen::FocusGen::INITIAL,
                 mozc_target: None,
+                mozc_direct_cmd_window_handle: None,
             },
             observed: ObservedState {
                 active_ime_kind: kind,

@@ -5,9 +5,10 @@
 //! 入力の組を全列挙し、出力の全文を `tests/golden/actuation_decision_table.txt` に固定する。
 //!
 //! 対象(すべて Facts を受けて決定を返す純粋関数):
-//! - `DecisionInputs`(profile 4 × kind 2 × shadow_on 3 × belief_input_mode 11 × candidate_was_seen 2 = 528 通り)ごとに
-//!   `decide_gate`・`decide_chain`・`mechanism_applicable`(機構 3)・`imm_cross_is_first_applicable`、
-//!   向き 2 ごとに `decide_dispatch_conv_after_open` と `decide_attempt`(機構 3 × `DecisionSite` 8)。
+//! - `DecisionInputs`(profile 4 × kind 2 × shadow_on 3 × belief_input_mode 11 × candidate_was_seen 2 ×
+//!   mozc_direct_ready 2 = 1056 通り、ADR-293 10節step4で`mozc_direct_ready`軸を追加)ごとに
+//!   `decide_gate`・`decide_chain`・`mechanism_applicable`(機構 4)・`imm_cross_is_first_applicable`、
+//!   向き 2 ごとに `decide_dispatch_conv_after_open` と `decide_attempt`(機構 4 × `DecisionSite` 8)。
 //! - `plan_set_open`(`PressClaim` 7 × `imm_first` 2)。
 //! - `explicit_press_applied_pair`(applied 3 × open 2 × has_press 2)・`engine_press_unknowns_applied`(2)。
 //!
@@ -153,13 +154,17 @@ fn all_inputs() -> Vec<DecisionInputs> {
             for shadow_on in SHADOW {
                 for &mode in &modes {
                     for candidate_was_seen in [false, true] {
-                        out.push(DecisionInputs::from_facts(
-                            profile,
-                            kind,
-                            shadow_on,
-                            mode,
-                            candidate_was_seen,
-                        ));
+                        // ADR-293 10節step4: `mozc_direct_ready`軸を追加。
+                        for mozc_direct_ready in [false, true] {
+                            out.push(DecisionInputs::from_facts(
+                                profile,
+                                kind,
+                                shadow_on,
+                                mode,
+                                candidate_was_seen,
+                                mozc_direct_ready,
+                            ));
+                        }
                     }
                 }
             }
@@ -259,12 +264,13 @@ fn render() -> String {
             .collect();
         let _ = writeln!(
             out,
-            "[{:?} {:?} shadow={} mode={:?} cand={}] gate={:?} chain=[{}] applicable=[{}] imm_first={}",
+            "[{:?} {:?} shadow={} mode={:?} cand={} mozc_direct={}] gate={:?} chain=[{}] applicable=[{}] imm_first={}",
             i.profile,
             i.kind,
             fmt_shadow(i.shadow_on),
             i.belief_input_mode,
             tf(i.candidate_was_seen),
+            tf(i.mozc_direct_ready),
             decide_gate(*i),
             chain.join(","),
             applicable.join(","),
@@ -336,7 +342,7 @@ fn golden_path() -> PathBuf {
 #[test]
 fn input_space_size_is_as_documented() {
     assert_eq!(input_modes().len(), 11);
-    assert_eq!(all_inputs().len(), 528);
+    assert_eq!(all_inputs().len(), 1056);
 }
 
 #[test]

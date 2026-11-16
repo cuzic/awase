@@ -35,6 +35,9 @@ pub(super) struct MozcShmShadow {
     accepted_for: Option<(u32, u32)>,
     /// ADR-292 P の打鍵の保持中(短周期の読みが代わりに読む)は、通常の専用タイマーを張らない。
     timer_suspended: bool,
+    /// ADR-293 10節step5: 最後に`[mozc-direct] ack ...`をログ出力した`last_cmd_nonce`。
+    /// 同じ値を毎tick出力しない(値が変わったときだけ1回。拒否率計測用、5-3節の着手判断に使う)。
+    last_logged_direct_cmd_nonce: Option<u32>,
 }
 
 impl MozcShmShadow {
@@ -57,6 +60,7 @@ impl MozcShmShadow {
             last_read_ms: None,
             accepted_for: None,
             timer_suspended: false,
+            last_logged_direct_cmd_nonce: None,
         }
     }
 }
@@ -72,6 +76,7 @@ impl super::Runtime {
             last_read_ms: None,
             accepted_for: None,
             timer_suspended: false,
+            last_logged_direct_cmd_nonce: None,
         };
     }
 
@@ -189,6 +194,17 @@ impl super::Runtime {
             matches!(outcome, Outcome::Failed(ReadFailure::NotFound)).then_some((tid, pid));
         self.mozc_shm.accepted_for = matches!(outcome, Outcome::Accepted(_)).then_some((tid, pid));
         self.mozc_shm.polling = wants_timer(&outcome);
+        // ADR-293 10節step4/5: direct actuationの宛先(`cmd_window_handle`)を更新する。
+        // 受け入れでない読み・version 6未満・まだ窓が無い(`cmd_window_handle == 0`)ときは
+        // `None`——`mozc_direct_target()`が無条件で上書きするので、ここも無条件で呼ぶ
+        // (古い値を残さない、`polling`等と同じ作法)。
+        self.platform.set_mozc_direct_readiness(
+            matches!(outcome, Outcome::Accepted(_))
+                .then(|| direct_ack)
+                .flatten()
+                .filter(|a| a.cmd_window_handle != 0)
+                .map(|a| (tid, pid, a.cmd_window_handle)),
+        );
         // 読みの間隔が TTL（`MOZC_SHM_OBSERVATION_TTL_MS`）を超えたら記録する（TTL の見直しの材料。ADR-268）。
         let stamp_ms = crate::hook::current_tick_ms();
         if let Some(prev) = self.mozc_shm.last_read_ms {
@@ -216,8 +232,12 @@ impl super::Runtime {
             // 進む baseline_ms ではなく、IMEの開閉/モードを動かす目的の送信だけに限定する
             // (platform_state.rs::report_mozc_shmのdocコメント参照。計算自体はそちら側で行う、
             // ここでは生の時刻だけを渡す)。
+            // ADR-293 10節step5: direct actuationの発行時刻もこのbaselineに合流させる
+            // (own_send自体は消費・supersedeされて消えるため、消えた後も「最近送った」
+            // 事実を残す別経路が要る、`hook::note_mozc_direct_post`のdoc参照)。
             let ime_actuation_baseline_ms = crate::hook::imm_cross_write_tick_ms()
-                .max(crate::hook::ime_actuation_send_tick_ms());
+                .max(crate::hook::ime_actuation_send_tick_ms())
+                .max(crate::hook::mozc_direct_post_tick_ms());
             // ADR-293(BUG-234): own_sendは単一スロットのグローバルなスタンプ(`hook`)。
             // `report_mozc_shm`はSplitの早期returnより前にこれを分類し(5-2節冒頭)、
             // 消すべきと判定したら2つ目の戻り値で伝え返す(`platform_state.rs`は`hook`を
@@ -228,8 +248,7 @@ impl super::Runtime {
             // (生の解釈)。`classify_own_request`が期待する既に解釈済みの`OwnSendAck`へ
             // ここで変換する(nonceの一致判定自体は`classify_own_request`項目1の仕事、
             // ここは型の変換だけ)。`last_cmd_nonce == 0`("まだ1件も処理していない")は
-            // `None`のまま渡す。direct postの送信経路(10節step4〜5)が無い間は
-            // `own_send.nonce`も常に`None`なので、項目1自体はまだ実データに到達しない。
+            // `None`のまま渡す。
             let ack = direct_ack.filter(|a| a.last_cmd_nonce != 0).map(|a| {
                 crate::state::mozc_shm::OwnSendAck {
                     nonce: a.last_cmd_nonce,
@@ -240,6 +259,24 @@ impl super::Runtime {
                     update_tick_ms: raw.update_tick_ms,
                 }
             });
+            // ADR-293 10節step5: 拒否率計測用のログ(5-3節の着手判断に使う)。新しいnonceを
+            // 観測したときだけ1回出す(同じ値を毎tick出力しない)。`own_send`が同じnonceを
+            // 持っていればそこから送信時刻を取り、latencyを添える(消費済みで無ければ無し)。
+            if let Some(a) = direct_ack.filter(|a| a.last_cmd_nonce != 0) {
+                if self.mozc_shm.last_logged_direct_cmd_nonce != Some(a.last_cmd_nonce) {
+                    self.mozc_shm.last_logged_direct_cmd_nonce = Some(a.last_cmd_nonce);
+                    let latency_ms = own_send
+                        .filter(|s| s.nonce == Some(a.last_cmd_nonce))
+                        .map(|s| raw.update_tick_ms.saturating_sub(s.tick_ms));
+                    tracing::info!(
+                        target: "awase::mozc_shm",
+                        "[mozc-direct] ack nonce={} result={:?} latency_ms={:?}",
+                        a.last_cmd_nonce,
+                        a.last_cmd_result,
+                        latency_ms
+                    );
+                }
+            }
             let (used, clear_own_send) = self.platform_state.ime.report_mozc_shm(
                 *shm,
                 raw.update_tick_ms,

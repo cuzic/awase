@@ -144,6 +144,12 @@ pub enum WriteMechanism {
     GjiDirect,
     /// MS-IME 向けの冪等キー（`VK_IME_ON` / `VK_IME_OFF`）。
     MsImeDirect,
+    /// ADR-293([BUG-234](../../../../docs/known-bugs/BUG-234.md)): mozc-readable fork の
+    /// version 6共有メモリが公開する`cmd_window_handle`へ、登録ウィンドウメッセージで
+    /// nonce付きのopen/close要求を送る（GJI/TsfNative専用チェーン限定、5-1節）。VK も
+    /// IMM32 も使わない——TIP が実キーと同じ`TURN_ON_IME`/`TURN_OFF_IME`のserver round
+    /// tripで適用し、結果を同じ共有メモリへ書き戻す（closed loop）。
+    MozcDirect,
 }
 
 impl WriteMechanism {
@@ -154,6 +160,7 @@ impl WriteMechanism {
             Self::ImmCross => "ImmCrossProcess",
             Self::GjiDirect => "GjiDirect",
             Self::MsImeDirect => "MsImeDirect",
+            Self::MozcDirect => "MozcDirect",
         }
     }
 
@@ -165,7 +172,16 @@ impl WriteMechanism {
     /// あり、`ALL` を直接 chain として使ってよいのは
     /// 「起案時点の (p, k) を固定できない経路」だけである
     /// （`runtime/open_chain.rs` の非同期チェーン。同モジュール doc 参照）。
-    pub const ALL: [Self; 3] = [Self::ImmCross, Self::GjiDirect, Self::MsImeDirect];
+    ///
+    /// ADR-293 10節step4（round3 S6）: `MozcDirect`を加えても要素数は
+    /// [`actuation_decision_record::MAX_WRITE_MECHANISMS`](super::actuation_decision_record::MAX_WRITE_MECHANISMS)
+    /// 以下のままであることを、同ファイルのコンパイル時アサーションが固定する。
+    pub const ALL: [Self; 4] = [
+        Self::ImmCross,
+        Self::GjiDirect,
+        Self::MsImeDirect,
+        Self::MozcDirect,
+    ];
 
     /// この機構が [`ImeOpenOutcome::Failed`] を返しうるか
     /// （= 後続要素へフォールスルーしうるか）。
@@ -177,13 +193,17 @@ impl WriteMechanism {
     /// | `ImmCross` | `Applied` / **`Failed`**（`set_ime_open_cross_process` の失敗） |
     /// | `GjiDirect` | `AlreadyMatched` / `Applied` / `UnsafeToToggle` |
     /// | `MsImeDirect` | `Applied` / `UnsafeToToggle` |
+    /// | `MozcDirect` | `AppliedWithoutSendInput` / **`Failed`**（`PostMessageW` 失敗、ADR-293 7節表） |
     ///
-    /// **`caps(p, k).chain` の末尾以外の要素は、必ずこれが真でなければならない**
-    /// ——偽の機構の後ろに要素を置くと、その要素は現行のフォールスルー述語
+    /// **`caps(p, k).chain`（または`decide_chain`のreadiness依存オーバーライド後の
+    /// チェーン、ADR-293 10節step4）の末尾以外の要素は、必ずこれが真でなければ
+    /// ならない**——偽の機構の後ろに要素を置くと、その要素は現行のフォールスルー述語
     /// （[`falls_through`]、`Failed` のときだけ次へ）では**到達不能**になる
     /// （ADR-089 §2.8・§4.9、INV-44）。
     /// `state/app_ime_policy.rs::caps_chains_have_no_unreachable_trailing_element`
-    /// が全 (p, k) で固定する。
+    /// が全 (p, k) で固定する（`CHAIN_MOZC_DIRECT_THEN_GJI`は`caps`表に現れないため
+    /// このガードの対象外——末尾`GjiDirect`が到達可能であることは`decide_chain`の
+    /// 単体テストが別途固定する）。
     ///
     /// **この表が実装から drift していないこと**は、Windows 側の
     /// `ime_controller.rs::caps_chain_matches_legacy_all_scan` が
@@ -194,7 +214,7 @@ impl WriteMechanism {
     /// （`.claude/rules/fix-requires-evidence.md` の「キー選択」ファミリー）。
     #[must_use]
     pub const fn may_return_failed(self) -> bool {
-        matches!(self, Self::ImmCross)
+        matches!(self, Self::ImmCross | Self::MozcDirect)
     }
 }
 
@@ -795,12 +815,12 @@ mod tests {
     /// 全機構が `Failed` を返したら `Failed`。
     #[test]
     fn all_failed_yields_failed() {
-        let mut writer = FakeWriter::new(&WriteMechanism::ALL, &[ImeOpenOutcome::Failed; 3]);
+        let mut writer = FakeWriter::new(&WriteMechanism::ALL, &[ImeOpenOutcome::Failed; 4]);
         assert_eq!(
             verified(true).run_chain(&WriteMechanism::ALL, &mut writer),
             ImeOpenOutcome::Failed
         );
-        assert_eq!(writer.calls.len(), 3);
+        assert_eq!(writer.calls.len(), 4);
     }
 
     /// 非同期版と同期版の走査結果が全 outcome 組み合わせで一致すること
@@ -843,13 +863,17 @@ mod tests {
         assert_eq!(next.target(), target, "フォールバック後も同じ宛先");
     }
 
-    /// `may_return_failed` は `ImmCross` だけが真（ADR-089 §2.3 の実コード調査）。
+    /// `may_return_failed` は `ImmCross`/`MozcDirect` だけが真（ADR-089 §2.3 の実コード調査、
+    /// ADR-293 10節step4で`MozcDirect`を追加）。
     #[test]
     fn only_imm_cross_may_return_failed() {
         for mechanism in WriteMechanism::ALL {
             assert_eq!(
                 mechanism.may_return_failed(),
-                mechanism == WriteMechanism::ImmCross,
+                matches!(
+                    mechanism,
+                    WriteMechanism::ImmCross | WriteMechanism::MozcDirect
+                ),
                 "{mechanism:?}"
             );
         }
@@ -873,7 +897,7 @@ mod tests {
     fn mechanism_names_match_strategy_names() {
         assert_eq!(
             WriteMechanism::ALL.map(WriteMechanism::name),
-            ["ImmCrossProcess", "GjiDirect", "MsImeDirect"]
+            ["ImmCrossProcess", "GjiDirect", "MsImeDirect", "MozcDirect"]
         );
     }
 }
