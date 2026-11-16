@@ -223,6 +223,11 @@ impl super::Runtime {
             // 消すべきと判定したら2つ目の戻り値で伝え返す(`platform_state.rs`は`hook`を
             // 直接呼べないため)。
             let own_send = crate::hook::own_send();
+            // ADR-293 10節step2: `classify_own_request`の項目1(nonce+ackの確認)は復元したが、
+            // ackの観測の殻(version 6共有メモリの`last_cmd_nonce`/`last_cmd_result`の解釈、
+            // 10節step3)はこのPRのスコープ外。direct postの送信経路(10節step4〜5)が無い間は
+            // `own_send.nonce`も常に`None`なので、ここで`None`を渡しても項目1自体は到達しない。
+            let ack = None;
             let (used, clear_own_send) = self.platform_state.ime.report_mozc_shm(
                 *shm,
                 raw.update_tick_ms,
@@ -230,6 +235,7 @@ impl super::Runtime {
                 baseline_ms,
                 ime_actuation_baseline_ms,
                 own_send,
+                ack,
                 (tid, pid),
                 crate::state::TickMs(now_ms),
             );

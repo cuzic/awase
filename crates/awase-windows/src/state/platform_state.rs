@@ -2423,8 +2423,11 @@ impl ImeStateHub {
     /// `(tid,pid)`（`own_send`との一致確認に使う、5-2節項目0）。戻り値の2つ目は、呼び出し元が
     /// `own_send`を消すべきか（`classify_own_request`の判定、`hook`側のクリアは
     /// `platform_state.rs`からは呼べないため、呼び出し元〈`mozc_shm_shadow.rs`〉に伝え返す）。
-    /// direct postの送信経路(5-1節)が無い本PRでは`own_send.nonce`は常に`None`——
-    /// `classify_own_request`の項目1(nonce+ackの確認)はその経路が実装されるPRで追加する。
+    /// `ack`は`own_send.nonce`への確認(`classify_own_request`項目1、ADR-293 10節step2)。
+    /// version 6共有メモリの生バイト解釈(`last_cmd_nonce`/`last_cmd_result`、10節step3
+    /// 「観測の殻」)はこのPRのスコープ外のため、direct postの送信経路(5-1節、10節step4〜5)が
+    /// 無い間は呼び出し元から常に`None`が渡る——`own_send.nonce`も常に`None`なので項目1自体は
+    /// 到達しない。
     ///
     /// **Pendingは「読みがbeliefと食い違うとき」だけHeldを強制する**(Opusレビュー指摘2-a)。
     /// `classify_own_request`のPending自体は「読みが`own_send.open`と不一致」を意味するだけで、
@@ -2441,6 +2444,7 @@ impl ImeStateHub {
         baseline_ms: u64,
         ime_actuation_baseline_ms: u64,
         own_send: Option<crate::state::mozc_shm::OwnSend>,
+        ack: Option<crate::state::mozc_shm::OwnSendAck>,
         read_target: (u32, u32),
         tick_ms: TickMs,
     ) -> (crate::state::mozc_shm::ShmUse, bool) {
@@ -2455,6 +2459,7 @@ impl ImeStateHub {
         // スタンプのクリア判定は、この読みがSplitかどうかと無関係に行う。
         let verdict = classify_own_request(
             own_send,
+            ack,
             read_target,
             shm.tsf_open,
             update_tick_ms,
@@ -4285,6 +4290,7 @@ mod tests {
             100,
             0,
             None,
+            None,
             (0, 0),
             TickMs(5100),
         );
@@ -4320,6 +4326,7 @@ mod tests {
             100,
             0,
             None,
+            None,
             (0, 0),
             TickMs(110),
         );
@@ -4338,7 +4345,7 @@ mod tests {
         split.effective_open = true;
         let (used, _) =
             ps.ime
-                .report_mozc_shm(split, 5000, 5100, 100, 0, None, (0, 0), TickMs(5100));
+                .report_mozc_shm(split, 5000, 5100, 100, 0, None, None, (0, 0), TickMs(5100));
         assert_eq!(used, ShmUse::Split);
         assert_eq!(ps.ime.explicit_intent(), Some(true), "明示意図は残る");
         assert!(
@@ -4360,7 +4367,7 @@ mod tests {
         split.effective_open = true;
         let _ = ps
             .ime
-            .report_mozc_shm(split, 5000, 5100, 100, 0, None, (0, 0), TickMs(5100));
+            .report_mozc_shm(split, 5000, 5100, 100, 0, None, None, (0, 0), TickMs(5100));
         let first = ps
             .ime
             .journal
@@ -4370,7 +4377,7 @@ mod tests {
             .count();
         let _ = ps
             .ime
-            .report_mozc_shm(split, 5000, 5600, 100, 0, None, (0, 0), TickMs(5600));
+            .report_mozc_shm(split, 5000, 5600, 100, 0, None, None, (0, 0), TickMs(5600));
         let second = ps
             .ime
             .journal
@@ -4404,6 +4411,7 @@ mod tests {
                 100,
                 0,
                 None,
+                None,
                 (0, 0),
                 TickMs(5100 + i),
             );
@@ -4415,6 +4423,7 @@ mod tests {
             6100,
             100,
             0,
+            None,
             None,
             (0, 0),
             TickMs(6100),
@@ -4433,6 +4442,7 @@ mod tests {
             5100,
             100,
             0,
+            None,
             None,
             (0, 0),
             TickMs(5100),
@@ -4467,6 +4477,7 @@ mod tests {
             baseline,
             baseline,
             None,
+            None,
             (0, 0),
             TickMs(baseline + settle - 1),
         );
@@ -4478,6 +4489,7 @@ mod tests {
             baseline + settle,
             baseline,
             baseline,
+            None,
             None,
             (0, 0),
             TickMs(baseline + settle),
@@ -4520,6 +4532,7 @@ mod tests {
             SEND_TICK_MS,
             SEND_TICK_MS,
             Some(own_send),
+            None,
             (11, 22),
             TickMs(400),
         );
@@ -4567,6 +4580,7 @@ mod tests {
             SEND_TICK_MS,
             SEND_TICK_MS,
             Some(own_send),
+            None,
             (11, 22),
             TickMs(SEND_TICK_MS + cap),
         );
@@ -4607,6 +4621,7 @@ mod tests {
             SEND_TICK_MS,
             SEND_TICK_MS,
             Some(own_send),
+            None,
             (11, 22),
             TickMs(400),
         );
@@ -4652,6 +4667,7 @@ mod tests {
             0,
             0,
             Some(own_send),
+            None,
             (11, 22),
             TickMs(350),
         );
