@@ -465,14 +465,19 @@ pub struct PressState {
     pub win_held: bool,
     /// 自動リピートの Down か（対象押下は非リピートのみ。リピートは `press=None` で従来の `applied` 省略に任せる）。
     pub was_down: bool,
+    /// `DecisionInputs.mozc_direct_ready`（v6共有メモリの`cmd_window_handle`が読めてキルスイッチが真、
+    /// ADR-293 10節step4）。真かつ`CHAIN_GJI_ONLY`対象のprofile/kindでは、`decide_chain`が
+    /// `[MozcDirect, GjiDirect]`を返す（5-1節）。ADR-293 11節6番の前提条件1として全列挙対象に追加。
+    pub mozc_direct_ready: bool,
 }
 
 impl PressState {
-    /// 状態空間の全列挙（キー種別を除く。120,960 通り）。順序は決定的。
+    /// 状態空間の全列挙（キー種別を除く。241,920 通り。ADR-293 11節6番の前提条件1で
+    /// `mozc_direct_ready` 軸を追加し 120,960 から倍増）。順序は決定的。
     pub fn all() -> impl Iterator<Item = Self> {
         const B: [bool; 2] = [false, true];
         const OBS: [Option<bool>; 3] = [None, Some(false), Some(true)];
-        let mut v = Vec::with_capacity(2 * 5 * 2 * 7 * 2 * 2 * 3 * 3 * 2 * 2 * 2 * 2);
+        let mut v = Vec::with_capacity(2 * 5 * 2 * 7 * 2 * 2 * 3 * 3 * 2 * 2 * 2 * 2 * 2);
         for belief_open in B {
             for applied in AppliedKnowledge::ALL {
                 for is_japanese_ime in B {
@@ -489,21 +494,24 @@ impl PressState {
                                             for ctrl_chord in B {
                                                 for win_held in B {
                                                     for was_down in B {
-                                                        v.push(Self {
-                                                            belief_open,
-                                                            applied,
-                                                            is_japanese_ime,
-                                                            profile,
-                                                            ime_kind,
-                                                            ime_identified,
-                                                            current_focus_known,
-                                                            actuating_obs,
-                                                            intent,
-                                                            candidate_was_seen,
-                                                            ctrl_chord,
-                                                            win_held,
-                                                            was_down,
-                                                        });
+                                                        for mozc_direct_ready in B {
+                                                            v.push(Self {
+                                                                belief_open,
+                                                                applied,
+                                                                is_japanese_ime,
+                                                                profile,
+                                                                ime_kind,
+                                                                ime_identified,
+                                                                current_focus_known,
+                                                                actuating_obs,
+                                                                intent,
+                                                                candidate_was_seen,
+                                                                ctrl_chord,
+                                                                win_held,
+                                                                was_down,
+                                                                mozc_direct_ready,
+                                                            });
+                                                        }
                                                     }
                                                 }
                                             }
@@ -519,50 +527,43 @@ impl PressState {
         v.into_iter()
     }
 
-    /// 先頭の書き込み機構が GjiDirect か（GjiDirect だけが `applied` の already-matched 省略を持つ。
-    /// L1 の自動リピートで「同じ向きの VK を追い送りしない」が `applied` 省略に頼れるかの判定に使う）。
+    /// 先頭の書き込み機構が GjiDirect か（GjiDirect と MozcDirect が `applied` の already-matched
+    /// 省略を持つ。L1 の自動リピートで「同じ向きの VK を追い送りしない」が `applied` 省略に頼れるかの
+    /// 判定に使う）。
     ///
-    /// **既知の限界（ADR-293 10節step4、Opusレビュー`opus-review-step2to6` M2で部分的に
-    /// 訂正・一部未解決）**: この関数自体は本番で呼ばれていない
-    /// (`tests/explicit_press_exhaustive.rs`のP6分類ラベル専用)。M2で`decide_attempt`の
-    /// `MozcDirect`腕に`gji_direct_already_matches`と同じshadow-based省略を追加した結果、
-    /// `MozcDirect`も現実には`applied`のalready-matched省略を持つようになった(この関数の
-    /// 「GjiDirectだけが」というdocの前提は崩れている)。**残る限界**: `PressState`は実行時の
-    /// direct actuation準備状態（mozc-shm v6の`cmd_window_handle`）を持たないため、
-    /// `mozc_direct_ready`は常に`false`で呼ぶ——全列挙モデル(`explicit_press_exhaustive.rs`)は
-    /// 実際のチェーンが`CHAIN_GJI_ONLY`から`CHAIN_MOZC_DIRECT_THEN_GJI`（先頭`MozcDirect`）へ
-    /// 差し替わる場合を一度も列挙しておらず、ADR-208 L1の不変条件(二重送信防止・リピート
-    /// 追い送り防止)がMozcDirect先頭のチェーンでも成り立つことは、モデル上では未検証のまま
-    /// (`decide_attempt`単体のユニットテストでは確認済み、`mozc_direct_attempt_is_already_matched_skips_when_shadow_matches`
-    /// 等)。`PressState`に`mozc_direct_ready`の軸を追加して全列挙するのは、2000行超の既存
-    /// 検証モデルへの非自明な拡張であり本PRのスコープ外として見送った——次セッションで着手する
-    /// 際は、まずこのモデルの既存不変条件(P1〜P6)を読み、新しい軸がどのP条件に影響するかを
-    /// 洗い出すこと。
+    /// ADR-293 11節6番の前提条件1(全列挙モデルへの`mozc_direct_ready`軸追加)により、この関数は
+    /// `self.mozc_direct_ready`をそのまま`decide_chain`へ渡すようになった——`mozc_direct_ready`が
+    /// 真でCHAIN_GJI_ONLY対象のprofile/kindなら、先頭は`MozcDirect`になり、この関数は偽を返す
+    /// (P6分類は[`Self::chain_head_is_mozc_direct`]を併用する)。
     #[must_use]
     pub fn chain_head_is_gji_direct(&self) -> bool {
-        let inputs = DecisionInputs {
-            profile: self.profile.app_profile(),
-            kind: self.ime_kind,
-            shadow_on: None,
-            belief_input_mode: InputModeState::Unknown,
-            candidate_was_seen: false,
-            mozc_direct_ready: false,
-        };
-        decide_chain(inputs)[0] == WriteMechanism::GjiDirect
+        decide_chain(self.chain_inputs())[0] == WriteMechanism::GjiDirect
+    }
+
+    /// 先頭の書き込み機構が MozcDirect か(GjiDirectと同じ`applied`のalready-matched省略を持つ、
+    /// ADR-293 10節step4、M2)。ADR-293 11節6番の前提条件1、P6分類ラベル専用。
+    #[must_use]
+    pub fn chain_head_is_mozc_direct(&self) -> bool {
+        decide_chain(self.chain_inputs())[0] == WriteMechanism::MozcDirect
     }
 
     /// 先頭の書き込み機構が ImmCross か（ImmCross は非同期で完了が後から届くので、予約を解けない）。
     #[must_use]
     pub fn chain_head_is_imm_cross(&self) -> bool {
-        let inputs = DecisionInputs {
+        decide_chain(self.chain_inputs())[0] == WriteMechanism::ImmCross
+    }
+
+    /// [`Self::chain_head_is_gji_direct`]等が共有する`DecisionInputs`(`shadow_on`/`candidate_was_seen`
+    /// はチェーンの先頭機構の種別だけに関心があるので無関係、既定値のまま)。
+    fn chain_inputs(&self) -> DecisionInputs {
+        DecisionInputs {
             profile: self.profile.app_profile(),
             kind: self.ime_kind,
             shadow_on: None,
             belief_input_mode: InputModeState::Unknown,
             candidate_was_seen: false,
-            mozc_direct_ready: false,
-        };
-        decide_chain(inputs)[0] == WriteMechanism::ImmCross
+            mozc_direct_ready: self.mozc_direct_ready,
+        }
     }
 
     /// 実機で起こりうる組み合わせか。Blind プロファイル（Chrome/Edge/WT 等）は実 IME の open を直接読めないので、
@@ -809,7 +810,7 @@ fn attempt_write(
         shadow_on,
         belief_input_mode: InputModeState::Unknown,
         candidate_was_seen: state.candidate_was_seen,
-        mozc_direct_ready: false,
+        mozc_direct_ready: state.mozc_direct_ready,
     };
     if decide_gate(inputs) == GateResult::NotOwned {
         return (None, ElisionReason::InputRelayNotOwned);
@@ -1264,16 +1265,17 @@ mod tests {
             ctrl_chord: false,
             win_held: false,
             was_down: false,
+            mozc_direct_ready: false,
         }
     }
 
     #[test]
     fn state_space_size_is_pinned() {
         // belief 2 × applied 5 × japanese 2 × profile 7 × (kind, 同定) 3 × focus 2 × obs 3 × intent 3 ×
-        // candidate 2 × chord 2 × win 2 × was_down 2
+        // candidate 2 × chord 2 × win 2 × was_down 2 × mozc_direct_ready 2(ADR-293 11節6番 前提条件1)
         assert_eq!(
             PressState::all().count(),
-            2 * 5 * 2 * 7 * 3 * 2 * 3 * 3 * 2 * 2 * 2 * 2
+            2 * 5 * 2 * 7 * 3 * 2 * 3 * 3 * 2 * 2 * 2 * 2 * 2
         );
         assert_eq!(ExplicitKey::ALL.len(), 12);
     }
@@ -1647,7 +1649,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(checked, 120_960 * 12 * 3);
+        assert_eq!(checked, 241_920 * 12 * 3);
     }
 
     /// 固定点（D4）: Legacy との差は「昇格した no-op で plan(false) が Suppress の押下が書く」ことだけ。
@@ -2071,7 +2073,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(plan_cases, 120_960 * 10 * 2 * 2);
+        assert_eq!(plan_cases, 241_920 * 10 * 2 * 2);
     }
 }
 

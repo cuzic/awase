@@ -419,8 +419,9 @@ fn analyze() -> Report {
                 });
             }
 
-            // P6: 押下の書き込みの直後の自動リピート（`press=None`）。GjiDirect は `applied` の already-matched 省略で VK を
-            // 追い送りしない（L1: 押下の書き込みだけが applied を未知にする。リピートは従来の省略）。トグルキーのリピートは
+            // P6: 押下の書き込みの直後の自動リピート（`press=None`）。GjiDirect/MozcDirect は `applied` の
+            // already-matched 省略で VK を追い送りしない（L1: 押下の書き込みだけが applied を未知にする。
+            // リピートは従来の省略。MozcDirectの省略はADR-293 10節step4、M2）。トグルキーのリピートは
             // belief を反転し続ける既存の挙動（ADR-199 決定18(ii) は F13 だけを除外）、ImmCross/MsImeDirect に省略は無い（従来どおり）。
             if !s.was_down && !s.win_held && key.is_target_press_key() && d1.write.is_some() {
                 let s1 = PressState {
@@ -434,6 +435,8 @@ fn analyze() -> Report {
                         "repeat_toggles_belief"
                     } else if s.chain_head_is_gji_direct() {
                         "repeat_rewrites_gji_direct"
+                    } else if s.chain_head_is_mozc_direct() {
+                        "repeat_rewrites_mozc_direct"
                     } else {
                         "repeat_rewrites_no_applied_elision"
                     };
@@ -969,6 +972,7 @@ fn sync_route_that_sent_nothing_releases_the_reservation_but_async_does_not() {
         ctrl_chord: false,
         win_held: true,
         was_down: false,
+        mozc_direct_ready: false,
     };
     for (profile, expect_released) in [
         (PressProfile::ImmUnavailable, true),
@@ -1121,6 +1125,23 @@ fn p6_repeat_never_rewrites_gji_direct() {
     assert!(rep.p6.checked > 0);
 }
 
+/// P6(ADR-293 11節6番 前提条件1): 押下の書き込みの直後の自動リピートで、MozcDirectが先頭の
+/// チェーンでもGjiDirectと同じ`applied`省略でVKを追い送りしないことを全列挙で確認する
+/// (ADR-293 10節step4、M2の`decide_attempt`拡張が、全列挙モデルで検証されていなかった前提条件)。
+#[test]
+fn p6_repeat_never_rewrites_mozc_direct() {
+    let rep = analyze();
+    assert!(
+        !rep.p6.classes.contains_key("repeat_rewrites_mozc_direct"),
+        "{:?}",
+        rep.p6
+            .classes
+            .get("repeat_rewrites_mozc_direct")
+            .and_then(|c| c.example.as_ref())
+    );
+    assert!(rep.p6.checked > 0);
+}
+
 /// L1 が L0 から変えるのは（L2 前の判断どうしの比較）、押下 ID を持つ押下（非リピート）の Engine 経路の already-matched 省略（S-1。TsfNative を除く）だけ。
 /// shadow 経路は押下 ID あり（非リピート）なら L0 と同じ（従来から無条件に降格していた）、Engine 経路はリピート（`press=None`）
 /// なら L0 と同じ（`applied` の省略のまま）。
@@ -1188,6 +1209,7 @@ fn shadow_never_overrides_an_earlier_engine_reservation() {
         ctrl_chord: false,
         win_held: false,
         was_down: false,
+        mozc_direct_ready: false,
     };
     // Engine が OFF（false）を予約済みの押下に、shadow の ON（0x16）が来ても書かない。
     let d = explicit_press_delivery_after(&base, ExplicitKey::StaticOn, &judge, PROD, Some(false));

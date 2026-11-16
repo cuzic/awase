@@ -15,126 +15,126 @@
 # モデル(推測)。押下 ID の予約(L1)で同じ向きの二重送信は 0。逆向きは Engine が上書きする(件数は engine_overrides)。
 # P6 は「押下の書き込みの直後の自動リピート」を 2 押下で見る。
 #
-states	120960	plausible	86400	keys	12
+states	241920	plausible	172800	keys	12
 
 ## P1: INV-L1: 対象押下の Delivery が配送か書き込みのちょうど一方で、配送側なら A1 のキー
-info	s1_profile/kind	ImmUnavailableTsfClass/Gji	864
-info	s1_profile/kind	TsfNative/Gji	864
-checked	1451520	violations	23328	plausible_violations	13536
-class	S1_already_matched	all	1728	plausible	576
+info	s1_profile/kind	ImmUnavailableTsfClass/Gji	1728
+info	s1_profile/kind	TsfNative/Gji	1728
+checked	2903040	violations	46656	plausible_violations	27072
+class	S1_already_matched	all	3456	plausible	1152
   # S-1: GjiDirect の already-matched（Engine 経由の絶対キー × 古い applied）で Consume して書かない。L1 で解消（TsfNative×GJI だけ、BUG-124 の実機 A/B〈ADR-208 L3'〉まで既知の制限として残る）
   minimal_example: key=EngineOff belief=false applied=Opt(false) jp=true profile=ImmUnavailableTsfClass kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Consume write=None reason=AlreadyMatched
-class	L5_input_relay_consumed	all	8640	plausible	8640
+class	L5_input_relay_consumed	all	17280	plausible	17280
   # L-5（所有者決定3、L4 段で素通しへ）: InputRelay の窓では Engine のコンボを Consume するが awase は書かない
   minimal_example: key=EngineOn belief=false applied=Unknown jp=true profile=InputRelay kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Consume write=None reason=InputRelayNotOwned
-class	A1_noop_pass_through	all	12960	plausible	4320
+class	A1_noop_pass_through	all	25920	plausible	8640
   # 前提 A1（Opus round1 B-2）: 前提 A1 が成り立たないキー（任意の sync キー等）の no-op を Allow で配送する（IME が処理する保証が無い）
   minimal_example: key=SyncOff belief=false applied=Unknown jp=true profile=ImmUnavailable kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Allow write=None reason=ShadowNoop
 
 ## P1-PreL1: (参考) L1 前(押下 ID なし、ADR-208 L0 の現状)の P1。S-1 が L1 で解消した差分（TsfNative×GJI を除く）を残す
-checked	1451520	violations	166068	plausible_violations	117756
-class	S1_already_matched	all	1008	plausible	396
+checked	2903040	violations	332136	plausible_violations	235512
+class	S1_already_matched	all	2016	plausible	792
   # S-1: GjiDirect の already-matched（Engine 経由の絶対キー × 古い applied）で Consume して書かない。L1 で解消（TsfNative×GJI だけ、BUG-124 の実機 A/B〈ADR-208 L3'〉まで既知の制限として残る）
   minimal_example: key=EngineOff belief=false applied=Opt(false) jp=true profile=ImmUnavailable kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Consume write=None reason=AlreadyMatched
-class	S2_not_japanese	all	86400	plausible	57600
+class	S2_not_japanese	all	172800	plausible	115200
   # S-2: is_japanese_ime=false。授権が下りない（Engine のコンボ・0x16/0x1A）／漢字(0x19)・F13 が昇格せず握る・配送だけになる。L2 で解消（押下の授権と非リピートの昇格が is_japanese_ime を問わない）
   minimal_example: key=StaticOn belief=false applied=Unknown jp=false profile=ImmCross kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Suppress write=None reason=Unwarranted
-class	S3_shadow_noop_suppressed	all	25920	plausible	25920
+class	S3_shadow_noop_suppressed	all	51840	plausible	51840
   # S-3: shadow no-op（belief が既に向きと一致）は書かず、物理は Suppress される（ImmCross）
   minimal_example: key=StaticOff belief=false applied=Unknown jp=true profile=ImmCross kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Suppress write=None reason=ShadowNoop
-class	S4_focus_none_unwarranted	all	29430	plausible	19710
+class	S4_focus_none_unwarranted	all	58860	plausible	39420
   # S-4: current_focus=None で授権が下りない（意図の記録が no-op で Step 1 が外れ、鮮度内の観測が無いか向きが逆）。L2 で解消（押下の授権は押下の意図そのもの、ExplicitPress）
   minimal_example: key=StaticOn belief=false applied=Unknown jp=true profile=ImmCross kind=Gji focus=None obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Suppress write=None reason=Unwarranted
-class	L9_chord_filtered_unwarranted	all	1710	plausible	1170
+class	L9_chord_filtered_unwarranted	all	3420	plausible	2340
   # L-9（監査 §2、S-4 と同根: 意図が記録されない）: chord フィルタに落ちた Engine の OFF は意図を記録せず、観測と食い違うと授権が下りない
   minimal_example: key=EngineOff belief=false applied=Unknown jp=true profile=ImmCross kind=Gji focus=Some obs=None intent=None cand=false chord=true win=false repeat=false -> physical=Consume write=None reason=Unwarranted
-class	L5_input_relay_consumed	all	8640	plausible	8640
+class	L5_input_relay_consumed	all	17280	plausible	17280
   # L-5（所有者決定3、L4 段で素通しへ）: InputRelay の窓では Engine のコンボを Consume するが awase は書かない
   minimal_example: key=EngineOn belief=false applied=Unknown jp=true profile=InputRelay kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Consume write=None reason=InputRelayNotOwned
-class	A1_noop_pass_through	all	12960	plausible	4320
+class	A1_noop_pass_through	all	25920	plausible	8640
   # 前提 A1（Opus round1 B-2）: 前提 A1 が成り立たないキー（任意の sync キー等）の no-op を Allow で配送する（IME が処理する保証が無い）
   minimal_example: key=SyncOff belief=false applied=Unknown jp=true profile=ImmUnavailable kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Allow write=None reason=ShadowNoop
 
 ## P1-PreL2: (参考) L2 前(L1 まで、押下の授権が is_japanese_ime・current_focus を問う)の P1。S-2・S-4 が L2 で解消した差分を残す
-checked	1451520	violations	165732	plausible_violations	117624
-class	S1_already_matched	all	672	plausible	264
+checked	2903040	violations	331464	plausible_violations	235248
+class	S1_already_matched	all	1344	plausible	528
   # S-1: GjiDirect の already-matched（Engine 経由の絶対キー × 古い applied）で Consume して書かない。L1 で解消（TsfNative×GJI だけ、BUG-124 の実機 A/B〈ADR-208 L3'〉まで既知の制限として残る）
   minimal_example: key=EngineOff belief=false applied=Opt(false) jp=true profile=ImmUnavailableTsfClass kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Consume write=None reason=AlreadyMatched
-class	S2_not_japanese	all	86400	plausible	57600
+class	S2_not_japanese	all	172800	plausible	115200
   # S-2: is_japanese_ime=false。授権が下りない（Engine のコンボ・0x16/0x1A）／漢字(0x19)・F13 が昇格せず握る・配送だけになる。L2 で解消（押下の授権と非リピートの昇格が is_japanese_ime を問わない）
   minimal_example: key=StaticOn belief=false applied=Unknown jp=false profile=ImmCross kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Suppress write=None reason=Unwarranted
-class	S3_shadow_noop_suppressed	all	25920	plausible	25920
+class	S3_shadow_noop_suppressed	all	51840	plausible	51840
   # S-3: shadow no-op（belief が既に向きと一致）は書かず、物理は Suppress される（ImmCross）
   minimal_example: key=StaticOff belief=false applied=Unknown jp=true profile=ImmCross kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Suppress write=None reason=ShadowNoop
-class	S4_focus_none_unwarranted	all	29430	plausible	19710
+class	S4_focus_none_unwarranted	all	58860	plausible	39420
   # S-4: current_focus=None で授権が下りない（意図の記録が no-op で Step 1 が外れ、鮮度内の観測が無いか向きが逆）。L2 で解消（押下の授権は押下の意図そのもの、ExplicitPress）
   minimal_example: key=StaticOn belief=false applied=Unknown jp=true profile=ImmCross kind=Gji focus=None obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Suppress write=None reason=Unwarranted
-class	L9_chord_filtered_unwarranted	all	1710	plausible	1170
+class	L9_chord_filtered_unwarranted	all	3420	plausible	2340
   # L-9（監査 §2、S-4 と同根: 意図が記録されない）: chord フィルタに落ちた Engine の OFF は意図を記録せず、観測と食い違うと授権が下りない
   minimal_example: key=EngineOff belief=false applied=Unknown jp=true profile=ImmCross kind=Gji focus=Some obs=None intent=None cand=false chord=true win=false repeat=false -> physical=Consume write=None reason=Unwarranted
-class	L5_input_relay_consumed	all	8640	plausible	8640
+class	L5_input_relay_consumed	all	17280	plausible	17280
   # L-5（所有者決定3、L4 段で素通しへ）: InputRelay の窓では Engine のコンボを Consume するが awase は書かない
   minimal_example: key=EngineOn belief=false applied=Unknown jp=true profile=InputRelay kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Consume write=None reason=InputRelayNotOwned
-class	A1_noop_pass_through	all	12960	plausible	4320
+class	A1_noop_pass_through	all	25920	plausible	8640
   # 前提 A1（Opus round1 B-2）: 前提 A1 が成り立たないキー（任意の sync キー等）の no-op を Allow で配送する（IME が処理する保証が無い）
   minimal_example: key=SyncOff belief=false applied=Unknown jp=true profile=ImmUnavailable kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Allow write=None reason=ShadowNoop
 
 ## P1-PreL3a: (参考) L3a 前(L2 まで、D4 の固定点なし)の P1。S-3(IC の shadow no-op が書かず Suppress される)が L3a で解消した差分を残す
-checked	1451520	violations	49248	plausible_violations	39456
-class	S1_already_matched	all	1728	plausible	576
+checked	2903040	violations	98496	plausible_violations	78912
+class	S1_already_matched	all	3456	plausible	1152
   # S-1: GjiDirect の already-matched（Engine 経由の絶対キー × 古い applied）で Consume して書かない。L1 で解消（TsfNative×GJI だけ、BUG-124 の実機 A/B〈ADR-208 L3'〉まで既知の制限として残る）
   minimal_example: key=EngineOff belief=false applied=Opt(false) jp=true profile=ImmUnavailableTsfClass kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Consume write=None reason=AlreadyMatched
-class	S3_shadow_noop_suppressed	all	25920	plausible	25920
+class	S3_shadow_noop_suppressed	all	51840	plausible	51840
   # S-3: shadow no-op（belief が既に向きと一致）は書かず、物理は Suppress される（ImmCross）
   minimal_example: key=StaticOff belief=false applied=Unknown jp=true profile=ImmCross kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Suppress write=None reason=ShadowNoop
-class	L5_input_relay_consumed	all	8640	plausible	8640
+class	L5_input_relay_consumed	all	17280	plausible	17280
   # L-5（所有者決定3、L4 段で素通しへ）: InputRelay の窓では Engine のコンボを Consume するが awase は書かない
   minimal_example: key=EngineOn belief=false applied=Unknown jp=true profile=InputRelay kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Consume write=None reason=InputRelayNotOwned
-class	A1_noop_pass_through	all	12960	plausible	4320
+class	A1_noop_pass_through	all	25920	plausible	8640
   # 前提 A1（Opus round1 B-2）: 前提 A1 が成り立たないキー（任意の sync キー等）の no-op を Allow で配送する（IME が処理する保証が無い）
   minimal_example: key=SyncOff belief=false applied=Unknown jp=true profile=ImmUnavailable kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> physical=Allow write=None reason=ShadowNoop
 
 ## P2: 絶対キーは 1 押下で実 IME がキーの向きに一致する（実 IME の初期値 R を掛ける）
-checked	362880	violations	23328	plausible_violations	13536
-class	S1_already_matched	all	1728	plausible	576
+checked	725760	violations	46656	plausible_violations	27072
+class	S1_already_matched	all	3456	plausible	1152
   # S-1: GjiDirect の already-matched（Engine 経由の絶対キー × 古い applied）で Consume して書かない。L1 で解消（TsfNative×GJI だけ、BUG-124 の実機 A/B〈ADR-208 L3'〉まで既知の制限として残る）
   minimal_example: key=EngineOff belief=false applied=Opt(false) jp=true profile=ImmUnavailableTsfClass kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false R=true -> physical=Consume write=None reason=AlreadyMatched (R: true -> true, 向き=false)
-class	L5_input_relay_consumed	all	8640	plausible	8640
+class	L5_input_relay_consumed	all	17280	plausible	17280
   # L-5（所有者決定3、L4 段で素通しへ）: InputRelay の窓では Engine のコンボを Consume するが awase は書かない
   minimal_example: key=EngineOn belief=false applied=Unknown jp=true profile=InputRelay kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false R=false -> physical=Consume write=None reason=InputRelayNotOwned (R: false -> false, 向き=true)
-class	A1_noop_pass_through	all	12960	plausible	4320
+class	A1_noop_pass_through	all	25920	plausible	8640
   # 前提 A1（Opus round1 B-2）: 前提 A1 が成り立たないキー（任意の sync キー等）の no-op を Allow で配送する（IME が処理する保証が無い）
   minimal_example: key=SyncOff belief=false applied=Unknown jp=true profile=ImmUnavailable kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false R=true -> physical=Allow write=None reason=ShadowNoop (R: true -> true, 向き=false)
 
 ## P3: トグルは 2 押下以内で実 IME の状態が変わる（実 IME の初期値 R を掛ける）
-checked	231840	violations	0	plausible_violations	0
+checked	463680	violations	0	plausible_violations	0
 
 ## P4: 最大 3 押下で同じ違反を 2 回続けて繰り返さない
-checked	327600	violations	40320	plausible_violations	19200
-class	S1_already_matched	all	5760	plausible	1920
+checked	655200	violations	80640	plausible_violations	38400
+class	S1_already_matched	all	11520	plausible	3840
   # S-1: GjiDirect の already-matched（Engine 経由の絶対キー × 古い applied）で Consume して書かない。L1 で解消（TsfNative×GJI だけ、BUG-124 の実機 A/B〈ADR-208 L3'〉まで既知の制限として残る）
   minimal_example: key=EngineOn belief=false applied=Unknown jp=true profile=ImmUnavailableTsfClass kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> 3回目も同じ: physical=Consume write=None reason=AlreadyMatched
-class	L5_input_relay_consumed	all	8640	plausible	8640
+class	L5_input_relay_consumed	all	17280	plausible	17280
   # L-5（所有者決定3、L4 段で素通しへ）: InputRelay の窓では Engine のコンボを Consume するが awase は書かない
   minimal_example: key=EngineOn belief=false applied=Unknown jp=true profile=InputRelay kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> 2回目も同じ: physical=Consume write=None reason=InputRelayNotOwned
-class	A1_noop_pass_through	all	25920	plausible	8640
+class	A1_noop_pass_through	all	51840	plausible	17280
   # 前提 A1（Opus round1 B-2）: 前提 A1 が成り立たないキー（任意の sync キー等）の no-op を Allow で配送する（IME が処理する保証が無い）
   minimal_example: key=SyncOn belief=false applied=Unknown jp=true profile=ImmUnavailable kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> 3回目も同じ: physical=Allow write=None reason=ShadowNoop
 
 ## P5: 同一押下で shadow 経路と Engine SetOpen が重なるキー（keys.ime_* 等）では、Engine への静的な事前問い合わせで shadow は書かない（書き込みは Engine の 1 回）
-checked	473760	violations	0	plausible_violations	0
+checked	947520	violations	0	plausible_violations	0
 
 ## P5-Ledger: (防御線) 事前問い合わせが効かなかったとき、予約だけで同じ向きの二重送信を防げる（逆向きは Engine が上書きして 2 回。同期で何も送らなかったときは予約を解く）
-info	engine_overrides	171936	(向きが逆で Engine が shadow を上書きして 2 回書き、最終の向きが Engine)
-info	engine_write_elided	5184	(向きが逆だが Engine 自身の書き込みが省略され shadow の向きが残る。授権・Win キー等の別の穴)
-checked	473760	violations	0	plausible_violations	0
+info	engine_overrides	343872	(向きが逆で Engine が shadow を上書きして 2 回書き、最終の向きが Engine)
+info	engine_write_elided	10368	(向きが逆だが Engine 自身の書き込みが省略され shadow の向きが残る。授権・Win キー等の別の穴)
+checked	947520	violations	0	plausible_violations	0
 
 ## P6: 押下の書き込みの直後の自動リピート（press=None）で、GjiDirect は VK を追い送りしない（applied の省略）
-checked	227232	violations	53100	plausible_violations	36180
-class	repeat_rewrites_no_applied_elision	all	14220	plausible	10260
+checked	454464	violations	106200	plausible_violations	72360
+class	repeat_rewrites_no_applied_elision	all	28440	plausible	20520
   # (P5/P6)
   minimal_example: key=EngineOn belief=false applied=Unknown jp=true profile=ImmCross kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> 押下 physical=Consume write=Some(true) reason=Written / 直後のリピート physical=Consume write=Some(true) reason=Written
-class	repeat_toggles_belief	all	38880	plausible	25920
+class	repeat_toggles_belief	all	77760	plausible	51840
   # (P5/P6)
   minimal_example: key=HzToggle belief=false applied=Unknown jp=true profile=ImmCross kind=Gji focus=Some obs=None intent=None cand=false chord=false win=false repeat=false -> 押下 physical=Suppress write=Some(true) reason=Written / 直後のリピート physical=Suppress write=Some(false) reason=Written
 
