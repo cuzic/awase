@@ -423,6 +423,60 @@ fn count_post_message_none_calls(content: &str) -> usize {
     count
 }
 
+/// `PostMessageW(Some(..` 呼び出し（他プロセス/他窓宛てのpost、hwnd=NULLの
+/// `count_post_message_none_calls`とは別軸）の件数を数える。
+fn count_post_message_some_calls(content: &str) -> usize {
+    let mut count = 0;
+    let mut rest = content;
+    while let Some(idx) = rest.find("PostMessageW") {
+        rest = &rest[idx + "PostMessageW".len()..];
+        let after_ws = rest.trim_start();
+        let Some(after_paren) = after_ws.strip_prefix('(') else {
+            continue;
+        };
+        let first_arg = after_paren.trim_start();
+        if first_arg.starts_with("Some(") {
+            count += 1;
+        }
+        rest = after_paren;
+    }
+    count
+}
+
+/// ADR-293 10節step5(Opusレビュー`opus-review-step2to6` M3): 他プロセス/他窓宛ての
+/// `PostMessageW(Some(..)` 呼び出しは、本番コードで3箇所に限定される
+/// (`win32.rs::post_to_main_thread_inner`のengine_hwnd宛て、
+/// `app/bootstrap.rs`の多重起動検知によるWM_DUPLICATE_INSTANCE、
+/// `ime_controller.rs::apply_mozc_direct`のmozc-readable fork宛てdirect actuation)。
+/// 新しい呼び出し元が無宣言で増えていないかをこのテストで固定する
+/// (`lints/actuation_call_guard::RESTRICTED_CALLS`の`apply_mozc_direct`エントリと対)。
+#[test]
+fn post_message_some_sites_are_pinned() {
+    let mut sites = Vec::new();
+    for path in list_src_files() {
+        let content = read_crate_file(&path);
+        let production = production_code_only(&content);
+        let uncommented = non_comment_lines(production);
+        let count = count_post_message_some_calls(&uncommented);
+        if count > 0 {
+            sites.push((path, count));
+        }
+    }
+    sites.sort();
+    assert_eq!(
+        sites,
+        vec![
+            ("src/app/bootstrap.rs".to_string(), 1),
+            ("src/ime_controller.rs".to_string(), 1),
+            ("src/win32.rs".to_string(), 1),
+        ],
+        "PostMessageW(Some(..)) call sites changed — if this is a new, intentional \
+         write path to another process/window, add it to \
+         lints/actuation_call_guard::RESTRICTED_CALLS and update this list; if it's \
+         accidental, it's a new unreviewed actuation confluence point (fix-requires-evidence.md)"
+    );
+}
+
 /// `production_code_only` が CRLF チェックアウトでも `#[cfg(test)] mod tests` を
 /// 切り落とすことの回帰テスト（上の doc 参照）。
 #[test]
