@@ -340,6 +340,9 @@ fn apply_mozc_direct(open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
             // `opus-review-step2to6` L2)。
             crate::hook::note_own_send(open, target.0, target.1, Some(nonce));
             crate::hook::note_ime_actuation_send();
+            // round3 R3-4: 「送ったnonce」の記録はPostMessageWが実際にOkを返した
+            // この分岐でだけ行う(nonceの発行自体はPostMessageWの成否を知らない)。
+            crate::hook::note_direct_actuation_posted(nonce);
             ImeOpenOutcome::AppliedWithoutSendInput
         }
         Err(err) => {

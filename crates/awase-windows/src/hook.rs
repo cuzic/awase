@@ -472,6 +472,10 @@ pub(crate) fn clear_own_send() {
 /// 「今回の送信への確認」と誤認し、BUG-234を別経路で再発させるおそれがある。
 /// `current_tick_ms()`はテストでは仮想時計を返すため、シード自体の決定性はテストに
 /// 影響しない。
+///
+/// この関数自体は`last_issued_direct_actuation_nonce`を更新しない(round3 R3-4)——
+/// 呼び出し元が実際に`PostMessageW`で送れたかはまだ分からないため。送信に成功した
+/// ときだけ[`note_direct_actuation_posted`]を呼ぶこと。
 pub(crate) fn next_direct_actuation_nonce() -> u32 {
     // 初回呼び出し(カウンタがまだ未シードの0)だけ、現在時刻由来の値でシードし直す。
     // 失敗(既に他のスレッドがシード済み/既に送信済み)は無視して通常の増分へ進む——
@@ -488,15 +492,25 @@ pub(crate) fn next_direct_actuation_nonce() -> u32 {
             .direct_actuation_nonce_counter
             .fetch_add(1, Ordering::Relaxed);
         if n != 0 {
-            HOOK_STATE
-                .last_issued_direct_actuation_nonce
-                .store(n, Ordering::Relaxed);
-            HOOK_STATE
-                .last_issued_direct_actuation_nonce_tick_ms
-                .store(current_tick_ms(), Ordering::Relaxed);
             return n;
         }
     }
+}
+
+/// Opusレビュー`opus-review-step2to6` round3 R3-4: `next_direct_actuation_nonce()`が
+/// 発行したnonceで、実際に`PostMessageW`が`Ok`を返した(= 送信できた)ときだけ呼ぶこと。
+/// 「送ったnonce」という`last_issued_direct_actuation_nonce()`の名前の意味を保つため、
+/// 発行(nonceを払い出す)と送信成功の記録を分離した——以前は`next_direct_actuation_nonce()`
+/// 自身がこれを記録しており、`PostMessageW`が`Err`を返した場合でも「送った」と記録されていた
+/// (現状では遮断解除判定〈`clear_mozc_direct_circuit_broken_if_alive`〉はまだ送っていない
+/// nonceにackが来ることがないため実害は無かったが、将来の誤用を防ぐため分離する)。
+pub(crate) fn note_direct_actuation_posted(nonce: u32) {
+    HOOK_STATE
+        .last_issued_direct_actuation_nonce
+        .store(nonce, Ordering::Relaxed);
+    HOOK_STATE
+        .last_issued_direct_actuation_nonce_tick_ms
+        .store(current_tick_ms(), Ordering::Relaxed);
 }
 
 /// Opusレビュー`opus-review-step2to6` round2 R2-3: 最後に`next_direct_actuation_nonce()`が
@@ -2189,11 +2203,26 @@ mod direct_actuation_nonce_tests {
             "初回呼び出しはcurrent_tick_ms()|1からシードされるはず(静的初期値が\
              0でないとcompare_exchangeが成立せずこのシードが効かない、round2 R2-1)"
         );
+        // round3 R3-4: 発行(next_direct_actuation_nonce)はまだlast_issuedを更新しない。
+        // 本番の呼び出し元(ime_controller.rs::apply_mozc_direct)がPostMessageWの成功
+        // (Ok(()))を確認してから`note_direct_actuation_posted`を呼ぶのをここで模する。
+        assert_eq!(
+            last_issued_direct_actuation_nonce(),
+            0,
+            "発行だけではlast_issuedは更新されないはず(R3-4、送信成功の記録と分離した)"
+        );
+        note_direct_actuation_posted(first);
         assert_eq!(last_issued_direct_actuation_nonce(), first);
 
-        let tick_at_second = current_tick_ms();
         let second = next_direct_actuation_nonce();
         assert_eq!(second, expected_seed + 1, "2回目以降は単調増加するだけ");
+        assert_eq!(
+            last_issued_direct_actuation_nonce(),
+            first,
+            "発行しただけの第2回はまだlast_issuedに反映されないはず(R3-4)"
+        );
+        let tick_at_second = current_tick_ms();
+        note_direct_actuation_posted(second);
         assert_eq!(last_issued_direct_actuation_nonce(), second);
         assert_eq!(
             last_issued_direct_actuation_nonce_tick_ms(),
