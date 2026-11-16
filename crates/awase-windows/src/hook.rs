@@ -452,7 +452,26 @@ pub(crate) fn clear_own_send() {
 
 /// ADR-293 10節step5: 次のdirect actuation要求に使うnonceを発行する(0以外のu32、
 /// `shared-memory.md` 6-5節のワイヤー定義どおり単調増加。呼ぶたびに違う値)。
+///
+/// カウンタは固定値1からではなく、起動ごとに`current_tick_ms()`から再シードする
+/// (Opusレビューround1 M1)。`direct_actuation_nonce_counter`は`const fn new()`の
+/// static初期値(コンパイル時定数)なので、固定値1からでは**毎回同じ値から**始まり、
+/// 再起動後の最初のdirect postが、前回プロセスが同じスレッド(=同じmozc-readable
+/// forkのTIP)に残した`last_cmd_nonce`(forkはプロセス再起動で消えない、TIP側の状態)と
+/// 一致しうる——`classify_own_request`項目1が前回のackを「今回の送信への確認」と
+/// 誤認し、BUG-234を別経路で再発させるおそれがある。`current_tick_ms()`はテストでは
+/// 仮想時計を返すため、シード自体の決定性はテストに影響しない。
 pub(crate) fn next_direct_actuation_nonce() -> u32 {
+    // 初回呼び出し(カウンタがまだ0)だけ、現在時刻由来の値でシードし直す。失敗(既に
+    // 他のスレッドがシード済み/既に送信済み)は無視して通常の増分へ進む——0以外の
+    // 値を返すという契約には影響しない。
+    let seed = (current_tick_ms() as u32) | 1;
+    let _ = HOOK_STATE.direct_actuation_nonce_counter.compare_exchange(
+        0,
+        seed,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
     loop {
         let n = HOOK_STATE
             .direct_actuation_nonce_counter
