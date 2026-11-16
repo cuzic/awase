@@ -95,6 +95,12 @@ struct HookState {
     /// 証拠として、プロセス全体の回路遮断(`WindowsPlatform::mozc_direct_circuit_broken`)を
     /// 解除する判定に使う(`mozc_shm_shadow.rs`)。
     last_issued_direct_actuation_nonce: AtomicU32,
+    /// Opusレビュー`opus-review-step2to6` round2 R2-9(L3): `last_issued_direct_actuation_nonce`
+    /// を発行した時点の`current_tick_ms()`。`own_send`は`classify_own_request`に消費されると
+    /// 消えるため、ackが次tick以降に届いたときには送信時刻が分からず拒否率ログの
+    /// `latency_ms`がほぼ`None`になっていた——`own_send`と独立にこの送信時刻を保持することで、
+    /// ackのnonceが`last_issued_direct_actuation_nonce`と一致する限りlatencyを計算できる。
+    last_issued_direct_actuation_nonce_tick_ms: AtomicU64,
     /// `install_hook` がフックスレッドからの TID 通知を待つスロット。
     /// 0 = 待機中、`u32::MAX` = `SetWindowsHookExW` 失敗、それ以外 = フックスレッド TID。
     hook_tid_init_slot: AtomicU32,
@@ -198,6 +204,7 @@ impl HookState {
             own_send_nonce: AtomicU32::new(0),
             direct_actuation_nonce_counter: AtomicU32::new(0),
             last_issued_direct_actuation_nonce: AtomicU32::new(0),
+            last_issued_direct_actuation_nonce_tick_ms: AtomicU64::new(0),
             hook_tid_init_slot: AtomicU32::new(0),
             physical_key_state: [const { AtomicBool::new(false) }; 256],
             physical_key_down_at_ms: [const { AtomicU64::new(0) }; 256],
@@ -484,6 +491,9 @@ pub(crate) fn next_direct_actuation_nonce() -> u32 {
             HOOK_STATE
                 .last_issued_direct_actuation_nonce
                 .store(n, Ordering::Relaxed);
+            HOOK_STATE
+                .last_issued_direct_actuation_nonce_tick_ms
+                .store(current_tick_ms(), Ordering::Relaxed);
             return n;
         }
     }
@@ -501,6 +511,17 @@ pub(crate) fn next_direct_actuation_nonce() -> u32 {
 pub(crate) fn last_issued_direct_actuation_nonce() -> u32 {
     HOOK_STATE
         .last_issued_direct_actuation_nonce
+        .load(Ordering::Relaxed)
+}
+
+/// Opusレビュー`opus-review-step2to6` round2 R2-9(L3): `last_issued_direct_actuation_nonce()`
+/// を発行した時点の`current_tick_ms()`。呼び出し元は、ackの`last_cmd_nonce`がこの関数と
+/// 対になる`last_issued_direct_actuation_nonce()`と一致する場合に限り、この値を送信時刻として
+/// latencyを計算してよい(一致しないnonceの送信時刻はこの単一スロットには残っていない)。
+#[must_use]
+pub(crate) fn last_issued_direct_actuation_nonce_tick_ms() -> u64 {
+    HOOK_STATE
+        .last_issued_direct_actuation_nonce_tick_ms
         .load(Ordering::Relaxed)
 }
 
@@ -2170,9 +2191,15 @@ mod direct_actuation_nonce_tests {
         );
         assert_eq!(last_issued_direct_actuation_nonce(), first);
 
+        let tick_at_second = current_tick_ms();
         let second = next_direct_actuation_nonce();
         assert_eq!(second, expected_seed + 1, "2回目以降は単調増加するだけ");
         assert_eq!(last_issued_direct_actuation_nonce(), second);
+        assert_eq!(
+            last_issued_direct_actuation_nonce_tick_ms(),
+            tick_at_second,
+            "round2 R2-9: 送信時刻も発行済みnonceと対で更新されるはず"
+        );
 
         // round2 R2-3: own_sendは`classify_own_request`の消費で消えるが、発行済み
         // nonceの記録は独立したフィールドなので影響を受けないはず(cap超過後の回路遮断を

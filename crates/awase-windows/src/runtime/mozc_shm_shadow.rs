@@ -292,13 +292,31 @@ impl super::Runtime {
                 .clear_mozc_direct_circuit_broken_if_alive(direct_ack.map(|a| a.last_cmd_nonce));
             // ADR-293 10節step5: 拒否率計測用のログ(5-3節の着手判断に使う)。新しいnonceを
             // 観測したときだけ1回出す(同じ値を毎tick出力しない)。`own_send`が同じnonceを
-            // 持っていればそこから送信時刻を取り、latencyを添える(消費済みで無ければ無し)。
+            // 持っていればそこから送信時刻を取り、latencyを添える。
+            //
+            // Opusレビュー`opus-review-step2to6` round2 R2-9(L3): forkは`UpdateContext`
+            // (状態のPublish)の**後**に`SetLastCommandResult`(ack)を別のFlushで書くため、
+            // その間に読むと項目2(読みが`own_send.open`と一致)で`own_send`が先に消費され、
+            // ackが見えるtickには`own_send`が既に`None`になっていることが多い。`own_send`が
+            // 使えない場合は`hook::last_issued_direct_actuation_nonce[_tick_ms]`
+            // (`classify_own_request`に消費されない、R2-3で新設)にフォールバックする——
+            // このackのnonceが自分が最後に発行したnonceと一致する場合のみ、その送信時刻から
+            // latencyを計算できる(一致しない古いnonceの送信時刻はこの単一スロットには残って
+            // いない)。
             if let Some(a) = direct_ack.filter(|a| a.last_cmd_nonce != 0) {
                 if self.mozc_shm.last_logged_direct_cmd_nonce != Some(a.last_cmd_nonce) {
                     self.mozc_shm.last_logged_direct_cmd_nonce = Some(a.last_cmd_nonce);
                     let latency_ms = own_send
                         .filter(|s| s.nonce == Some(a.last_cmd_nonce))
-                        .map(|s| raw.update_tick_ms.saturating_sub(s.tick_ms));
+                        .map(|s| raw.update_tick_ms.saturating_sub(s.tick_ms))
+                        .or_else(|| {
+                            (crate::hook::last_issued_direct_actuation_nonce() == a.last_cmd_nonce)
+                                .then(|| {
+                                    raw.update_tick_ms.saturating_sub(
+                                        crate::hook::last_issued_direct_actuation_nonce_tick_ms(),
+                                    )
+                                })
+                        });
                     tracing::info!(
                         target: "awase::mozc_shm",
                         "[mozc-direct] ack nonce={} result={:?} latency_ms={:?}",
