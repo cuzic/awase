@@ -1345,6 +1345,18 @@ impl WindowsPlatform {
     /// ワイヤー不一致のような原因はプロセス全体に効くので、プロセス全体で止める方が
     /// 原因に合っている。解除は`clear_mozc_direct_circuit_broken_if_alive`のみ。
     pub(crate) fn mark_mozc_direct_circuit_broken(&mut self) {
+        if !self.mozc_direct_circuit_broken {
+            // Opusレビュー`opus-review-step2to6` round3 R3-1: 遮断が立ったこと自体が
+            // awase.logから分からないと、実測中に「MozcDirectが途中から動いていない」
+            // ことを見落とす。原因のnonce・フォーカス中の対象を添える。
+            tracing::warn!(
+                target: "awase::mozc_shm",
+                "[mozc-direct] circuit broken (nonce={} target={:?}): \
+                 ackが一度もcapまで来なかった、プロセス全体でMozcDirectを使用不可にする",
+                crate::hook::last_issued_direct_actuation_nonce(),
+                self.mozc_target(),
+            );
+        }
         self.mozc_direct_circuit_broken = true;
     }
 
@@ -1360,6 +1372,12 @@ impl WindowsPlatform {
             return;
         }
         if ack_nonce.is_some_and(|n| n == crate::hook::last_issued_direct_actuation_nonce()) {
+            // round3 R3-1: 遮断と対になる解除もログに残す(いつ・どのnonceで戻ったか)。
+            tracing::info!(
+                target: "awase::mozc_shm",
+                "[mozc-direct] circuit cleared (nonce={}): forkからの本物のackを観測した",
+                crate::hook::last_issued_direct_actuation_nonce(),
+            );
             self.mozc_direct_circuit_broken = false;
         }
     }
