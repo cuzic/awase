@@ -183,7 +183,7 @@ impl super::Runtime {
         if !focus_changed && self.mozc_shm.absent_for == Some((tid, pid)) {
             return (None, None);
         }
-        let (reading, read_us) = crate::observer::mozc_shm::read(tid, pid);
+        let (reading, direct_ack, read_us) = crate::observer::mozc_shm::read(tid, pid);
         let outcome = outcome_of(&reading, pid);
         self.mozc_shm.absent_for =
             matches!(outcome, Outcome::Failed(ReadFailure::NotFound)).then_some((tid, pid));
@@ -223,11 +223,23 @@ impl super::Runtime {
             // 消すべきと判定したら2つ目の戻り値で伝え返す(`platform_state.rs`は`hook`を
             // 直接呼べないため)。
             let own_send = crate::hook::own_send();
-            // ADR-293 10節step2: `classify_own_request`の項目1(nonce+ackの確認)は復元したが、
-            // ackの観測の殻(version 6共有メモリの`last_cmd_nonce`/`last_cmd_result`の解釈、
-            // 10節step3)はこのPRのスコープ外。direct postの送信経路(10節step4〜5)が無い間は
-            // `own_send.nonce`も常に`None`なので、ここで`None`を渡しても項目1自体は到達しない。
-            let ack = None;
+            // ADR-293 10節step3: `direct_ack`は`observer::mozc_shm::read`が`shm`/`raw`と
+            // 同じ2段目のseqlock読みから取った、version 6のdirect actuation確認結果
+            // (生の解釈)。`classify_own_request`が期待する既に解釈済みの`OwnSendAck`へ
+            // ここで変換する(nonceの一致判定自体は`classify_own_request`項目1の仕事、
+            // ここは型の変換だけ)。`last_cmd_nonce == 0`("まだ1件も処理していない")は
+            // `None`のまま渡す。direct postの送信経路(10節step4〜5)が無い間は
+            // `own_send.nonce`も常に`None`なので、項目1自体はまだ実データに到達しない。
+            let ack = direct_ack.filter(|a| a.last_cmd_nonce != 0).map(|a| {
+                crate::state::mozc_shm::OwnSendAck {
+                    nonce: a.last_cmd_nonce,
+                    applied: matches!(
+                        a.last_cmd_result,
+                        crate::state::mozc_shm::DirectActuationResult::Applied
+                    ),
+                    update_tick_ms: raw.update_tick_ms,
+                }
+            });
             let (used, clear_own_send) = self.platform_state.ime.report_mozc_shm(
                 *shm,
                 raw.update_tick_ms,

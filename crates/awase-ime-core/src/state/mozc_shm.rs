@@ -27,6 +27,10 @@ pub const V3_BLOCK_SIZE: usize = 80;
 /// pulse しない）を後に並べ直された。境界は旧version間の個別の区切りではなく、この統合後のオフセットのみ。
 pub const V5_BLOCK_SIZE: usize = 160;
 
+/// version 6 以降のブロックの大きさ（direct actuationコマンドのnonce/結果/宛先HWND、
+/// ADR-293 5-1/5-2/6-5節、`readable/docs/shared-memory.md` 6-5章。**EXPERIMENTAL・未リリース**）。
+pub const V6_BLOCK_SIZE: usize = 176;
+
 /// `magic`（メモリ上のバイト列は `4D 44 52 5A`、ASCII の `MDRZ`）。
 pub const MAGIC: u32 = 0x5A52_444D;
 
@@ -280,6 +284,67 @@ impl KeyResults {
     }
 }
 
+/// direct actuation要求への結果コード（`last_cmd_result`、ADR-293 6-5節のワイヤー定義どおり。
+/// **EXPERIMENTAL・未リリース**）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectActuationResult {
+    /// `0`。まだ1件も処理していない（`last_cmd_nonce`も0）
+    None,
+    /// `1`。適用済み（実キーと同じ`TURN_ON_IME`/`TURN_OFF_IME`のserver round tripが完了）
+    Applied,
+    /// `2`。そのスレッドにフォーカス中の`ITfContext`が無い
+    NoFocusedContext,
+    /// `3`。server round trip自体が失敗、またはedit sessionが得られなかった
+    SendCommandFailed,
+    /// `4`。要求の予約ビットが0でなかったため何もしていない
+    ReservedBitsSet,
+    /// ワイヤー上の未知の値（将来の拡張。`classify_own_request`は拒否と同じ扱いに倒す）
+    Unknown(u32),
+}
+
+impl DirectActuationResult {
+    #[must_use]
+    pub const fn from_u32(v: u32) -> Self {
+        match v {
+            0 => Self::None,
+            1 => Self::Applied,
+            2 => Self::NoFocusedContext,
+            3 => Self::SendCommandFailed,
+            4 => Self::ReservedBitsSet,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+/// version 6 共有メモリの direct actuation コマンド欄（オフセット 160〜175）の生の解釈
+/// （ADR-293 6-5節、10節step3「観測の殻」。**EXPERIMENTAL・未リリース**）。
+///
+/// [`OwnSendAck`]（`classify_own_request`が期待する、既に解釈済みの確認結果）への変換は
+/// 呼び出し元（`runtime/mozc_shm_shadow.rs`）が行う——この層はバイト列の解釈だけで、
+/// `own_send`のnonceとの一致判定はしない（それは`classify_own_request`項目1の仕事）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectActuationAck {
+    /// `last_cmd_nonce`（オフセット160）。0=まだ1件も処理していない
+    pub last_cmd_nonce: u32,
+    /// `last_cmd_result`（オフセット164）
+    pub last_cmd_result: DirectActuationResult,
+    /// `cmd_window_handle`（オフセット168）。0=まだ窓が無い。診断用（宛先の特定は10節step5）
+    pub cmd_window_handle: u64,
+}
+
+impl DirectActuationAck {
+    /// `bytes`は`V6_BLOCK_SIZE`（176バイト）のブロック全体。オフセット160/164/168
+    /// （`shared-memory.md` 6-5節）を解釈する（検証はしない）。
+    #[must_use]
+    pub fn parse(bytes: &[u8; V6_BLOCK_SIZE]) -> Self {
+        Self {
+            last_cmd_nonce: u32_at(bytes, 160),
+            last_cmd_result: DirectActuationResult::from_u32(u32_at(bytes, 164)),
+            cmd_window_handle: u64_at(bytes, 168),
+        }
+    }
+}
+
 /// 受け入れたブロックの内容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShmState {
@@ -480,8 +545,12 @@ pub struct OwnSend {
 /// awase自身の送信`own_send`に対する、Mozc側からの確認結果（ADR-293 5-2節項目1）。
 ///
 /// `nonce`付きの送信（direct post、GJI/TsfNative限定）に対してのみ意味を持つ。version 6
-/// 共有メモリの生バイト解釈（`last_cmd_nonce`/`last_cmd_result`、10節step3「観測の殻」）は
-/// このPRのスコープ外——呼び出し元が既に解釈済みの値をここへ渡す。
+/// 共有メモリの生バイト解釈（[`DirectActuationAck`]、`last_cmd_nonce`/`last_cmd_result`）
+/// はこの型自体の責務ではない——呼び出し元（`runtime/mozc_shm_shadow.rs`、10節step3
+/// 「観測の殻」）が`DirectActuationAck`をこの既に解釈済みの形へ変換してここへ渡す。
+/// direct postの送信経路(`WriteMechanism::MozcDirect`、5-1節、10節step4〜5)自体はまだ無い
+/// ため、`own_send.nonce`が実データで`Some`になるのは送信経路の実装後——このPRの時点では
+/// 単体テストの中だけ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OwnSendAck {
     /// 確認対象のnonce（`OwnSend.nonce`と比較する）
@@ -2183,6 +2252,50 @@ mod tests {
                 prefer_kana_input: false,
                 toggle_enabled: true,
             }
+        );
+    }
+
+    #[test]
+    fn direct_actuation_ack_parse_reads_the_version_6_fields_little_endian() {
+        let mut b = [0u8; V6_BLOCK_SIZE];
+        b[160..164].copy_from_slice(&42u32.to_le_bytes());
+        b[164..168].copy_from_slice(&1u32.to_le_bytes()); // kApplied
+        b[168..176].copy_from_slice(&0x1234_5678_u64.to_le_bytes());
+        assert_eq!(
+            DirectActuationAck::parse(&b),
+            DirectActuationAck {
+                last_cmd_nonce: 42,
+                last_cmd_result: DirectActuationResult::Applied,
+                cmd_window_handle: 0x1234_5678,
+            }
+        );
+    }
+
+    #[test]
+    fn direct_actuation_result_from_u32_covers_the_wire_values_and_falls_back_to_unknown() {
+        assert_eq!(
+            DirectActuationResult::from_u32(0),
+            DirectActuationResult::None
+        );
+        assert_eq!(
+            DirectActuationResult::from_u32(1),
+            DirectActuationResult::Applied
+        );
+        assert_eq!(
+            DirectActuationResult::from_u32(2),
+            DirectActuationResult::NoFocusedContext
+        );
+        assert_eq!(
+            DirectActuationResult::from_u32(3),
+            DirectActuationResult::SendCommandFailed
+        );
+        assert_eq!(
+            DirectActuationResult::from_u32(4),
+            DirectActuationResult::ReservedBitsSet
+        );
+        assert_eq!(
+            DirectActuationResult::from_u32(99),
+            DirectActuationResult::Unknown(99)
         );
     }
 
