@@ -421,12 +421,26 @@ pub fn decide_attempt(
                 ImeOperation::from_open(open),
             )))
         }
-        // ADR-293 10節step4（round2 R1-ii）: 不適用（`mozc_direct_ready == false`）な
-        // 場合は`mechanism_applicable`側でチェーンから除外済みなので、ここに来るのは
-        // 適用可能な場合だけ——常に`Some`を返す（既に一致しているかの判定は、direct
-        // actuationにはshadowのような「前回の確認済み状態」のキャッシュが無いため、
-        // そもそも成立しない）。
-        (WriteMechanism::MozcDirect, _) => Some(MechanismCommand::DirectActuate(open)),
+        // ADR-293 10節step4（round2 R1-ii→Opusレビュー`opus-review-step2to6` M2で訂正）:
+        // 不適用（`mozc_direct_ready == false`）な場合は`mechanism_applicable`側で
+        // チェーンから除外済みなので、ここに来るのは適用可能な場合だけ。R1-iiは
+        // 「direct actuationにはshadowのような確認済み状態のキャッシュが無い」として
+        // 常に`Some`を返していたが、これは誤りだった——`shadow_on`はGjiDirect専用ではなく
+        // 「この対象の開閉がどちらかに確認済みか」の汎用キャッシュで、MozcDirectが
+        // 同じ対象を書く以上同じ基準で参照できる。常に`Some`のままだと、物理キーの
+        // 自動リピート（`press=None`、`explicit_press_applied_pair`が`shadow_on`を
+        // 未知化しない経路）のたびに新しいnonceでdirect postが積まれ、Mozc側の
+        // サーバーラウンドトリップとedit sessionが連続要求で伸び続ける（M2）。
+        // `gji_direct_already_matches`と同じ省略を入れることで、押下
+        // （`press=Some`、`shadow_on`は未知化されるので影響しない）はそのまま送信し、
+        // リピートだけ省略する。
+        (WriteMechanism::MozcDirect, _) => {
+            if gji_direct_already_matches(inputs.shadow_on, open, inputs.candidate_was_seen) {
+                None
+            } else {
+                Some(MechanismCommand::DirectActuate(open))
+            }
+        }
     };
     (romaji_pre_write, command)
 }
@@ -587,11 +601,15 @@ mod tests {
 
     // ── decide_attempt: MozcDirect ───────────────────────────────────────
 
-    /// `decide_attempt`はMozcDirectに対して、適用可否を問わず常に`Some(DirectActuate(open))`を
-    /// 返す(already-matched判定はmechanism_applicable側、round2 R1-ii)。romaji_pre_writeは常に偽
+    /// `decide_attempt`はMozcDirectに対して、`shadow_on`が未知または不一致なら常に
+    /// `Some(DirectActuate(open))`を返す(round2 R1-ii)。romaji_pre_writeは常に偽
     /// (`decide_needs_romaji_pre_write`の条件にMozcDirectは含まれない)。
+    ///
+    /// `shadow_on == None`(押下時に`explicit_press_applied_pair`が未知化した状態、または
+    /// まだ一度も確認されていない状態)はOpusレビュー`opus-review-step2to6` M2の訂正後も
+    /// 変わらず送信する(押下自体は省略しない)。
     #[test]
-    fn mozc_direct_attempt_always_returns_direct_actuate() {
+    fn mozc_direct_attempt_always_returns_direct_actuate_when_shadow_is_unknown() {
         for open in [true, false] {
             let i = inputs(
                 AppImeProfile::TsfNative,
@@ -604,6 +622,41 @@ mod tests {
             assert!(!pre);
             assert_eq!(cmd, Some(MechanismCommand::DirectActuate(open)));
         }
+    }
+
+    /// Opusレビュー`opus-review-step2to6` M2: `shadow_on`が`open`と一致済み(確認済み)なら、
+    /// `gji_direct_already_matches`と同じ省略でpostを送らない(`None`)——自動リピート
+    /// (`press=None`、`shadow_on`が未知化されない経路)のたびに新しいnonceでdirect postが
+    /// 積まれ続ける事故(M2失敗シナリオ)を防ぐ。`open=false`は`candidate_was_seen`を無視して
+    /// 省略する(`gji_direct_already_matches`の`open || !candidate_was_seen`どおり)。
+    #[test]
+    fn mozc_direct_attempt_is_already_matched_skips_when_shadow_matches() {
+        let i = inputs(
+            AppImeProfile::TsfNative,
+            ImeKindId::Gji,
+            Some(true),
+            InputModeState::Unknown,
+        );
+        let (pre, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::MozcDirect, true);
+        assert!(!pre);
+        assert_eq!(
+            cmd, None,
+            "shadow_onが既にopenと一致していれば、direct postを送らない(自動リピート抑制)"
+        );
+    }
+
+    /// 上と対になるテスト: `shadow_on`が`open`と不一致なら、省略せず送信する。
+    #[test]
+    fn mozc_direct_attempt_sends_when_shadow_disagrees_with_open() {
+        let i = inputs(
+            AppImeProfile::TsfNative,
+            ImeKindId::Gji,
+            Some(false),
+            InputModeState::Unknown,
+        );
+        let (pre, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::MozcDirect, true);
+        assert!(!pre);
+        assert_eq!(cmd, Some(MechanismCommand::DirectActuate(true)));
     }
 
     // ── decide_needs_romaji_pre_write（ADR-089 Phase C item 12 / ADR-086 INV-14、

@@ -522,13 +522,22 @@ impl PressState {
     /// 先頭の書き込み機構が GjiDirect か（GjiDirect だけが `applied` の already-matched 省略を持つ。
     /// L1 の自動リピートで「同じ向きの VK を追い送りしない」が `applied` 省略に頼れるかの判定に使う）。
     ///
-    /// **既知の限界（ADR-293 10節step4、未解決）**: `PressState`は実行時の
+    /// **既知の限界（ADR-293 10節step4、Opusレビュー`opus-review-step2to6` M2で部分的に
+    /// 訂正・一部未解決）**: この関数自体は本番で呼ばれていない
+    /// (`tests/explicit_press_exhaustive.rs`のP6分類ラベル専用)。M2で`decide_attempt`の
+    /// `MozcDirect`腕に`gji_direct_already_matches`と同じshadow-based省略を追加した結果、
+    /// `MozcDirect`も現実には`applied`のalready-matched省略を持つようになった(この関数の
+    /// 「GjiDirectだけが」というdocの前提は崩れている)。**残る限界**: `PressState`は実行時の
     /// direct actuation準備状態（mozc-shm v6の`cmd_window_handle`）を持たないため、
-    /// `mozc_direct_ready`は常に`false`で呼ぶ。実際のチェーンが`CHAIN_GJI_ONLY`から
-    /// `CHAIN_MOZC_DIRECT_THEN_GJI`（先頭`MozcDirect`）へ差し替わった場合、この関数は
-    /// 誤って`false`を返す——`MozcDirect`は`applied`のalready-matched省略を持たない
-    /// （`decide_attempt`が常に`Some`を返す、ADR-293 9節）ため、L1の自動リピート抑制が
-    /// 効かなくなる可能性がある。実機でのMozcDirect有効化前に要再検討。
+    /// `mozc_direct_ready`は常に`false`で呼ぶ——全列挙モデル(`explicit_press_exhaustive.rs`)は
+    /// 実際のチェーンが`CHAIN_GJI_ONLY`から`CHAIN_MOZC_DIRECT_THEN_GJI`（先頭`MozcDirect`）へ
+    /// 差し替わる場合を一度も列挙しておらず、ADR-208 L1の不変条件(二重送信防止・リピート
+    /// 追い送り防止)がMozcDirect先頭のチェーンでも成り立つことは、モデル上では未検証のまま
+    /// (`decide_attempt`単体のユニットテストでは確認済み、`mozc_direct_attempt_is_already_matched_skips_when_shadow_matches`
+    /// 等)。`PressState`に`mozc_direct_ready`の軸を追加して全列挙するのは、2000行超の既存
+    /// 検証モデルへの非自明な拡張であり本PRのスコープ外として見送った——次セッションで着手する
+    /// 際は、まずこのモデルの既存不変条件(P1〜P6)を読み、新しい軸がどのP条件に影響するかを
+    /// 洗い出すこと。
     #[must_use]
     pub fn chain_head_is_gji_direct(&self) -> bool {
         let inputs = DecisionInputs {
