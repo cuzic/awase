@@ -38,6 +38,12 @@ pub(super) struct MozcShmShadow {
     /// ADR-293 10節step5: 最後に`[mozc-direct] ack ...`をログ出力した`last_cmd_nonce`。
     /// 同じ値を毎tick出力しない(値が変わったときだけ1回。拒否率計測用、5-3節の着手判断に使う)。
     last_logged_direct_cmd_nonce: Option<u32>,
+    /// ADR-293(BUG-234、Opusレビュー`opus-review-step2to6` M4): direct-actuation閉ループの
+    /// キルスイッチ(`[diagnostics] mozc_direct_actuation`、既定false)。falseの間は
+    /// v6ブロックが読めていても`set_mozc_direct_readiness`へ常に`None`を渡し、
+    /// `mozc_direct_target()`を無条件で`None`にする——`decide_chain`は`CHAIN_GJI_ONLY`の
+    /// まま変わらない。
+    direct_actuation_enabled: bool,
 }
 
 impl MozcShmShadow {
@@ -61,13 +67,15 @@ impl MozcShmShadow {
             accepted_for: None,
             timer_suspended: false,
             last_logged_direct_cmd_nonce: None,
+            direct_actuation_enabled: false,
         }
     }
 }
 
 impl super::Runtime {
-    /// 起動時に、有効にするかを渡す。
-    pub(crate) fn init_mozc_shm(&mut self, enabled: bool) {
+    /// 起動時に、有効にするかを渡す。`direct_actuation_enabled`はADR-293の
+    /// direct-actuation閉ループ(M4)専用のキルスイッチで、`enabled`(診断ログ)とは独立。
+    pub(crate) fn init_mozc_shm(&mut self, enabled: bool, direct_actuation_enabled: bool) {
         self.mozc_shm = MozcShmShadow {
             enabled,
             last: None,
@@ -77,6 +85,7 @@ impl super::Runtime {
             accepted_for: None,
             timer_suspended: false,
             last_logged_direct_cmd_nonce: None,
+            direct_actuation_enabled,
         };
     }
 
@@ -204,13 +213,16 @@ impl super::Runtime {
         // 受け入れでない読み・version 6未満・まだ窓が無い(`cmd_window_handle == 0`)ときは
         // `None`——`mozc_direct_target()`が無条件で上書きするので、ここも無条件で呼ぶ
         // (古い値を残さない、`polling`等と同じ作法)。
-        self.platform.set_mozc_direct_readiness(
+        // Opusレビュー`opus-review-step2to6` M4: キルスイッチ(`direct_actuation_enabled`、
+        // 既定false)が無効の間は、実際に読めていても常に`None`を渡し、`decide_chain`を
+        // `CHAIN_GJI_ONLY`のまま保つ。
+        self.platform.set_mozc_direct_readiness(self.mozc_shm.direct_actuation_enabled.then(|| {
             matches!(outcome, Outcome::Accepted(_))
                 .then(|| direct_ack)
                 .flatten()
                 .filter(|a| a.cmd_window_handle != 0)
-                .map(|a| (tid, pid, a.cmd_window_handle)),
-        );
+                .map(|a| (tid, pid, a.cmd_window_handle))
+        }).flatten());
         // 読みの間隔が TTL（`MOZC_SHM_OBSERVATION_TTL_MS`）を超えたら記録する（TTL の見直しの材料。ADR-268）。
         let stamp_ms = crate::hook::current_tick_ms();
         if let Some(prev) = self.mozc_shm.last_read_ms {

@@ -453,6 +453,19 @@ pub struct DiagnosticsConfig {
     /// 変わったときと結論が変わったときだけ記録する。mozc-readable を入力方式にしていない窓では「読めない」と記録するだけ。
     /// **反映は awase の再起動後**（起動時に 1 度だけ渡す）。
     pub mozc_shm_shadow: bool,
+    /// ADR-293(BUG-234)の direct-actuation 閉ループ(`WriteMechanism::MozcDirect`、
+    /// mozc-readable fork へ共有メモリ経由で直接 open/close を要求する実験的機構)を
+    /// 使うかどうか。
+    ///
+    /// 既定は**無効**。mozc-shm v6 ブロック(`cmd_window_handle`)が読めるだけで
+    /// 有効になる他の判定(`mozc_direct_ready`)と異なり、この機構はまだ実機での
+    /// ack 往復・遅延分布の実測が無い(ADR-293 8節2番・11節2番、`#[measured(pending=true)]`)。
+    /// 無効の間は`mozc_direct_target()`が常に`None`を返し、`decide_chain`は
+    /// `CHAIN_GJI_ONLY`のまま変わらない——配線の不一致(forkのビルドが登録メッセージ名を
+    /// 変えた等、Opusレビュー`opus-review-step2to6` C1のような事故)が起きても、この
+    /// 設定を`false`に戻すだけでGjiDirect単独(ADR-293 step1のorigin-scoped cap)に
+    /// ビルド無しで退避できる。**反映は awase の再起動後**（起動時に 1 度だけ渡す）。
+    pub mozc_direct_actuation: bool,
 }
 
 impl Default for DiagnosticsConfig {
@@ -460,6 +473,7 @@ impl Default for DiagnosticsConfig {
         Self {
             hook_self_heal: true,
             mozc_shm_shadow: false,
+            mozc_direct_actuation: false,
         }
     }
 }
@@ -2150,6 +2164,23 @@ engine_off_solo_triple = "VK_NONCONVERT"
         let config: AppConfig = toml::from_str("[diagnostics]\nmozc_shm_shadow = true\n").unwrap();
         assert!(config.diagnostics.mozc_shm_shadow);
         assert!(config.diagnostics.hook_self_heal);
+    }
+
+    #[test]
+    fn test_mozc_direct_actuation_defaults_to_disabled() {
+        // ADR-293(BUG-234、Opusレビュー`opus-review-step2to6` M4): 実機でのack往復・遅延分布が
+        // 未実測の間は既定オフ(キルスイッチ)。
+        let config: AppConfig = toml::from_str("[general]\n").unwrap();
+        assert!(!config.diagnostics.mozc_direct_actuation);
+    }
+
+    #[test]
+    fn test_mozc_direct_actuation_can_be_enabled_without_touching_the_other_diagnostics() {
+        let config: AppConfig =
+            toml::from_str("[diagnostics]\nmozc_direct_actuation = true\n").unwrap();
+        assert!(config.diagnostics.mozc_direct_actuation);
+        assert!(config.diagnostics.hook_self_heal);
+        assert!(!config.diagnostics.mozc_shm_shadow);
     }
 
     #[test]

@@ -8792,13 +8792,17 @@ fn mozc_shm_reader_touches_belief_only_through_report_mozc_shm() {
         "共有メモリの読みを belief に使う入口は ImeStateHub::report_mozc_shm の 1 つだけ（ADR-268）"
     );
 
-    // 診断の記録の有効化は設定の値を起動時に 1 度だけ渡す（belief への接続はこのフラグと無関係）。
+    // 診断の記録の有効化・direct-actuationのキルスイッチ(ADR-293 M4)は設定の値を起動時に
+    // 1 度だけ渡す（belief への接続はこのフラグと無関係）。
     let boot = compact("src/app/bootstrap.rs");
     assert_eq!(
-        boot.matches("app.init_mozc_shm(config.diagnostics.mozc_shm_shadow)")
-            .count(),
+        boot.matches(
+            "app.init_mozc_shm(config.diagnostics.mozc_shm_shadow,config.diagnostics.mozc_direct_actuation,)"
+        )
+        .count(),
         1,
-        "bootstrap.rs は `[diagnostics] mozc_shm_shadow` を起動時に 1 度だけ init_mozc_shm へ渡すこと"
+        "bootstrap.rs は `[diagnostics] mozc_shm_shadow`・`mozc_direct_actuation` を起動時に \
+         1 度だけ init_mozc_shm へ渡すこと"
     );
 
     // 呼び出しは `app_disabled` の打ち切りの後。
