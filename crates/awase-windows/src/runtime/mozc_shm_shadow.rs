@@ -255,12 +255,12 @@ impl super::Runtime {
             // 進む baseline_ms ではなく、IMEの開閉/モードを動かす目的の送信だけに限定する
             // (platform_state.rs::report_mozc_shmのdocコメント参照。計算自体はそちら側で行う、
             // ここでは生の時刻だけを渡す)。
-            // ADR-293 10節step5: direct actuationの発行時刻もこのbaselineに合流させる
-            // (own_send自体は消費・supersedeされて消えるため、消えた後も「最近送った」
-            // 事実を残す別経路が要る、`hook::note_mozc_direct_post`のdoc参照)。
+            // direct actuationの発行時刻も`ime_actuation_send_tick_ms`経由でこのbaselineに
+            // 合流する(`apply_mozc_direct`が成功時に`note_ime_actuation_send()`を呼ぶ、
+            // ADR-293 10節step5)——専用の`mozc_direct_post_tick_ms`は常にこれ以下になる
+            // ため冗長として撤去した(Opusレビュー`opus-review-step2to6` L2)。
             let ime_actuation_baseline_ms = crate::hook::imm_cross_write_tick_ms()
-                .max(crate::hook::ime_actuation_send_tick_ms())
-                .max(crate::hook::mozc_direct_post_tick_ms());
+                .max(crate::hook::ime_actuation_send_tick_ms());
             // ADR-293(BUG-234): own_sendは単一スロットのグローバルなスタンプ(`hook`)。
             // `report_mozc_shm`はSplitの早期returnより前にこれを分類し(5-2節冒頭)、
             // 消すべきと判定したら2つ目の戻り値で伝え返す(`platform_state.rs`は`hook`を

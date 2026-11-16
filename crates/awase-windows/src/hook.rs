@@ -89,13 +89,6 @@ struct HookState {
     /// ADR-293 10節step5: 次に発行するdirect actuationのnonce(0を跳ばす単調増加カウンタ、
     /// `next_direct_actuation_nonce`)。
     direct_actuation_nonce_counter: AtomicU32,
-    /// ADR-293 10節step5: awase自身が最後にdirect actuation要求(`PostMessageW`)を**発行**
-    /// した時刻(`GetTickCount64`)。0 = 未発行。`imm_cross_write_tick_ms`/
-    /// `ime_actuation_send_tick_ms`と同じ「原因ベースの長いsettle cap」用の baseline に
-    /// 合流する(`mozc_shm_shadow.rs`の`ime_actuation_baseline_ms`、5-4節)——
-    /// `own_send`単体は消費・supersedeされて消えるため、消えた後も「最近送った」事実を
-    /// 残す別経路が要る。
-    mozc_direct_post_tick_ms: AtomicU64,
     /// `install_hook` がフックスレッドからの TID 通知を待つスロット。
     /// 0 = 待機中、`u32::MAX` = `SetWindowsHookExW` 失敗、それ以外 = フックスレッド TID。
     hook_tid_init_slot: AtomicU32,
@@ -198,7 +191,6 @@ impl HookState {
             own_send_pid: AtomicU32::new(0),
             own_send_nonce: AtomicU32::new(0),
             direct_actuation_nonce_counter: AtomicU32::new(1),
-            mozc_direct_post_tick_ms: AtomicU64::new(0),
             hook_tid_init_slot: AtomicU32::new(0),
             physical_key_state: [const { AtomicBool::new(false) }; 256],
             physical_key_down_at_ms: [const { AtomicU64::new(0) }; 256],
@@ -480,20 +472,6 @@ pub(crate) fn next_direct_actuation_nonce() -> u32 {
             return n;
         }
     }
-}
-
-/// awase自身がdirect actuation要求(`PostMessageW`)を実際に発行した時刻を記録する
-/// (`apply_mechanism`のMozcDirect armの`PostMessageW`成功直後)。
-pub(crate) fn note_mozc_direct_post() {
-    HOOK_STATE
-        .mozc_direct_post_tick_ms
-        .store(current_tick_ms(), Ordering::Relaxed);
-}
-
-/// 最後にdirect actuation要求を発行した時刻（ms、`GetTickCount64`）。0 = 未発行。
-#[must_use]
-pub fn mozc_direct_post_tick_ms() -> u64 {
-    HOOK_STATE.mozc_direct_post_tick_ms.load(Ordering::Relaxed)
 }
 
 fn hook_tid_reset() {

@@ -335,9 +335,11 @@ fn apply_mozc_direct(open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         Ok(()) => {
             tracing::debug!("[mozc-direct] post open={open} nonce={nonce} target={target:?}");
             // ADR-293(BUG-234) 5-2節: 開閉方向を持つ送信が実際に送信できたときだけスタンプする。
+            // `note_ime_actuation_send()`が同じ瞬間の「最近送った」事実を既に残すため、
+            // 専用の`note_mozc_direct_post()`は冗長として撤去した(Opusレビュー
+            // `opus-review-step2to6` L2)。
             crate::hook::note_own_send(open, target.0, target.1, Some(nonce));
             crate::hook::note_ime_actuation_send();
-            crate::hook::note_mozc_direct_post();
             ImeOpenOutcome::AppliedWithoutSendInput
         }
         Err(err) => {
