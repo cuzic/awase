@@ -1081,7 +1081,12 @@ def cmd_directact_real(args):
                 emit({"ev": "setup_failed", "trial": i})
                 continue
             w.pump(args.settle)
-            win.focus()
+            # win.focus() は EDIT 子窓(クラス名固定の "Edit")へ SetFocus する(他の場面と共有するため
+            # 変更しない)。この場面は窓そのもの(偽装した Chrome_WidgetWin_1)を focused window として
+            # awase に読ませる必要があるため、EDIT ではなくトップレベル窓へ明示的に SetFocus し直す
+            # (run 43803523407 で profile=standard になり MozcDirect が一度も選ばれなかった原因)。
+            w.force_foreground(win.hwnd)
+            w.u32.SetFocus(win.hwnd)
             w.pump(0.1)
             t_off = time.time()
             send_marked(args.off_vk)
