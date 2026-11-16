@@ -3,7 +3,7 @@
 # 窓にキーを送るので、コンソール窓を作るプロセスを並行して起動しない(窓が前面を奪って、キーが別の窓に行く)。
 # python のヘルパーは shmci.py の中で CREATE_NO_WINDOW で起動する。ここでは Start-Process -Wait を使わない
 # (TIP を読み込んだプロセスが起動する mozc_server が子孫として残り、-Wait が戻らない)。
-param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'stale', 'flip', 'tidreuse', 'tickchurn', 'bug234', 'directact-real')][string]$Scenario,
+param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'stale', 'flip', 'tidreuse', 'tickchurn', 'bug234')][string]$Scenario,
       [Parameter(Mandatory)][string]$Msi,
       [string]$Dist = 'dist',
       [string]$MozcCiDir = 'mozc-readable\readable\ci',
@@ -57,15 +57,6 @@ if ($Scenario -eq 'bug234') {
   $env:AWASE_TEST_INJECTION = '1'
 }
 
-if ($Scenario -eq 'directact-real') {
-  # [ADR-293 10節] awase 本体の実送信経路(apply_mozc_direct)が、本物の mozc-readable フォーク
-  # (exp/direct-actuation-channel)と ack 往復するかを測る。keys.ime_off/ime_on を単一キーにし、
-  # 目印付きの注入を物理キーとして扱わせる(AWASE_TEST_INJECTION=1)。
-  $cfg = Join-Path $Dist 'config.toml'
-  Add-Content -Path $cfg -Value @('', '[keys]', 'ime_off = ["VK_NONCONVERT"]', 'ime_on = ["VK_CONVERT"]')
-  $env:AWASE_TEST_INJECTION = '1'
-}
-
 $aw = $null
 if ($NoAwase) {
   # 対照: awase を起動せずに、同じ手順で窓を IME ON にできるか(awase が干渉しているのか、手順の問題かを切り分ける)
@@ -74,9 +65,7 @@ if ($NoAwase) {
   Write-Host '== start awase (mozc_shm_shadow = true)'
   $cfg = Join-Path $Dist 'config.toml'
   if (-not (Test-Path $cfg)) { throw "config.toml not found in $Dist" }
-  $diag = @('', '[diagnostics]', 'mozc_shm_shadow = true')
-  if ($Scenario -eq 'directact-real') { $diag += 'mozc_direct_actuation = true' }
-  Add-Content -Path $cfg -Value $diag
+  Add-Content -Path $cfg -Value @('', '[diagnostics]', 'mozc_shm_shadow = true')
   $aw = Start-Process -FilePath (Join-Path $Dist 'awase.exe') -WorkingDirectory $Dist -PassThru
   Start-Sleep -Seconds 8
   if ($aw.HasExited) { Write-Host "awase exited early, code $($aw.ExitCode)"; Get-Content (Join-Path $Dist 'awase.log') -ErrorAction SilentlyContinue | Select-Object -Last 40; exit 1 }
@@ -93,19 +82,6 @@ if ($Scenario -eq 'bug234') {
   Start-Sleep -Seconds 2
   if (Test-Path $log) { Copy-Item $log (Join-Path $OutDir 'awase-full.log') -ErrorAction SilentlyContinue }
   python "$here\shmci.py" bug234-analyze --awase-log $log --events $events --delay-ms $DelayMs --summary-json (Join-Path $OutDir 'summary.json')
-  $analyzeExit = $LASTEXITCODE
-  if ($aw) { Stop-Process -Id $aw.Id -Force -ErrorAction SilentlyContinue }
-  if ($driveExit -ne 0) { exit $driveExit }
-  exit $analyzeExit
-}
-
-if ($Scenario -eq 'directact-real') {
-  Write-Host "== directact-real ($Trials trials)"
-  python "$here\shmci.py" directact-real --events $events --trials $Trials
-  $driveExit = $LASTEXITCODE
-  Start-Sleep -Seconds 2
-  if (Test-Path $log) { Copy-Item $log (Join-Path $OutDir 'awase-full.log') -ErrorAction SilentlyContinue }
-  python "$here\shmci.py" directact-real-analyze --awase-log $log --summary-json (Join-Path $OutDir 'summary.json')
   $analyzeExit = $LASTEXITCODE
   if ($aw) { Stop-Process -Id $aw.Id -Force -ErrorAction SilentlyContinue }
   if ($driveExit -ne 0) { exit $driveExit }

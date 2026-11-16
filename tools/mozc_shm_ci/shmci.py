@@ -1048,117 +1048,6 @@ def cmd_bug234_analyze(args):
     return 0 if observed else 1
 
 
-MOZC_DIRECT_ACK_RE = re.compile(
-    r"\[mozc-direct\] ack nonce=(\d+) result=(\S+) latency_ms=(\S+)"
-)
-
-
-def cmd_directact_real(args):
-    """[ADR-293 10節] awase 本体の実際の送信経路(ime_controller.rs::apply_mozc_direct)が、
-    本物の mozc-readable フォーク(exp/direct-actuation-channel)と実際に ack 往復するかを測る。
-    窓のクラス名を Chrome のトップレベル窓クラス(Chrome_WidgetWin_1)に偽装し、
-    AppImeProfile::from_class_name が Imm32Unavailable と判定するようにする——decide_chain が
-    CHAIN_GJI_ONLY を選び、mozc_direct_ready(キルスイッチ有効時)が真なら
-    [MozcDirect, GjiDirect] に差し替わる唯一の経路(5-1節)。cmd_bug234 と同じ目印付き注入で
-    awase の keys.ime_off/keys.ime_on を交互に押し、結果は events に JSON 行で書く
-    (ack 自体の判定は awase.log を directact-real-analyze で読む)。"""
-    w = win32()
-    ctypes = w.ctypes
-
-    def send_marked(vk):
-        for flags in (0, 2):
-            i = w.INPUT(type=1)
-            i.ki = w.KEYBDINPUT(vk, 0, flags, 0, TEST_INJECTION_MARKER)
-            w.u32.SendInput(1, ctypes.byref(i), ctypes.sizeof(w.INPUT))
-            time.sleep(0.03)
-
-    win = Window(w, "DirectActReal", "DirectActReal")
-    win.cls = "Chrome_WidgetWin_1"  # AppImeProfile::from_class_name が Imm32Unavailable と誤認するように偽装する
-    win.create()
-
-    def dump_v6(tid, label):
-        """awase を介さず、この合成窓の v6 ブロック(176 バイト)を直接読む(切り分け用、directact-precheck と同じ手口)。"""
-        import struct
-        h = w.k32.OpenFileMappingW(4, False, f"Local\\mozc-readable-ime-{tid}")
-        if not h:
-            print(f"v6-dump[{label}]: OpenFileMappingW failed (no block for tid={tid})")
-            return None
-        v = w.k32.MapViewOfFile(h, 4, 0, 0, 176)
-        if not v:
-            print(f"v6-dump[{label}]: MapViewOfFile failed")
-            return None
-        b = ctypes.string_at(v, 176)
-        version = struct.unpack_from("<I", b, 4)[0]
-        cmd_hwnd = struct.unpack_from("<Q", b, 168)[0]
-        nonce, result = struct.unpack_from("<2I", b, 160)
-        print(f"v6-dump[{label}]: version={version} cmd_window_handle={cmd_hwnd} last_cmd_nonce={nonce} last_cmd_result={result}")
-        return {"version": version, "cmd_window_handle": cmd_hwnd}
-
-    with open(args.events, "w", encoding="utf-8") as f:
-        for i in range(args.trials):
-            if not win.set_open(1):
-                emit({"ev": "setup_failed", "trial": i})
-                continue
-            w.pump(args.settle)
-            if i == 0:
-                # 最初の trial だけ、cmd_window_handle が公開されるまで最大 10 秒様子を見る
-                # (Activate直後の最初のPublishまで0のまま、というレビュー時の既知の挙動の確認)。
-                deadline = time.time() + 10
-                while time.time() < deadline:
-                    blk = dump_v6(win.tid, f"trial{i}-poll")
-                    if blk and blk["cmd_window_handle"] != 0:
-                        break
-                    w.pump(0.5)
-            else:
-                dump_v6(win.tid, f"trial{i}")
-            # win.focus() は EDIT 子窓(クラス名固定の "Edit")へ SetFocus する(他の場面と共有するため
-            # 変更しない)。この場面は窓そのもの(偽装した Chrome_WidgetWin_1)を focused window として
-            # awase に読ませる必要があるため、EDIT ではなくトップレベル窓へ明示的に SetFocus し直す
-            # (run 43803523407 で profile=standard になり MozcDirect が一度も選ばれなかった原因)。
-            w.force_foreground(win.hwnd)
-            w.u32.SetFocus(win.hwnd)
-            w.pump(0.1)
-            t_off = time.time()
-            send_marked(args.off_vk)
-            w.pump(args.observe)
-            t_on = time.time()
-            send_marked(args.on_vk)
-            w.pump(args.observe)
-            rec = {"ev": "toggle", "trial": i, "t_off": t_off, "t_on": t_on}
-            emit(rec)
-            f.write(json.dumps(rec) + "\n")
-            f.flush()
-    print(f"trials sent: {args.trials}")
-    return 0
-
-
-def cmd_directact_real_analyze(args):
-    """awase.log から [mozc-direct] ack の行を集計する。result=Applied を 1 回でも観測できれば
-    成功(awase 本体の実送信経路がフォークと実際に ack 往復したことの証拠)。"""
-    acks = []
-    with open(args.awase_log, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            m = MOZC_DIRECT_ACK_RE.search(line)
-            if m:
-                nonce, result, latency = m.groups()
-                acks.append({"nonce": int(nonce), "result": result, "latency_ms": latency})
-    for a in acks:
-        print(json.dumps(a))
-    applied = [a for a in acks if a["result"] == "Applied"]
-    summary = {
-        "total_acks": len(acks),
-        "applied": len(applied),
-        "results": sorted({a["result"] for a in acks}),
-        "latency_ms": [a["latency_ms"] for a in applied],
-    }
-    print("summary: " + json.dumps(summary))
-    if args.summary_json:
-        with open(args.summary_json, "w", encoding="utf-8") as f:
-            json.dump({"summary": summary, "acks": acks}, f, indent=1)
-    # result=Applied を 1 回も観測できなければ失敗(往復そのものが成立していない)。
-    return 0 if applied else 1
-
-
 def cmd_drive(args):
     w = win32()
     here = os.path.dirname(os.path.abspath(__file__))
@@ -1348,25 +1237,12 @@ def main(argv=None):
     ba.add_argument("--events", required=True)
     ba.add_argument("--delay-ms", type=int, default=0)
 
-    dr = sub.add_parser("directact-real")
-    dr.add_argument("--events", required=True)
-    dr.add_argument("--trials", type=int, default=20)
-    dr.add_argument("--settle", type=float, default=1.5)
-    dr.add_argument("--observe", type=float, default=2.5, help="各キー送信の後、ack が届くのを待つ時間(秒)")
-    dr.add_argument("--off-vk", type=lambda s: int(s, 0), default=0x1D, help="VK_NONCONVERT")
-    dr.add_argument("--on-vk", type=lambda s: int(s, 0), default=0x1C, help="VK_CONVERT")
-
-    dra = sub.add_parser("directact-real-analyze")
-    dra.add_argument("--awase-log", required=True)
-    dra.add_argument("--summary-json")
     ba.add_argument("--summary-json")
 
     args = ap.parse_args(argv)
     return {"host": cmd_host, "drive": cmd_drive, "analyze": cmd_analyze, "selftest": cmd_selftest,
             "burn": cmd_burn, "tidreuse": cmd_tidreuse, "tickchurn": cmd_tickchurn,
-            "bug234": cmd_bug234, "bug234-analyze": cmd_bug234_analyze,
-            "directact-real": cmd_directact_real,
-            "directact-real-analyze": cmd_directact_real_analyze}[args.cmd](args)
+            "bug234": cmd_bug234, "bug234-analyze": cmd_bug234_analyze}[args.cmd](args)
 
 
 if __name__ == "__main__":
