@@ -269,9 +269,8 @@ jobs:
             *[cfg(f'sc-dbe-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
                   args=f'--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2{msime}')
               for ime_name, ime, km, msime in SC_IMES],
-            # ADR-255: sc-dbe-gji-msime を、ドライバ経由のスキャンコード(JIS 申告、物理キーと同じ Down/Up の vk)で打つ比較。従来の vk 直接指定の sc-dbe-gji-msime と結果を比べる。
-            cfg('sc-dbe-gji-msime-drv', 'observe', check='consistency', ime='gji', keymap=2, driver='jis', until='2026-11-10',
-                args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --inject-driver'),
+            # ADR-255: sc-dbe-gji-msime を、ドライバ経由のスキャンコード(JIS 申告、物理キーと同じ Down/Up の vk)で打つ比較は、全PASS・新規不具合なしで
+            # docs/adr/255-ime-off-thumb-key-space.md に結果を記録済みのため撤去した(2026-11-16、期限切れの棚卸し)。
             *[cfg(f'sc-kanji-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
                   args=f'--seq=F2,19,19,16,1A,16,1A,19,F2,1A{msime}')
               for ime_name, ime, km, msime in SC_IMES],
@@ -308,10 +307,10 @@ jobs:
             cfg('sc-solotap-after-passthrough-close-gji-atok', 'observe', check='consistency', keymap=0, runs=2,
                 args='--seq=16,F0,1D,1D,1D',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|Precomposition,Eisu,IMEOff|Composition,Eisu,IMEOff|Conversion,Eisu,IMEOff|DirectInput,Muhenkan,IMEOn|Precomposition,Muhenkan,IMEOff|Composition,Muhenkan,IMEOff|Conversion,Muhenkan,IMEOff'),
-            # ADR-260: 英数(複合キー)を belief とずれた状態で押したときの追随(観測のみ、only='sc-eisu-km-*' かブランチ feat/adr260-eisu-toggle-guard)。
+            # ADR-260: 英数(複合キー)を belief とずれた状態で押したときの追随(only='sc-eisu-km-*' かブランチ feat/adr260-eisu-toggle-guard)。
             # 本実装(B1o+B3)の確認。読みが効く窓(tsf・実 Chrome)で、typed の「ずれ」(tsf: ｗ・ka、chrome: 素通しのかな・英数なのに Engine ON)が 0 になること。
-            # `--km-twice` で 2 文字目も記録する。ATOK は閉の英数が開かない対照。
-            *[cfg(f'sc-eisu-km-{win}-{pn}', 'observe', check='keymatrix', ime='gji', keymap=pk, runs=3, wait=2400, until='2026-11-10',
+            # `--km-twice` で 2 文字目も記録する。ATOK は閉の英数が開かない対照。run 38697868352 で 0/180(修正前132/180)を確認済みのため pass に昇格(2026-11-16)。
+            *[cfg(f'sc-eisu-km-{win}-{pn}', 'pass', check='keymatrix', ime='gji', keymap=pk, runs=3, wait=2400,
                   keys='ime_toggle = ["VK_NONCONVERT"]',
                   **({'chrome': f"--keymatrix={KM_EISU} --km-twice --settle=800"} if win == 'chrome' else
                      {'stress': f"--form={win} --mode=keymatrix --km-cells={KM_EISU} --km-twice --layout=@REPO@/layout/nicola_keytop.yab"}))
@@ -320,7 +319,9 @@ jobs:
             # ADR-260 の持ち越しの測定(Opus レビュー R6 (e)): 測る英数の前に、ひらがな(0xF2、MS-IME プリセットではかなへ SET)を 1 回押す
             # (`--km-pre=f2`)。belief が英数のときのひらがなは入力モードの予測(かな)を持ち越し、直接観測の判定は今回の打鍵の軸で決める(B3)。
             # 持ち越しの入力モードの予測は reduce の fence(170ms)の間は観測を拒否する(R1)。typed の「ずれ」が 0 になること。
-            *[cfg(f'sc-eisu-km-carry-{win}-msime', 'observe', check='keymatrix', ime='gji', keymap=2, runs=3, wait=2400, until='2026-11-10',
+            # 2026-11-16 棚卸し: ADR-260 本文は「今後測定」のままで、マージ後に実際に走らせた記録が見つからない。所有者判断待ちのため、
+            # ひとまず期限のみ延長する(実施するか放棄するかを別途決める)。
+            *[cfg(f'sc-eisu-km-carry-{win}-msime', 'observe', check='keymatrix', ime='gji', keymap=2, runs=3, wait=2400, until='2026-12-14',
                   keys='ime_toggle = ["VK_NONCONVERT"]',
                   **({'chrome': f"--keymatrix=f0=tog:open,f0=tog:close,f0=tog:fresh,f0=on:fresh --km-pre=f2 --km-twice --settle=800"} if win == 'chrome' else
                      {'stress': f"--form={win} --mode=keymatrix --km-cells=f0=tog:open,f0=tog:close,f0=tog:fresh,f0=on:fresh --km-pre=f2 --km-twice --layout=@REPO@/layout/nicola_keytop.yab"}))
@@ -335,18 +336,11 @@ jobs:
             cfg('sc-t1b-kanji-row-only', 'observe', check='consistency', awase='false', keymap=0, runs=1,
                 args='--chord=A4,19 --chord-at=20000 --chord-prep=1C', tsv='DirectInput,Henkan,IMEOn|Precomposition,Kanji,IMEOff'),
             # ADR-281(BUG-221、判定は check_modifier_mode_key.py): 修飾を押したままのひらがなキー(0xF2)。閉じた状態(--chord-prep=1A=VK_IME_OFF)から押す。
-            # nat-*(awase なし、観測のみ): 修飾付きの F2 で実 IME が開くか。GJI(MS-IME プリセット)と Microsoft IME 本体で、none(対照)・Ctrl・Shift・Alt を比べる
-            #   (M1・M1'・M2。Mozc/GJI がこの 4 キーの修飾を捨てるか、Alt が届くか、MS-IME 本体で A′ の条件を広げてよいかの根拠)。
             # awase-*(awase 起動中): GJI(MS-IME プリセット)で、none・Ctrl・Shift・Alt は F2 を予測して Engine が活性化すること(A′、Alt は拡大後)。
             # 押しっぱなしにする VK: none=0x87(F24、修飾でない対照)/ ctrl=A2 / shift=A0 / alt=A4。only='sc-adr281-*' で回す。
-            *[cfg(f'sc-adr281-nat-{iname}-{mod}', 'observe', check=f'modkey-{mod}-observe', ime=ime, keymap=km, awase='false', runs=3,
-                  args=f'--chord={vk},F2 --chord-at=20000 --chord-prep=1A{extra}', until='2026-11-10')
-              for iname, ime, km, extra in (('gji-msime', 'gji', 2, ''), ('msime-native', 'msime', 1, ' --msime'))
-              for mod, vk in (('none', '87'), ('ctrl', 'A2'), ('shift', 'A0'), ('alt', 'A4'))],
-            # 半角/全角(0xF3)でも修飾を捨てるか(GJI の実 IME のみ、awase なし。MS-IME プリセットの DirectInput の Hankaku/Zenkaku は IMEOn)。
-            *[cfg(f'sc-adr281-nat-gji-msime-f3-{mod}', 'observe', check=f'modkey-{mod}-observe-f3', ime='gji', keymap=2, awase='false', runs=3,
-                  args=f'--chord={vk},F3 --chord-at=20000 --chord-prep=1A', until='2026-11-10')
-              for mod, vk in (('none', '87'), ('ctrl', 'A2'), ('shift', 'A0'), ('alt', 'A4'))],
+            # nat-*(awase なし。修飾付きの F2/F3 で実 IME が開くか、GJI・MS-IME 本体を比較する一回限りの設計検討スパイク)は、
+            # docs/adr/281-modified-mode-key-effect-from-ime-settings.md の「CI実測の結果」(run 40271764639・40272737475)に
+            # 結果を記録済みのため撤去した(2026-11-16、期限切れの棚卸し)。恒久的な回帰監視はこの下の awase-* が担う。
             *[cfg(f'sc-adr281-awase-gji-msime-{mod}', exp, check=f'modkey-{mod}-{chk}', ime='gji', keymap=2, awase='true', runs=3,
                   args=f'--chord={vk},F2 --chord-at=20000 --chord-prep=1A', **({'until': '2026-11-10'} if exp == 'observe' else {}))
               for mod, vk, exp, chk in (('none', '87', 'pass', 'predict'), ('ctrl', 'A2', 'pass', 'predict'),
@@ -503,14 +497,8 @@ jobs:
             *[cfg(f'sc-late-space-fast-{nm}', 'observe', check='lateorder', keymap=2, runs=1, wait=420, until='2026-11-10', rules=rl,
                   stress=f'--form=edit --mode=lateorder --trials=4 --reps=5 --interval={iv} --lateorder-key={k} --layout=@REPO@/layout/nicola_keytop.yab')
               for nm, iv, k, rl in (('iv40', 40, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('iv20', 20, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('iv8', 8, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('ctl-iv8', 8, '20', ''))],
-            # ADR-280 C0 の配線確認: `[auto_detect] eisu_threshold`(13/15)が実際の awase.exe の判定器へ届き、境界の打鍵列(B=wkxd, llr -14.05。ADR-280 で尺度が変わり ayre から取り替えた)で
-            # 13 は not-japanese・15 は undecided、英数 E(build)は not-japanese、日本語 J(親指+k)は japanese になるか。typing_stress --mode=langdetect、
-            # 判定は check_langdetect.py(awase.log の `[lang-detect]` 行を時刻で切り出す。本文は読まない)。ci/adr280-c0-wiring への push では sc-langdetect-* だけ回る。
-            *[cfg(f'sc-langdetect-eisu{th}', 'observe', check='langdetect', checkargs=f'--eisu {th}', keymap=1, runs=1, wait=420, until='2026-11-10',
-                  general='half_width_alnum_toggle = "all"',
-                  autodetect=f'mode = "ime_on_eisu"; scope = "all"; eisu_threshold = {th}.0',
-                  stress='--form=edit --mode=langdetect --trials=2 --layout=@REPO@/layout/nicola_keytop.yab')
-              for th in (13, 15)],
+            # ADR-280 C0 の配線確認(`[auto_detect] eisu_threshold` が実際の awase.exe の判定器へ届くか)は、PR #828(b3ff762bf)で
+            # 確認・完了済みのため撤去した(2026-11-16、期限切れの棚卸し)。
             # ADR-255 の通し: 設定画面(awase-settings)のプリセットボタン+Ctrl+S が書いた [[keymaps]] を awase が読み、連打・押しっぱなしで Space が出るか。
             # rules ではなく via_settings='preset'。typing_stress --mode=lateorder は keymap=2(MS-IME プリセット)。
             cfg('sc-late-space-saved-iv20', 'observe', check='lateorder', keymap=2, runs=1, wait=420, until='2026-11-10', via_settings='preset',
@@ -588,8 +576,12 @@ jobs:
             # --first-key-literal-ok(ADR-245 追補 2): gjimsime-shiftchar(GJI の Deferred→Resume。R2 の保持は IMC 経路=MS-IME 本体だけ)は、
             #   戻って最初の打鍵が素の文字で出ることを許し、2 打鍵目(typed2)がかなであることを必須にする。MS-IME 本体は R2 の保持で最初の打鍵から かな。
             #   multi=戻って最初の打鍵から続けて 2 打鍵(20ms 間隔)を打ち「かか」になること(保持した打鍵の順序。GJI の ATOK は対象外)。
+            # 2026-11-16 棚卸し: ctl/bimeoff は判定スクリプト側が意図的に判定をスキップする対照群(問題なし)。alttab は CI の
+            # SendInput Alt+Tab がフォアグラウンド窓を切り替えないハーネス側の既知の欠陥(製品バグではない)。sameproc は
+            # ADR-245 Q4 どおり observe で測った結果、msime だけ実際に壊れていることが分かったため BUG-235 を起票した
+            # (docs/known-bugs/BUG-235.md)。いずれも期限のみ延長する。
             *[cfg(f'sc-focusrestore-{ime_name}{suf}', 'observe' if suf in ('-ctl', '-sameproc', '-bimeoff', '-alttab') else 'pass', check='focusrestore', ime=ime, keymap=km, runs=1, wait=480,
-                  general='half_width_alnum_toggle = "all"', until='2026-11-08' if suf in ('-ctl', '-sameproc', '-bimeoff', '-alttab') else '',
+                  general='half_width_alnum_toggle = "all"', until='2026-12-14' if suf in ('-ctl', '-sameproc', '-bimeoff', '-alttab') else '',
                   checkargs='' if suf in ('-ctl', '-sameproc', '-bimeoff', '-alttab') else '--strict' + (' --first-key-literal-ok' if (ime_name == 'gjimsime' and suf == '-shiftchar') else ''),
                   stress=f"--form=edit --mode=focus-restore --fr-n=5 --fr-expect={fexp}{flags} --layout=@REPO@/layout/nicola_keytop.yab{msime}")
               for ime_name, ime, km, msime, fexp in (('msime', 'msime', 1, ' --msime', 'resume'), ('gji', 'gji', 1, '', 'rebuild'), ('gjimsime', 'gji', 2, '', 'resume'))
@@ -726,58 +718,61 @@ jobs:
               for iv in (10, 2)],
             # --- Mozc Readable(BUG-207): 高速打鍵ストレスを Mozc 系の TIP で回す。awase が raw-tsf-literal と誤判定して文字を消さないか
             # (I/O の監視を mozc_server に向ける修正の確認)。ts-<入力先>-mozc-<間隔>ms は awase あり、ts-raw-<入力先>-mozc-<間隔>ms は awase なしの対照。
-            # 名前に -mozc- を含むので、fix/bug-207-mozc-server-io-monitor への push は only='*-mozc-*' で回る。観測のみ(崩れても赤にしない)。
-            *[cfg(f'ts-{form}-mozc-{iv}ms', 'observe', check='typing', ime='mozc', runs=2, wait=420, until='2026-11-10',
+            # 名前に -mozc- を含むので、fix/bug-207-mozc-server-io-monitor への push は only='*-mozc-*' で回る。
+            # 2026-11-16 棚卸し: PR #686(83ffb9420)マージ日の run 39185849311 で全PASSを確認済みの退行監視として pass に昇格。
+            *[cfg(f'ts-{form}-mozc-{iv}ms', 'pass', check='typing', ime='mozc', runs=2, wait=420,
                   stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab --mozc')
               for form in ('edit', 'rich', 'tsf')
               for iv in (40, 10)],
-            *[cfg(f'ts-raw-{form}-mozc-{iv}ms', 'observe', check='typing', ime='mozc', awase='false', runs=2, wait=420, until='2026-11-10',
+            *[cfg(f'ts-raw-{form}-mozc-{iv}ms', 'pass', check='typing', ime='mozc', awase='false', runs=2, wait=420,
                   stress=f'--form={form} --interval={iv} --mode=raw --no-awase --layout=@REPO@/layout/nicola_keytop.yab --mozc')
               for form in ('edit', 'tsf')
               for iv in (40, 10)],
             # BUG-207 の実際の条件(Mozc がアクティブで GJI の変換サーバーも動いている、ADR-269 順序 2)。develop では GJI の監視に付いて誤判定する(はず)。
             # 条件が成立しなければジョブが失敗する(ステップ『条件の確認(mozc-gji)』)。awase.log の `attached to GJI process`(develop)と
-            # `detaching`(修正後)で効果を見る。
-            *[cfg(f'ts-{form}-mozc-gji-{iv}ms', 'observe', check='typing', ime='mozc-gji', runs=2, wait=420, until='2026-11-10',
+            # `detaching`(修正後)で効果を見る。2026-11-16 棚卸し: ジョブが前提条件で自己失敗する設計のため偽陽性リスクが低く、pass に昇格。
+            *[cfg(f'ts-{form}-mozc-gji-{iv}ms', 'pass', check='typing', ime='mozc-gji', runs=2, wait=420,
                   stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab --mozc')
               for form in ('edit', 'tsf')
               for iv in (40, 10)],
             # 実 GJI も入れた版(ADR-269): GJI を実際にインストールし、GJI の変換サーバーを起動したまま Mozc Readable も入れ、
             # typing_stress の --mozc でセッション内の入力方式を Mozc にする(GJI の TIP も有効なまま)。利用者の『GJI と Mozc の両方を入れて
             # Mozc を有効にしている』環境に最も近い。条件(アクティブな TIP が Mozc 系、GJI の変換サーバーが動作中)が成立しなければ失敗にする。
-            *[cfg(f'ts-{form}-mozc-gjireal-{iv}ms', 'observe', check='typing', ime='mozc-gji-real', runs=2, wait=420, until='2026-11-10',
+            # 2026-11-16 棚卸し: 実GJIのchocoインストールが時々失敗する既知のインフラ不安定要因(ADR-269)があるため pass 化は見送り、期限のみ延長する。
+            *[cfg(f'ts-{form}-mozc-gjireal-{iv}ms', 'observe', check='typing', ime='mozc-gji-real', runs=2, wait=420, until='2026-12-14',
                   stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab --mozc')
               for form in ('edit', 'tsf')
               for iv in (40, 10)],
             # 途中で GJI から Mozc へ切り替える版(ADR-269 順序 5): 実 GJI がアクティブな状態で awase を起動し(監視は GJI に付く)、
             # typing_stress が起動の N ms 後に Mozc Readable へ切り替える(--switch-mozc-ms)。修正後の awase は `detaching` を出して
             # 監視を外す。develop は外さず、切替後に静止した GJI を見て誤判定しうる。監視を外す経路・gji_* を 0 に戻す処理・即時の切り替えを CI で動かす。
-            *[cfg(f'ts-tsf-mozc-switch-{ms}ms', 'observe', check='typing', ime='mozc-gji-real', runs=2, wait=420, until='2026-11-10',
+            # 2026-11-16 棚卸し: ADR-269 自身が設計の不備(8000ms版は切替窓の最中に打鍵していない・20000ms版はn=2のみ)を認めており、
+            # 再設計が必要なため pass 化は見送り、期限のみ延長する。
+            *[cfg(f'ts-tsf-mozc-switch-{ms}ms', 'observe', check='typing', ime='mozc-gji-real', runs=2, wait=420, until='2026-12-14',
                   stress=f'--form=tsf --interval=40 --layout=@REPO@/layout/nicola_keytop.yab --switch-mozc-ms={ms}')
               for ms in (8000, 20000)],
             # Mozc で本物のリテラル(日本語にならず英字のまま出る)が起きるかの再現実験(ADR-269 順序 4、段階 2 の前提)。
             # awase なしの対照(ts-raw-*-mozc-cold/idle-*)は『Mozc 単体が cold・長い idle の最初の入力を受けられるか』、awase あり
             # (ts-*-mozc-cold/idle-*)は『安全網(literal 判定)なしで Mozc に何が起きるか』。入力先は tsf(Chrome 風の RichEdit)と実 Chrome(chromepage)。
-            # cold=準備確認を省いた最初の入力、idle=各試行の前に5秒待つ。観測のみ。
-            *[cfg(f'ts-{raw}{form}-mozc-{kind}-20ms', 'observe', check='typing', ime='mozc', awase='false' if raw else 'true', runs=4, wait=900, until='2026-11-10',
+            # cold=準備確認を省いた最初の入力、idle=各試行の前に5秒待つ。
+            # 2026-11-16 棚卸し: 32/32 PASS(run 39182258683、cold/idle)・8/8 PASS(run 39183148517、longidle、下のブロック)で0件と
+            # docs/adr/269-mozc-literal-detection-evidence.md:89-95 に結論済み。BUG-234(settle窓/open-close belief追随)とは別経路
+            # (本構成は組成中のリテラル検出)で無関係なため、ADR-293待ちで延長する理由はなく pass に昇格する。
+            *[cfg(f'ts-{raw}{form}-mozc-{kind}-20ms', 'pass', check='typing', ime='mozc', awase='false' if raw else 'true', runs=4, wait=900,
                   stress=f'--form={form} --interval=20 --kinds=single,mixed --trials={tr} --len=15 --settle-read --layout=@REPO@/layout/nicola_keytop.yab --mozc ' + (('--mode=raw --no-awase ' if raw else '') + flag))
               for raw in ('', 'raw-')
               for form in ('tsf', 'chromepage')
               for kind, flag, tr in (('cold', '--cold', 1), ('idle', '--idle=5000', 3))],
             # 上の cold/idle(5秒)で Mozc にリテラルは出なかった(run 39182258683、32/32 PASS)。GJI のリテラルは数十秒の長い idle で出ることが多い
-            # (BUG-002 など)ので、idle を 30 秒にして同じ実験を繰り返す。
-            *[cfg(f'ts-{raw}{form}-mozc-longidle-20ms', 'observe', check='typing', ime='mozc', awase='false' if raw else 'true', runs=2, wait=1500, until='2026-11-10',
+            # (BUG-002 など)ので、idle を 30 秒にして同じ実験を繰り返す。2026-11-16 棚卸し: 8/8 PASS(run 39183148517)で同様に pass に昇格。
+            *[cfg(f'ts-{raw}{form}-mozc-longidle-20ms', 'pass', check='typing', ime='mozc', awase='false' if raw else 'true', runs=2, wait=1500,
                   stress=f'--form={form} --interval=20 --kinds=single,mixed --trials=3 --len=15 --settle-read --layout=@REPO@/layout/nicola_keytop.yab --mozc ' + (('--mode=raw --no-awase ' if raw else '') + '--idle=30000'))
               for raw in ('', 'raw-')
               for form in ('tsf', 'chromepage')],
-            # 陽性対照(Opus round 4): Mozc の cold/idle/longidle と同じ構成を GJI・awase なしで回す(--mozc なし)。GJI の Chrome の cold リテラルは
-            # 実機で 8.7〜28 秒の idle の後に観測されている(tuning-constants.md の 79134f5・9a7e699)。CI でも GJI で literal>0 が出れば、ハーネスと
-            # Chrome の経路にリテラルを検出する力があると言え、Mozc の 0 件に意味が出る。GJI でも 0 件なら、この CI の環境ではリテラル自体が起きず、
-            # Mozc の結果は何も言っていない。
-            *[cfg(f'ts-raw-{form}-gji-{kind}-20ms', 'observe', check='typing', ime='gji', awase='false', runs=rn, wait=wt, until='2026-11-10',
-                  stress=f'--form={form} --interval=20 --kinds=single,mixed --trials={tr} --len=15 --settle-read --layout=@REPO@/layout/nicola_keytop.yab --mode=raw --no-awase {flag}')
-              for form in ('tsf', 'chromepage')
-              for kind, flag, tr, rn, wt in (('cold', '--cold', 1, 4, 900), ('idle', '--idle=5000', 3, 4, 900), ('longidle', '--idle=30000', 3, 2, 1500))],
+            # 陽性対照(Opus round 4、GJI・awase なし、--mozc なし)は20/20 PASS・0件(run 39183922616)だったが、
+            # docs/adr/269-mozc-literal-detection-evidence.md:90 自身が「raw打鍵はGJIの本物のリテラル機構〈awaseの送信choreography/
+            # Chrome TSF再初期化〉を経由しないため、この0件は検出力の証明にならない(null result)」と結論しており、具体的な再設計案も
+            # 無いまま。実機(dragonflyg4)側での観測に置き換える方針のため、2026-11-16 棚卸しで撤去した。
             # --- 拡張ストレス(tsx-): 実アプリを入力先にする / 実利用に近い摂動を足す構成。既定の ts-* には含めない(only='tsx-*' で回す)。---
             # 入力先(--form=、examples/typing_stress/target.rs): chromebar=Chrome のアドレスバー / chromepage=Chrome のページ内 textarea /
             # bugreport=awase-settings --bug-report の「説明」欄。別プロセスなので読み戻しは UI Automation。Chrome は GJI のみ。
