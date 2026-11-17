@@ -76,7 +76,7 @@ related_adr:
 
 - **Q1・Q2(解決)**: 決定 3。残る確認は `FOCUS_RESYNC` との順序(決定 7、CI ログ)。
 - **Q3**: A の 0x0 → 0x10 の遷移の主体。Phase 3.7 の診断スナップショット(`ime_refresh.rs:661-663`)で離脱の前後どちらかを CI ログで切る。決定 8 の予測器による判定が、離れている間の変化に対する安全弁になっている。
-- **Q4**: 同一プロセス内の窓移動(`process_changed` が偽、`ir_notify_focus_changed` も世代 bump も走らない)。トグルと ObservedEisu が移動先にそのまま持ち越される失敗シナリオがある(S-4)。本 ADR の範囲外とするが、CI に `sc-focusrestore-sameproc` を observe で足して実 IME が窓ごとかを測り、結果次第で BUG を起票する。
+- **Q4(測定済み、2026-11-16 追記)**: 同一プロセス内の窓移動(`process_changed` が偽、`ir_notify_focus_changed` も世代 bump も走らない)。トグルと ObservedEisu が移動先にそのまま持ち越される失敗シナリオがある(S-4)。本 ADR の範囲外とするが、CI に `sc-focusrestore-sameproc` を observe で足して実 IME が窓ごとかを測り、結果次第で BUG を起票する。実測(run `39129301176`、2026-10-18): GJI・GJI+MS-IMEプリセットは5/5成功だが、MS-IME本体だけ5/5で失敗(リテラル固着)。[BUG-235](../known-bugs/BUG-235.md)として起票した(期限切れ `until` の棚卸しで発覚したフォローアップ漏れ)。
 - **Q5(解決)**: エンジン OFF 中も復元する(決定 9、所有者判断)。
 - **RebuildToggle の残余リスク(S3-2、許容)**: 離れている間に A の実状態が変わっていた場合(Q3、言語バーの操作)、RebuildToggle は「かなの A」を英数とみなしてエンジンを止める。注入はしないので状態は壊れず、症状は「NICOLA が効かない」にとどまる。その状態で左 Shift をタップすると Exit の F2(ATOK ではトグル)が出て英数へ反転する。所有者判断(ATOK は送らない)の範囲内の制限。CI の ATOK 構成で「戻った A で打つと英字(トグル維持)、次の左 Shift タップでかな」を固定し、「B で IME OFF してから A に戻る」(`effective_open` 偽の Drop)を observe で 1 本足す(S4-1)。
 
