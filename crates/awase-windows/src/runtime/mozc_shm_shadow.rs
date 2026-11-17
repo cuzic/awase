@@ -141,13 +141,11 @@ impl super::Runtime {
 
     /// 現在のフォーカスの窓のスレッドで、直前の読みが受け入れだったか（ADR-292 P の始める条件 (b)）。
     pub(super) fn mozc_shm_accepted_for_focus(&self) -> bool {
-        let hwnd_addr = self.platform.focus.current.hwnd;
-        let pid = self.platform.focus.current.pid;
-        if hwnd_addr == 0 || pid == 0 {
-            return false;
-        }
-        let tid = crate::observer::mozc_shm::thread_of_window(hwnd_addr);
-        tid != 0 && self.mozc_shm.accepted_for(tid, pid)
+        // ADR-293(BUG-234、round2レビュー指摘L4): スタンプ側(`WindowsPlatform::mozc_target()`)
+        // と同じ式を使う——項目0の(tid,pid)一致判定は読み側とスタンプ側の式の一致に依存する。
+        self.platform
+            .mozc_target()
+            .is_some_and(|(tid, pid)| self.mozc_shm.accepted_for(tid, pid))
     }
 
     /// ブロックがある間は専用のタイマーを張る（既に張ってあれば触らない）。
@@ -175,15 +173,11 @@ impl super::Runtime {
     ) -> (ModeRead, Option<ShmUse>) {
         self.mozc_shm.polling = false;
         self.mozc_shm.accepted_for = None;
-        let hwnd_addr = self.platform.focus.current.hwnd;
-        let pid = self.platform.focus.current.pid;
-        if hwnd_addr == 0 || pid == 0 {
+        // ADR-293(BUG-234、round2レビュー指摘L4): スタンプ側(`WindowsPlatform::mozc_target()`)
+        // と同じ式を使う(項目0の(tid,pid)一致判定は読み側とスタンプ側の式の一致に依存する)。
+        let Some((tid, pid)) = self.platform.mozc_target() else {
             return (None, None);
-        }
-        let tid = crate::observer::mozc_shm::thread_of_window(hwnd_addr);
-        if tid == 0 {
-            return (None, None);
-        }
+        };
 
         // 開けなかった窓は、フォーカスが変わるまで読まない（ADR-268 D1）。
         if !focus_changed && self.mozc_shm.absent_for == Some((tid, pid)) {
@@ -224,14 +218,24 @@ impl super::Runtime {
             // ここでは生の時刻だけを渡す)。
             let ime_actuation_baseline_ms = crate::hook::imm_cross_write_tick_ms()
                 .max(crate::hook::ime_actuation_send_tick_ms());
-            let used = self.platform_state.ime.report_mozc_shm(
+            // ADR-293(BUG-234): own_sendは単一スロットのグローバルなスタンプ(`hook`)。
+            // `report_mozc_shm`はSplitの早期returnより前にこれを分類し(5-2節冒頭)、
+            // 消すべきと判定したら2つ目の戻り値で伝え返す(`platform_state.rs`は`hook`を
+            // 直接呼べないため)。
+            let own_send = crate::hook::own_send();
+            let (used, clear_own_send) = self.platform_state.ime.report_mozc_shm(
                 *shm,
                 raw.update_tick_ms,
                 now_ms,
                 baseline_ms,
                 ime_actuation_baseline_ms,
+                own_send,
+                (tid, pid),
                 crate::state::TickMs(now_ms),
             );
+            if clear_own_send {
+                crate::hook::clear_own_send();
+            }
             (
                 shm.effective_mode.map(|mode| (mode, raw.update_tick_ms)),
                 Some(used),

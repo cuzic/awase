@@ -943,8 +943,21 @@ impl PlatformRuntime for WindowsPlatform {
         // async ラッパーを spawn_local で fire-and-forget する。
         // 戻り値の semantics は「dispatch 成功」(= profile 互換) に変更。実際の SendMessage
         // 結果は呼び出し側に届かない（旧 API の sync bool に依存していた診断ログは廃止）。
+        //
+        // ADR-293(BUG-234、Opusレビュー指摘3-a): `(tid,pid)`はspawnする前(同期)に捕獲する
+        // (`build_ime_control_view`と同じ計算)。`OwnSend`のスタンプは、spawnしたasyncブロックの
+        // 中で実際の書き込み結果(`set_ime_open_cross_process_async`の戻り値)が`true`だったとき
+        // だけ行う——この関数自体の戻り値`true`(dispatch成功)はスタンプの条件にしない
+        // (書けなくてもdispatchはされるため、以前はこの関数の戻り値だけでスタンプしており、
+        // 書き込みが失敗してもスタンプが立ってしまっていた)。
+        let own_send_target = self.mozc_target();
         win32_async::spawn_local(async move {
-            let _ = crate::ime::set_ime_open_cross_process_async(open).await;
+            let written = crate::ime::set_ime_open_cross_process_async(open).await;
+            if written {
+                if let Some((tid, pid)) = own_send_target {
+                    crate::hook::note_own_send(open, tid, pid, None);
+                }
+            }
         });
         true
     }
@@ -1120,6 +1133,9 @@ impl WindowsPlatform {
             ""
         };
         let shadow_on = applied;
+        // ADR-293(BUG-234): OwnSendのスタンプ先(`apply_mechanism`はOSから自前取得しない、
+        // round6 V4-2)。
+        let mozc_target = self.mozc_target();
         crate::state::ImeControlView {
             focus: crate::state::FocusFacts {
                 class_name,
@@ -1128,6 +1144,7 @@ impl WindowsPlatform {
                 // `ActuationTarget` 照合基準。`executor.rs::dispatch_ime_set_open` の
                 // async 経路が `ActuationTarget::capture(focus_gen)` に渡すのと同じ値。
                 focus_gen: self.output.ime_mode_focus_gen.get(),
+                mozc_target,
             },
             observed: crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs()),
             control: crate::state::ControlLog { shadow_on },
@@ -1213,6 +1230,22 @@ impl WindowsPlatform {
     #[must_use]
     pub const fn current_app_profile(&self) -> AppImeProfile {
         self.focus.current_profile()
+    }
+
+    /// ADR-293(BUG-234、Opusレビュー指摘3-g): `OwnSend`のスタンプ先の`(tid,pid)`——フォーカス中
+    /// 窓のスレッド。`build_ime_control_view`・`set_ime_open`・`runtime/open_chain.rs::imm_cross_write`
+    /// が同じ式を別々に計算していたのをこの1関数にまとめた(読み側`mozc_shm_shadow.rs`の計算式が
+    /// 将来変わったとき、スタンプ側だけ取り残される実装バグを防ぐ——項目0の(tid,pid)一致判定は
+    /// この2つの式が一致することに依存する)。フォーカス未取得・スレッドが取れない場合は`None`。
+    #[must_use]
+    pub fn mozc_target(&self) -> Option<(u32, u32)> {
+        let hwnd_addr = self.focus.current.hwnd;
+        let pid = self.focus.current.pid;
+        if hwnd_addr == 0 || pid == 0 {
+            return None;
+        }
+        let tid = crate::observer::mozc_shm::thread_of_window(hwnd_addr);
+        (tid != 0).then_some((tid, pid))
     }
 
     /// 同一フォーカスプローブ内で取得済みの process_name を再利用して更新する。

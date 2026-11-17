@@ -119,6 +119,12 @@ pub(crate) fn apply_mechanism(
                 // 以降の再試行が全て no-op になる（BUG-16 追補）。未適用として返す。
                 ImeOpenOutcome::UnsafeToToggle
             };
+            // ADR-293(BUG-234): 開閉方向を持つ送信が実際に送信できたときだけスタンプする(round6 V2)。
+            if outcome == ImeOpenOutcome::Applied {
+                if let Some((tid, pid)) = view.focus.mozc_target {
+                    crate::hook::note_own_send(open, tid, pid, None);
+                }
+            }
             // 消費の判定（OFF 方向の送信に成功したときだけ）は核の `consumes_candidate_evidence`。
             if sync_actuation::consumes_candidate_evidence(mechanism, command, open, outcome) {
                 // ADR-171: この override 送信が候補ウィンドウ再表示という
@@ -161,7 +167,7 @@ pub(crate) fn apply_mechanism(
                 );
             }
             // SAFETY: 同上。
-            if unsafe { crate::ime::send_ime_mode_key(vk) } {
+            let outcome = if unsafe { crate::ime::send_ime_mode_key(vk) } {
                 ImeOpenOutcome::Applied
             } else {
                 // Winキー押下中（デスクトップ切替等）で未送信。Applied 扱いにすると
@@ -174,7 +180,14 @@ pub(crate) fn apply_mechanism(
                      → UnsafeToToggle"
                 );
                 ImeOpenOutcome::UnsafeToToggle
+            };
+            // ADR-293(BUG-234): 開閉方向を持つ送信が実際に送信できたときだけスタンプする(round6 V2)。
+            if outcome == ImeOpenOutcome::Applied {
+                if let Some((tid, pid)) = view.focus.mozc_target {
+                    crate::hook::note_own_send(open, tid, pid, None);
+                }
             }
+            outcome
         }
         Some(MechanismCommand::SetOpenCrossProcessSync(_)) => {
             // 同期チェーンは ImmCross を適用しない(ECRS MA-01)。同期の入口は ImmCross が先頭で最初に適用可能なとき
@@ -458,6 +471,7 @@ pub fn characterize_strategy(active_gji: bool, profile: &str, skip_imm: bool) ->
             // `is_applicable` の評価だけを行うシームであり、ROMAN 補完
             // （`focus_gen` を使う唯一の経路）は走らない。
             focus_gen: crate::state::focus_gen::FocusGen::INITIAL,
+            mozc_target: None,
         },
         observed: ObservedState {
             active_ime_kind,
@@ -505,6 +519,7 @@ mod tests {
                 class_name: "",
                 profile,
                 focus_gen: crate::state::focus_gen::FocusGen::INITIAL,
+                mozc_target: None,
             },
             observed: ObservedState {
                 active_ime_kind: kind,

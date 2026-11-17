@@ -2417,6 +2417,22 @@ impl ImeStateHub {
     /// （モードキーの予測/通過/明示意図、`FocusChanged`で消える）と組み合わせる。
     /// `last_mode_key_tick_ms`が無ければ(`FocusChanged`直後等)現状どおり`baseline_ms`
     /// (全フックコールバックで進むローリング値)に戻す(安全側)。
+    ///
+    /// ADR-293(BUG-234): `own_send`はawase自身が実際に送信できた最新の開閉方向を持つ送信
+    /// （単一スロット、呼び出し元の`hook`から来る）。`read_target`は読んだブロックの
+    /// `(tid,pid)`（`own_send`との一致確認に使う、5-2節項目0）。戻り値の2つ目は、呼び出し元が
+    /// `own_send`を消すべきか（`classify_own_request`の判定、`hook`側のクリアは
+    /// `platform_state.rs`からは呼べないため、呼び出し元〈`mozc_shm_shadow.rs`〉に伝え返す）。
+    /// direct postの送信経路(5-1節)が無い本PRでは`own_send.nonce`は常に`None`——
+    /// `classify_own_request`の項目1(nonce+ackの確認)はその経路が実装されるPRで追加する。
+    ///
+    /// **Pendingは「読みがbeliefと食い違うとき」だけHeldを強制する**(Opusレビュー指摘2-a)。
+    /// `classify_own_request`のPending自体は「読みが`own_send.open`と不一致」を意味するだけで、
+    /// `own_send.open`とbeliefの`effective_open`が食い違う(稀な)場合には読みがbeliefと一致している
+    /// ことがあり、その場合はHeldを強制せず通常の`decide_use`に委ねる——beliefと一致する読みを
+    /// 保留する理由は無く、不要に`ObserverReported`のdispatchを止めてMozcShm観測のTTLを消費する
+    /// だけになる。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn report_mozc_shm(
         &mut self,
         shm: crate::state::mozc_shm::ShmState,
@@ -2424,32 +2440,70 @@ impl ImeStateHub {
         now_ms: u64,
         baseline_ms: u64,
         ime_actuation_baseline_ms: u64,
+        own_send: Option<crate::state::mozc_shm::OwnSend>,
+        read_target: (u32, u32),
         tick_ms: TickMs,
-    ) -> crate::state::mozc_shm::ShmUse {
-        use crate::state::mozc_shm::{decide_use, ShmUse};
+    ) -> (crate::state::mozc_shm::ShmUse, bool) {
+        use crate::state::mozc_shm::{classify_own_request, decide_use, OwnRequestVerdict, ShmUse};
         let effective = self.effective_open_at(tick_ms);
         let desired = self.shadow_model.desired_open();
-        let disagree_baseline_ms = self
-            .shadow_model
-            .last_mode_key_tick_ms()
-            .map_or(baseline_ms, |mode_key_ms| {
-                mode_key_ms.max(ime_actuation_baseline_ms)
-            });
-        let decision = decide_use(
-            shm,
+        let last_mode_key_tick_ms = self.shadow_model.last_mode_key_tick_ms();
+        let mut disagree_baseline_ms = last_mode_key_tick_ms.map_or(baseline_ms, |mode_key_ms| {
+            mode_key_ms.max(ime_actuation_baseline_ms)
+        });
+        // own_sendの分類はSplitの早期returnより前に行う(5-2節冒頭、round7で確定した順序)——
+        // スタンプのクリア判定は、この読みがSplitかどうかと無関係に行う。
+        let verdict = classify_own_request(
+            own_send,
+            read_target,
+            shm.tsf_open,
             update_tick_ms,
             now_ms,
-            baseline_ms,
-            disagree_baseline_ms,
-            crate::tuning::KEY_EFFECT_SETTLE_MS,
-            effective,
-            desired,
+            last_mode_key_tick_ms,
+            crate::tuning::MOZC_OPEN_CLOSE_SETTLE_MS,
         );
+        let (clear_own_send, pending) = match verdict {
+            OwnRequestVerdict::Unrelated => (false, false),
+            OwnRequestVerdict::ClearNoOverride | OwnRequestVerdict::ConsumedUnusable => {
+                (true, false)
+            }
+            OwnRequestVerdict::Consumed { disagree_floor_ms } => {
+                disagree_baseline_ms = disagree_baseline_ms.max(disagree_floor_ms);
+                (true, false)
+            }
+            OwnRequestVerdict::Pending => (false, true),
+        };
+        // Splitはown_sendの判定より常に優先する(5-2節冒頭、decide_use自身のSplit判定と同じ条件)。
+        // Pendingは、読みがbeliefまたはdesiredと食い違うときだけHeldを強制する(上記doc、2-a・
+        // round2 N2)。decide_useのdisagrees判定(effective_openまたはdesired_openと食い違う)と
+        // 同じ条件にする——effectiveだけを見ると、drift correctionの処理待ち(desiredと食い違う
+        // がeffectiveとは一致する読み)がdecide_useの一致の高速路を通ってしまい、BUG-234と同じ
+        // 「awase自身の送信の処理待ちを外部変化と誤認」でdesiredを元に戻してしまう(round2 N2の
+        // 失敗シナリオ)。
+        let forced_held = pending
+            && shm.tsf_open == shm.effective_open
+            && (shm.tsf_open != effective || shm.tsf_open != desired);
+        let decision = if shm.tsf_open != shm.effective_open {
+            ShmUse::Split
+        } else if forced_held {
+            ShmUse::Held
+        } else {
+            decide_use(
+                shm,
+                update_tick_ms,
+                now_ms,
+                baseline_ms,
+                disagree_baseline_ms,
+                crate::tuning::KEY_EFFECT_SETTLE_MS,
+                effective,
+                desired,
+            )
+        };
         if decision == ShmUse::Split {
             self.demote_applied_for_mozc_shm_split(tick_ms);
         }
         let ShmUse::Use { open, disagrees } = decision else {
-            return decision;
+            return (decision, clear_own_send);
         };
         let fence = self.shadow_model.observations.current_fence();
         self.dispatch_event(
@@ -2468,7 +2522,7 @@ impl ImeStateHub {
                 "[mozc-shm] follow external change open={open} effective_was={effective} desired_was={desired}"
             );
         }
-        decision
+        (decision, clear_own_send)
     }
 
     /// belief の根拠の解決（副作用なし）: `shadow_model` の解決と、`IntentStore` の上書き。`effective_open_at`（診断のログを出す）と
@@ -3912,6 +3966,22 @@ mod tests {
         ps
     }
 
+    /// 明示意図 OFF(tick指定)・`applied=Confirmed(閉)` の窓を作る(BUG-234の再現用、
+    /// `ps_with_open_intent_and_applied`の閉版)。
+    fn ps_with_closed_intent_and_applied_at(intent_tick_ms: u64) -> PlatformState {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, intent_tick_ms);
+        ps.ime.record_confirmed_in_scope(
+            false,
+            intent_tick_ms.saturating_sub(10),
+            test_foreground_scope(),
+        );
+        assert_eq!(ps.ime.explicit_intent(), Some(false));
+        assert!(!ps.ime.effective_open_at(TickMs(intent_tick_ms + 10)));
+        ps
+    }
+
     /// 字形の読み（ADR-273）。`label` を距離 0 で採った `Hit`。
     fn glyph_hit(
         label: crate::state::indicator_glyph::BeliefLabel,
@@ -4208,9 +4278,16 @@ mod tests {
         use crate::state::mozc_shm::ShmUse;
         let mut ps = ps_with_open_intent_and_applied();
         // 基準（awase の最後の操作）= 100。update_tick 5000 > 100 → 操作より後に変わった事実。
-        let used = ps
-            .ime
-            .report_mozc_shm(mozc_shm_state(false), 5000, 5100, 100, 0, TickMs(5100));
+        let (used, _) = ps.ime.report_mozc_shm(
+            mozc_shm_state(false),
+            5000,
+            5100,
+            100,
+            0,
+            None,
+            (0, 0),
+            TickMs(5100),
+        );
         assert_eq!(
             used,
             ShmUse::Use {
@@ -4236,9 +4313,16 @@ mod tests {
     fn report_mozc_shm_holds_a_read_right_after_an_operation() {
         use crate::state::mozc_shm::ShmUse;
         let mut ps = ps_with_open_intent_and_applied();
-        let used = ps
-            .ime
-            .report_mozc_shm(mozc_shm_state(false), 100, 110, 100, 0, TickMs(110));
+        let (used, _) = ps.ime.report_mozc_shm(
+            mozc_shm_state(false),
+            100,
+            110,
+            100,
+            0,
+            None,
+            (0, 0),
+            TickMs(110),
+        );
         assert_eq!(used, ShmUse::Held);
         assert_eq!(ps.ime.explicit_intent(), Some(true));
         assert!(ps.ime.effective_open_at(TickMs(110)));
@@ -4252,9 +4336,9 @@ mod tests {
         let mut ps = ps_with_open_intent_and_applied();
         let mut split = mozc_shm_state(false);
         split.effective_open = true;
-        let used = ps
-            .ime
-            .report_mozc_shm(split, 5000, 5100, 100, 0, TickMs(5100));
+        let (used, _) =
+            ps.ime
+                .report_mozc_shm(split, 5000, 5100, 100, 0, None, (0, 0), TickMs(5100));
         assert_eq!(used, ShmUse::Split);
         assert_eq!(ps.ime.explicit_intent(), Some(true), "明示意図は残る");
         assert!(
@@ -4276,7 +4360,7 @@ mod tests {
         split.effective_open = true;
         let _ = ps
             .ime
-            .report_mozc_shm(split, 5000, 5100, 100, 0, TickMs(5100));
+            .report_mozc_shm(split, 5000, 5100, 100, 0, None, (0, 0), TickMs(5100));
         let first = ps
             .ime
             .journal
@@ -4286,7 +4370,7 @@ mod tests {
             .count();
         let _ = ps
             .ime
-            .report_mozc_shm(split, 5000, 5600, 100, 0, TickMs(5600));
+            .report_mozc_shm(split, 5000, 5600, 100, 0, None, (0, 0), TickMs(5600));
         let second = ps
             .ime
             .journal
@@ -4319,13 +4403,22 @@ mod tests {
                 5100 + i,
                 100,
                 0,
+                None,
+                (0, 0),
                 TickMs(5100 + i),
             );
         }
         assert_eq!(count(&ps) - before, 1, "同じ報告は 1 件だけ journal に書く");
-        let _ = ps
-            .ime
-            .report_mozc_shm(mozc_shm_state(false), 6000, 6100, 100, 0, TickMs(6100));
+        let _ = ps.ime.report_mozc_shm(
+            mozc_shm_state(false),
+            6000,
+            6100,
+            100,
+            0,
+            None,
+            (0, 0),
+            TickMs(6100),
+        );
         assert_eq!(count(&ps) - before, 2, "値が変われば書く");
     }
 
@@ -4334,9 +4427,16 @@ mod tests {
     fn report_mozc_shm_agreeing_read_keeps_the_explicit_intent() {
         use crate::state::mozc_shm::ShmUse;
         let mut ps = ps_with_open_intent_and_applied();
-        let used = ps
-            .ime
-            .report_mozc_shm(mozc_shm_state(true), 5000, 5100, 100, 0, TickMs(5100));
+        let (used, _) = ps.ime.report_mozc_shm(
+            mozc_shm_state(true),
+            5000,
+            5100,
+            100,
+            0,
+            None,
+            (0, 0),
+            TickMs(5100),
+        );
         assert_eq!(
             used,
             ShmUse::Use {
@@ -4360,22 +4460,26 @@ mod tests {
         // ime_actuation_baseline_ms(G3)もbaselineと同じ値を渡し、last_mode_key_tick_ms(=100、
         // ps_with_open_intent_and_appliedが明示意図をtick=100で記録済み)より大きくして、
         // disagree_baseline_msがこのテストの意図どおりbaseline(1000)になるようにする。
-        let held = ps.ime.report_mozc_shm(
+        let (held, _) = ps.ime.report_mozc_shm(
             mozc_shm_state(false),
             900,
             baseline + settle - 1,
             baseline,
             baseline,
+            None,
+            (0, 0),
             TickMs(baseline + settle - 1),
         );
         assert_eq!(held, ShmUse::Held);
         assert_eq!(ps.ime.explicit_intent(), Some(true));
-        let used = ps.ime.report_mozc_shm(
+        let (used, _) = ps.ime.report_mozc_shm(
             mozc_shm_state(false),
             900,
             baseline + settle,
             baseline,
             baseline,
+            None,
+            (0, 0),
             TickMs(baseline + settle),
         );
         assert_eq!(
@@ -4387,6 +4491,184 @@ mod tests {
         );
         assert_eq!(ps.ime.explicit_intent(), None);
         assert!(!ps.ime.effective_open_at(TickMs(baseline + settle)));
+    }
+
+    /// ADR-293(BUG-234)の再現そのもの(Opusレビュー指摘5-a): 明示OFF(tick=200、belief=閉、
+    /// applied=Confirmed(閉))の直後、own_send{open:false, tick:200}を送信した体でスタンプし、
+    /// Mozcがまだ処理しておらずtsf_openが古い値(true)のままの読みを与える。旧170ms settleは
+    /// 過ぎているがcap(`MOZC_OPEN_CLOSE_SETTLE_MS`=2000ms)未満なら、修正前は
+    /// `ShmUse::Use{open:true,disagrees:true}`→`follow external change`でbeliefが誤って開に
+    /// 反転していた(BUG-234そのもの)。修正後はHeldのままで、belief(閉)は反転しない。
+    #[test]
+    fn report_mozc_shm_bug234_reproduction_stays_closed_within_the_cap() {
+        use crate::state::mozc_shm::{OwnSend, ShmUse};
+        const SEND_TICK_MS: u64 = 200;
+        let mut ps = ps_with_closed_intent_and_applied_at(SEND_TICK_MS);
+        let own_send = OwnSend {
+            open: false,
+            tick_ms: SEND_TICK_MS,
+            tid: 11,
+            pid: 22,
+            nonce: None,
+        };
+        // now=400: SEND_TICK_MSから200ms経過(旧170ms settleは過ぎている)。Mozcはまだopen=true
+        // のまま(古い値、処理待ち)。
+        let (used, clear_own_send) = ps.ime.report_mozc_shm(
+            mozc_shm_state(true),
+            150, // update_tick_ms(送信前からの値、送信後に更新されていない)
+            400,
+            SEND_TICK_MS,
+            SEND_TICK_MS,
+            Some(own_send),
+            (11, 22),
+            TickMs(400),
+        );
+        assert_eq!(
+            used,
+            ShmUse::Held,
+            "BUG-234: own_sendのcap内はstaleな食い違いをHeldのままにする(旧170ms settleでは直らない)"
+        );
+        assert!(
+            !clear_own_send,
+            "own_sendはまだPendingのまま(次の読みでも同じ保護を受ける)"
+        );
+        assert_eq!(
+            ps.ime.explicit_intent(),
+            Some(false),
+            "外部変化と誤認していない"
+        );
+        assert!(
+            !ps.ime.effective_open_at(TickMs(400)),
+            "belief(閉)は反転していない——修正前はここがtrueに誤って反転していた"
+        );
+    }
+
+    /// 上と対になるテスト(レビュー指摘5-d-1〜2): capを超過した場合は`ClearNoOverride`で
+    /// own_sendを消し、従来の`disagree_baseline_ms`/`KEY_EFFECT_SETTLE_MS`判定にそのまま落ちる
+    /// (own_sendが無いのと同じ経路——Mozcが本当にOFFを処理し終えていない事実として追随する、
+    /// 「書き込みが失われた」場合と同じ救済)。
+    #[test]
+    fn report_mozc_shm_bug234_reproduction_follows_after_the_cap_expires() {
+        use crate::state::mozc_shm::{OwnSend, ShmUse};
+        const SEND_TICK_MS: u64 = 200;
+        let cap = crate::tuning::MOZC_OPEN_CLOSE_SETTLE_MS;
+        let mut ps = ps_with_closed_intent_and_applied_at(SEND_TICK_MS);
+        let own_send = OwnSend {
+            open: false,
+            tick_ms: SEND_TICK_MS,
+            tid: 11,
+            pid: 22,
+            nonce: None,
+        };
+        let (used, clear_own_send) = ps.ime.report_mozc_shm(
+            mozc_shm_state(true),
+            150,
+            SEND_TICK_MS + cap,
+            SEND_TICK_MS,
+            SEND_TICK_MS,
+            Some(own_send),
+            (11, 22),
+            TickMs(SEND_TICK_MS + cap),
+        );
+        assert_eq!(
+            used,
+            ShmUse::Use {
+                open: true,
+                disagrees: true
+            },
+            "capを超えたら従来の170ms判定にそのまま落ち、書き込みが失われた事実として追随する"
+        );
+        assert!(
+            clear_own_send,
+            "cap超過はnonce無しでもown_sendを消す(項目4)"
+        );
+    }
+
+    /// own_send.openと一致する読み(Mozcが実際にOFFへ切り替わった最初の読み)は項目2で消費され、
+    /// disagree_baseline_msがこの読みのupdate_tick_msへ引き上がる(レビュー指摘(disagree_floorの
+    /// 検証)。この読み自体はbeliefとも一致するので通常のUse{disagrees:false}になる。
+    #[test]
+    fn report_mozc_shm_matching_read_after_send_consumes_own_send() {
+        use crate::state::mozc_shm::{OwnSend, ShmUse};
+        const SEND_TICK_MS: u64 = 200;
+        let mut ps = ps_with_closed_intent_and_applied_at(SEND_TICK_MS);
+        let own_send = OwnSend {
+            open: false,
+            tick_ms: SEND_TICK_MS,
+            tid: 11,
+            pid: 22,
+            nonce: None,
+        };
+        // Mozcが実際にOFFへ切り替わった後の読み(update_tick_ms(300) > send.tick_ms(200))。
+        let (used, clear_own_send) = ps.ime.report_mozc_shm(
+            mozc_shm_state(false),
+            300,
+            400,
+            SEND_TICK_MS,
+            SEND_TICK_MS,
+            Some(own_send),
+            (11, 22),
+            TickMs(400),
+        );
+        assert_eq!(
+            used,
+            ShmUse::Use {
+                open: false,
+                disagrees: false
+            }
+        );
+        assert!(clear_own_send, "own_sendは確認できたので消す(項目2)");
+    }
+
+    /// round2レビュー指摘N2の再現防止: drift correction中(belief=effective=開のまま、
+    /// desired=閉へ書き換え中)、own_send(desiredと同じ方向=閉)を送った直後、読みはまだ古い
+    /// 値(開)のまま——effectiveとは一致するがdesiredとは食い違う。`forced_held`が
+    /// effectiveだけを見ていると、この読みはdecide_useの一致の高速路(`open==effective_open`)
+    /// を通ってしまい、`disagrees: open!=desired`でdesiredを元の開に戻してしまう
+    /// (drift correctionの取り消し、BUG-234と同じ「送信の処理待ちを外部変化と誤認」)。
+    /// `forced_held`をdecide_useの`disagrees`と同じ条件(effectiveまたはdesiredと食い違う)に
+    /// 揃えたことで、この読みもHeldのままになり、desiredは変わらない。
+    #[test]
+    fn report_mozc_shm_bug234_n2_drift_correction_pending_is_held_despite_matching_effective() {
+        use crate::state::mozc_shm::{OwnSend, ShmUse};
+        let mut ps = ps_with_open_intent_and_applied(); // effective=desired=true、明示意図 tick=100
+                                                        // round3レビュー指摘R2: drift correctionは明示意図が無い窓で走ることが多い
+                                                        // (意図があればeffectiveは意図で決まる)。明示意図を外し、desiredだけを閉へ書き換える
+                                                        // (effectiveはまだ開のまま、belief未確定)ことで、docの「drift correction中」という
+                                                        // 説明と状態を一致させる。
+        ps.ime.clear_last_intent_for_test();
+        ps.ime.set_desired_open_for_test(false);
+        let own_send = OwnSend {
+            open: false, // desiredと同じ方向(閉)をdrift correctionとして送信した
+            tick_ms: 300,
+            tid: 11,
+            pid: 22,
+            nonce: None,
+        };
+        let (used, clear_own_send) = ps.ime.report_mozc_shm(
+            mozc_shm_state(true), // Mozcはまだopen=trueのまま(effectiveと一致、desiredとは不一致)
+            250,
+            350,
+            0,
+            0,
+            Some(own_send),
+            (11, 22),
+            TickMs(350),
+        );
+        assert_eq!(
+            used,
+            ShmUse::Held,
+            "N2: effectiveと一致する読みでも、desiredと食い違うならHeldを維持する \
+             (修正前はdecide_useの一致の高速路を通ってdesiredを元に戻していた)"
+        );
+        assert!(
+            !clear_own_send,
+            "own_sendはまだPendingのまま(drift correctionの保護が外れていない)"
+        );
+        assert!(
+            !ps.ime.model().desired_open(),
+            "desired(閉)はdrift correctionの意図どおり変わらない"
+        );
     }
 
     fn follow_fence() -> crate::state::probe_admission::AcceptedObservation {

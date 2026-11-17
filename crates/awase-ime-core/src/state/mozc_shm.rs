@@ -453,6 +453,127 @@ pub enum ShmUse {
     Use { open: bool, disagrees: bool },
 }
 
+/// [ADR-293](../../../../docs/adr/293-mozc-direct-actuation-closed-loop.md)([BUG-234](../../../../docs/known-bugs/BUG-234.md)):
+/// awase自身が実際に送信できた、開閉方向を持つ最新の送信（単一スロット、新しい送信で上書き）。
+///
+/// 記録するのは、開閉方向を持つ送信が**実際に送信できたときだけ**（5-2節、round6 V2）。
+/// モード切替のみの送信では記録しない（round5 U1の`ime_actuation_baseline_ms`の欠陥の修正）。
+///
+/// `nonce`はdirect post（GJI/TsfNative限定、ADR-293 5-1節、**本PRでは未実装**）向けの予約フィールド。
+/// direct postの送信経路が無い間は常に`None`——`classify_own_request`の項目1(nonce+ackの確認)は
+/// この経路が実装されるPRで追加する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnSend {
+    /// 送信した開閉方向
+    pub open: bool,
+    /// 送信した時刻（`GetTickCount64`、`hook::current_tick_ms()`と同じ分解能）
+    pub tick_ms: u64,
+    /// 送信先スレッドID（5-2節: `apply_mechanism`等へviewで届く「Mozcのターゲット」由来、OSから自前取得しない）
+    pub tid: u32,
+    /// 送信先プロセスID
+    pub pid: u32,
+    /// 常に`None`（上記doc参照）。
+    pub nonce: Option<u32>,
+}
+
+/// [`classify_own_request`]の判定結果（5-2節の全順序、項目0・2〜4。項目1〈nonce+ack〉は
+/// direct postの送信経路が無い本PRでは対象外）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnRequestVerdict {
+    /// `own_send`が無い、または読んでいるブロックの`(tid,pid)`と違う（項目0）。
+    /// `own_send`は変更しない（round6 V4-1: 無関係なスレッドのスタンプを誤って消さない）。
+    Unrelated,
+    /// `own_send`を消すが、この読みの判定への上書きは無い（項目4、`nonce`無しでcap超過）。
+    ClearNoOverride,
+    /// `own_send`を消し、disagree判定の起点を`disagree_floor_ms`へ引き上げる（項目2:
+    /// 送信**後**に読んだ、`own_send.open`と一致する読み）。
+    Consumed { disagree_floor_ms: u64 },
+    /// `own_send`を消し、呼び出し元へ「direct actuationは使用不可」を伝える（項目4で`nonce`有りの
+    /// ままcap超過、round6 V3。direct postの送信経路が無い本PRでは到達しない)。
+    ConsumedUnusable,
+    /// `own_send`は保持したまま、読みを保留する（項目3、既存の[`ShmUse::Held`]に対応）。
+    Pending,
+}
+
+/// awase自身の送信`own_send`と、受け入れた読みを見比べる（純粋関数、5-2節の全順序どおり。
+/// 項目1〈nonce+ackの確認〉は、direct postの送信経路が無い本PRでは実装しない——`own_send.nonce`は
+/// 常に`None`なので、項目2〜4がそのまま適用される)。
+///
+/// `read_target`は読んだブロックの`(tid,pid)`、`read_open`は`shm.tsf_open`、
+/// `read_update_tick_ms`は読んだブロックの`update_tick_ms`。`last_mode_key_tick_ms`は`None`
+/// （`FocusChanged`直後等）なら`0`として扱う（supersedeする物理モードキー予測がまだ無い、という
+/// 意味で安全側）。`cap_ms`は[`crate::tuning`]の`MOZC_OPEN_CLOSE_SETTLE_MS`。
+///
+/// **項目2は「送信より後に読んだ」ことを要求する**(`read_update_tick_ms > send.tick_ms`、
+/// レビュー指摘1-a): 単一スロット+値一致だけでは、「送信前から`own_send.open`と同じ値だった
+/// 古い読み」と「Mozcが要求を処理した後の読み」を区別できない。区別しないと、OFF→ONのように
+/// 方向を素早く切り替えたとき、2回目の送信（ON）の直前にMozcがまだ1回目（OFF）を処理しておらず
+/// `tsf_open`がON方向のまま残っていた場合、この古い読みが「ONへの確認」として誤って消費され、
+/// 後から遅れて届くOFFの反映がBUG-234と同じ経路で外部変化と誤認されてしまう。この条件を満たさない
+/// 一致読みは、消費せず項目3/4と同じ扱い（Pendingまたはcap超過でClearNoOverride）に落ちる。
+///
+/// **この条件は必要条件であり、十分条件ではない**(round2レビュー指摘N3): `update_tick_ms`は
+/// ブロック全体のdirtyタイムスタンプ(BUG-232 D5)なので、送信後に別の打鍵が1つでも来れば
+/// `update_tick_ms`は進む——`tsf_open`自体がまだ1回目の方向のままでも`read_update_tick_ms >
+/// send.tick_ms`を満たしてしまう。1-aの窓は「次の打鍵まで」に狭まるが、完全には閉じない
+/// (nonce/ackで確実に閉じるのはdirect postの送信経路、本PRには無い)。逆方向の副作用:
+/// `GetTickCount64`の分解能(~15.6ms)のため、warmなMozcが送信と同じ目盛りで反映すると
+/// `update_tick_ms == send.tick_ms`になり消費されない——その後本当の外部変化が来ても、
+/// 次の打鍵かcapまで(最長`MOZC_OPEN_CLOSE_SETTLE_MS`)保留される。これはcapの受容済みの
+/// コストの範囲内。
+///
+/// 呼び出し元（`report_mozc_shm`）は、[`ShmUse::Split`]の早期returnより**前**にこれを呼ぶ
+/// （5-2節冒頭）——`own_send`のスタンプ管理（消すかどうか）は読みがSplitかどうかと無関係に
+/// 行う。最終的な`ShmUse`の決定はSplitが優先する（Split自体はこの関数の戻り値を見ない）。
+#[must_use]
+pub const fn classify_own_request(
+    own_send: Option<OwnSend>,
+    read_target: (u32, u32),
+    read_open: bool,
+    read_update_tick_ms: u64,
+    now_ms: u64,
+    last_mode_key_tick_ms: Option<u64>,
+    cap_ms: u64,
+) -> OwnRequestVerdict {
+    let Some(send) = own_send else {
+        return OwnRequestVerdict::Unrelated;
+    };
+    // 項目0(round6 V4-1): (tid,pid)不一致は全順序の先頭で外す。無視するだけで消さない。
+    if send.tid != read_target.0 || send.pid != read_target.1 {
+        return OwnRequestVerdict::Unrelated;
+    }
+    // 項目2(レビュー指摘1-aで`read_update_tick_ms > send.tick_ms`を追加): 送信**後**に読んだ、
+    // own_send.openと一致する読み。
+    if read_open == send.open && read_update_tick_ms > send.tick_ms {
+        return OwnRequestVerdict::Consumed {
+            disagree_floor_ms: read_update_tick_ms,
+        };
+    }
+    // 項目3/4: 不一致、または一致していても送信前からの古い読み(上記の条件を満たさない)。
+    let last_mode_key_tick_ms = match last_mode_key_tick_ms {
+        Some(t) => t,
+        None => 0,
+    };
+    let superseded = send.tick_ms < last_mode_key_tick_ms;
+    let age_ms = now_ms.saturating_sub(send.tick_ms);
+    if !superseded && age_ms < cap_ms {
+        // 項目3: supersedeされておらず、capにまだ達していない。既存のHeldを返す。
+        return OwnRequestVerdict::Pending;
+    }
+    if age_ms >= cap_ms {
+        // 項目4(round6 V3): nonceがあるときだけ「不使用」を立てる(direct postが無い本PRでは
+        // 常にnonce=Noneなので、この枝は常にClearNoOverrideになる)。
+        return if send.nonce.is_some() {
+            OwnRequestVerdict::ConsumedUnusable
+        } else {
+            OwnRequestVerdict::ClearNoOverride
+        };
+    }
+    // supersedeされているがcap未満: この枝は適用せず、従来の170ms判定にそのまま落ちる
+    // (own_sendは次の読みでも同じ判定を受けられるよう、消さずに残す)。
+    OwnRequestVerdict::Unrelated
+}
+
 /// 受け入れた読み `shm` を、belief にどう使うかを決める。
 ///
 /// `update_tick_ms` は読んだブロックの `update_tick_ms`（最後に**変化**を書いた時刻、のつもりの値——
@@ -1304,6 +1425,208 @@ mod tests {
                 disagrees: false
             },
             "beliefと一致する確認はsettleを待たず速く受理できる(BUG-232修正の副作用で遅くならないことの固定)"
+        );
+    }
+
+    // ADR-293(BUG-234) classify_own_request: 10節step1のテスト一覧に対応
+    // (項目1〈nonce+ack〉はdirect postの送信経路が無い本PRでは対象外)。
+
+    fn own_send(open: bool, tick_ms: u64) -> OwnSend {
+        OwnSend {
+            open,
+            tick_ms,
+            tid: 11,
+            pid: 22,
+            nonce: None,
+        }
+    }
+
+    /// own_sendが無関係(そもそも無い)なら`Unrelated`。
+    #[test]
+    fn classify_own_request_unrelated_when_no_own_send() {
+        assert_eq!(
+            classify_own_request(None, (11, 22), true, 500, 600, None, 2000),
+            OwnRequestVerdict::Unrelated
+        );
+    }
+
+    /// 項目0(round6 V4-1): 読んでいるブロックの(tid,pid)が`own_send`と違えば無視するだけ(消さない)。
+    #[test]
+    fn classify_own_request_item0_tid_pid_mismatch_is_unrelated() {
+        let send = own_send(false, 1000);
+        // pid違い
+        assert_eq!(
+            classify_own_request(Some(send), (11, 99), true, 1200, 1200, None, 2000),
+            OwnRequestVerdict::Unrelated
+        );
+        // tid違い
+        assert_eq!(
+            classify_own_request(Some(send), (99, 22), true, 1200, 1200, None, 2000),
+            OwnRequestVerdict::Unrelated
+        );
+    }
+
+    /// 項目2: 送信**後**に読んだ、own_send.openと一致する読み → 消して disagree_floor をこの読みの
+    /// update_tick_msにする(BUG-234の本来のタイムライン: OFF送信後、Mozcが実際にOFFへ切り替わった
+    /// 最初の読み)。
+    #[test]
+    fn classify_own_request_item2_matching_read_after_send_sets_disagree_floor() {
+        let send = own_send(false, 1000);
+        assert_eq!(
+            classify_own_request(Some(send), (11, 22), false, 1800, 1900, None, 2000),
+            OwnRequestVerdict::Consumed {
+                disagree_floor_ms: 1800
+            }
+        );
+    }
+
+    /// レビュー指摘1-a(OFF→ON連打の再現防止): 項目2は「送信より後に読んだ」ことも要求する
+    /// (`read_update_tick_ms > send.tick_ms`)。送信**前**から`own_send.open`と同じ値だった古い
+    /// 読み(`read_update_tick_ms <= send.tick_ms`)は、確認にならないので消費しない——`Pending`
+    /// のまま残り、本当にMozcが処理した後の読みを待つ。
+    #[test]
+    fn classify_own_request_item2_does_not_consume_a_read_older_than_the_send() {
+        let send = own_send(true, 1000); // t=1000でONを送信(直前にOFFを送って上書きした想定)
+                                         // update_tick_ms(900) <= send.tick_ms(1000): 送信前からopen=trueだった古い読み。
+        assert_eq!(
+            classify_own_request(Some(send), (11, 22), true, 900, 1100, None, 2000),
+            OwnRequestVerdict::Pending,
+            "送信前から同じ値だった古い読みを確認として消費してはならない(OFF→ON連打でBUG-234が残る経路)"
+        );
+        // update_tick_ms(1000) == send.tick_ms(1000)の境界も同様(厳密に`>`を要求)。
+        assert_eq!(
+            classify_own_request(Some(send), (11, 22), true, 1000, 1100, None, 2000),
+            OwnRequestVerdict::Pending
+        );
+        // update_tick_ms(1001) > send.tick_ms(1000)なら確認として消費する。
+        assert_eq!(
+            classify_own_request(Some(send), (11, 22), true, 1001, 1100, None, 2000),
+            OwnRequestVerdict::Consumed {
+                disagree_floor_ms: 1001
+            }
+        );
+    }
+
+    /// 項目3(BUG-234そのものの再現): own_send(OFF)送信後、Mozcがまだ処理しておらず読みが古い値
+    /// (open=true)のまま。170ms(旧settle)を過ぎてもMOZC_OPEN_CLOSE_SETTLE_MSのcap未満なら
+    /// `Pending`(=Held)を返し、外部変化として誤って追随しない。
+    #[test]
+    fn classify_own_request_item3_pending_within_cap_reproduces_bug234_fix() {
+        let send = own_send(false, 0); // t=0 でOFFを送信
+                                       // t=640ms、旧170ms settleは過ぎているが、cap(2000ms)はまだ
+        assert_eq!(
+            classify_own_request(Some(send), (11, 22), true, 600, 640, None, 2000),
+            OwnRequestVerdict::Pending,
+            "BUG-234: 170ms(旧settle)を過ぎた古い読みを外部変化と誤認してはならない"
+        );
+    }
+
+    /// (c) 別スレッド/別窓へのown_sendが、他窓の食い違う読みを保留しない(round5 U1の
+    /// cross-window over-hold防止)。項目0の(tid,pid)不一致チェックで保証される。
+    #[test]
+    fn classify_own_request_c_cross_window_does_not_over_hold() {
+        let send = own_send(false, 1000); // (tid=11,pid=22)宛の送信
+        assert_eq!(
+            // 別窓(tid=33,pid=44)の食い違う読み
+            classify_own_request(Some(send), (33, 44), true, 1200, 1200, None, 2000),
+            OwnRequestVerdict::Unrelated,
+            "他スレッド宛のown_sendが無関係な窓の食い違いを保留してはならない"
+        );
+    }
+
+    /// (b)/(e) T6-2・round6 V1のtie-break: `own_send.tick_ms >= last_mode_key_tick_ms`なら
+    /// supersedeされていないとみなす(`>=`、同値は送信が勝つ)。真に後(tickが大きい)の物理モード
+    /// キー予測にのみsupersedeされ、170msの通常判定に戻る。
+    #[test]
+    fn classify_own_request_b_e_supersession_tie_break() {
+        let send = own_send(false, 1000);
+        // (e) 同値tick: 送信が勝ち、Pendingを維持する。
+        assert_eq!(
+            classify_own_request(Some(send), (11, 22), true, 600, 1100, Some(1000), 2000),
+            OwnRequestVerdict::Pending,
+            "round6 V1: 同じtickのshadow-toggle送信とその予測は、送信が勝つ(>=)"
+        );
+        // (b) 真に後(1001 > 1000)の物理モードキー予測にsupersedeされ、この枝は適用しない。
+        assert_eq!(
+            classify_own_request(Some(send), (11, 22), true, 600, 1100, Some(1001), 2000),
+            OwnRequestVerdict::Unrelated,
+            "T6-2: 真に後の物理モードキー予測にsupersedeされたら170msの通常判定に戻す"
+        );
+    }
+
+    /// (f) explicit-OFF自身の送信は、自分自身の意図eventのtick以上になるため、自分自身をsupersede
+    /// しない(round6 V1、platform_state.rs:1196-1210のdispatch順序に依存)。この順序が逆転したら
+    /// BUG-234がこの経路だけ静かに再発する——この順序そのものの検査は
+    /// `report_mozc_shm_explicit_off_does_not_supersede_its_own_send`(platform_state.rs、
+    /// レビュー指摘5-bで追加)で固定する。ここでは`classify_own_request`自体が`>=`で送信を
+    /// 優先する(=supersedeしない)という境界値を、(e)とは異なる具体的な数値で確認する。
+    #[test]
+    fn classify_own_request_f_own_send_at_the_same_tick_as_its_own_intent_is_not_superseded() {
+        let send = own_send(false, 1000); // 送信tickは、自分自身の意図eventのtick(1000)と同じ
+        assert_eq!(
+            classify_own_request(Some(send), (11, 22), true, 600, 1100, Some(1000), 2000),
+            OwnRequestVerdict::Pending,
+            "own_send.tick_ms >= last_mode_key_tick_ms(自分自身)なのでsupersedeされない"
+        );
+    }
+
+    /// (h) 項目4(round6 V3): `nonce`が`None`のまま`age >= cap`になった場合は、消すだけで
+    /// 「不使用」マークは立たない(direct postが無い本PRでは常に`nonce: None`なので、この枝は
+    /// 常にこちら)。
+    #[test]
+    fn classify_own_request_h_no_nonce_at_cap_expiry_clears_without_unusable_mark() {
+        let send_no_nonce = own_send(false, 0);
+        assert_eq!(
+            classify_own_request(Some(send_no_nonce), (11, 22), true, 2000, 2000, None, 2000),
+            OwnRequestVerdict::ClearNoOverride,
+            "nonce無しの送信が単に遅いだけでdirect actuationを不使用にしてはならない"
+        );
+    }
+
+    /// (i) (tid,pid)不一致は全順序の先頭(項目0)で判定され、無関係なスレッドの読みが項目2/4を
+    /// 通って誤ってown_sendを消費・消去しない(round6 V4-1、(c)と対になる境界テスト:
+    /// (c)は保留を奪わないことを固定し、(i)は同じ入力で消費もされないことを固定する)。
+    #[test]
+    fn classify_own_request_i_tid_pid_mismatch_is_checked_first() {
+        let send = own_send(false, 1000);
+        // 別スレッドの読みがown_send.openと一致していても(項目2相当の条件)、項目0が先に
+        // 評価されてUnrelatedになり、Consumedにはならない。
+        assert_eq!(
+            classify_own_request(Some(send), (33, 44), false, 1200, 1200, None, 2000),
+            OwnRequestVerdict::Unrelated,
+            "項目0が項目2より先に評価され、他スレッドの一致する読みがown_sendを消費してはならない"
+        );
+        // 別スレッドの読みでcapも超過していても(項目4相当の条件)、同様にUnrelatedのまま。
+        assert_eq!(
+            classify_own_request(Some(send), (33, 44), true, 3000, 3000, None, 2000),
+            OwnRequestVerdict::Unrelated,
+            "項目0が項目4より先に評価され、他スレッドの読みがown_sendをage>=capで消去してはならない"
+        );
+    }
+
+    /// レビュー指摘5-d-3: `age == cap - 1`は`Pending`、`age == cap`は`ClearNoOverride`(ちょうど
+    /// cap境界での切り替わりを固定する)。
+    #[test]
+    fn classify_own_request_age_equal_to_cap_is_the_boundary() {
+        let send = own_send(false, 0);
+        assert_eq!(
+            classify_own_request(Some(send), (11, 22), true, 100, 1999, None, 2000),
+            OwnRequestVerdict::Pending
+        );
+        assert_eq!(
+            classify_own_request(Some(send), (11, 22), true, 100, 2000, None, 2000),
+            OwnRequestVerdict::ClearNoOverride
+        );
+    }
+
+    /// レビュー指摘5-d-4: supersedeされていても`age >= cap`なら消す(supersedeが消去を妨げない)。
+    #[test]
+    fn classify_own_request_supersession_does_not_block_cap_expiry_clear() {
+        let send = own_send(false, 1000);
+        // last_mode_key_tick_ms(1001) > send.tick_ms(1000): supersedeされている。かつage>=cap。
+        assert_eq!(
+            classify_own_request(Some(send), (11, 22), true, 3000, 3000, Some(1001), 2000),
+            OwnRequestVerdict::ClearNoOverride
         );
     }
 

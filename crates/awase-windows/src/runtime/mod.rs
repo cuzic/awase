@@ -2276,6 +2276,12 @@ impl Runtime {
         // 順序が逆転しうる (true→false の終端で IME OFF のまま残るリスク)。単一の
         // spawn_local タスク内で 2 回 await する形にして OFF → ON を直列化する。
         if self.can_use_imm32_cross_process() {
+            // ADR-293(BUG-234、Opusレビュー指摘3-e): この OFF→ON はOwnSendとしてスタンプしない
+            // (`set_ime_open_cross_process_async`を直接呼び、`set_ime_open`を経由しないため)。
+            // 直前2秒以内にawaseが送った古いOwnSendが残っていると、この後の読みが古いOwnSendの
+            // 方向と食い違ったまま誤って保護されてしまう——panic resetはawaseの通常の開閉管理を
+            // リセットする操作なので、ここで古いスタンプを消す。
+            crate::hook::clear_own_send();
             win32_async::spawn_local(async {
                 let _ = crate::ime::set_ime_open_cross_process_async(false).await;
                 let _ = crate::ime::set_ime_open_cross_process_async(true).await;
