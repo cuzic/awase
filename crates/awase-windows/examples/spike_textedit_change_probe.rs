@@ -327,11 +327,7 @@ mod app {
                 None,
                 &sink,
             );
-            println!(
-                "# form={form} register composition={:?} autocorrect={:?}",
-                reg_comp.is_ok(),
-                reg_auto.is_ok()
-            );
+            println!("# form={form} register composition={reg_comp:?} autocorrect={reg_auto:?}");
 
             // 1. ASCII 健全性チェック(IME 無し)
             type_ascii("abc");
