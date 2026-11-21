@@ -147,7 +147,7 @@ mod app {
     };
     use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
     use windows::Win32::UI::Accessibility::{
-        CUIAutomation, IUIAutomation, IUIAutomation3, TextEditChangeType_AutoCorrect,
+        CUIAutomation8, IUIAutomation, IUIAutomation3, TextEditChangeType_AutoCorrect,
         TextEditChangeType_Composition, TreeScope_Element,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -364,10 +364,10 @@ mod app {
         }
         // SAFETY: CoInitializeEx の直後。
         let automation: IUIAutomation =
-            match unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) } {
+            match unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) } {
                 Ok(a) => a,
                 Err(e) => {
-                    println!("# CoCreateInstance(CUIAutomation) failed: {e:?}");
+                    println!("# CoCreateInstance(CUIAutomation8) failed: {e:?}");
                     return;
                 }
             };
